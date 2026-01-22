@@ -577,12 +577,20 @@ class TickCollector {
                 // Refresh markets
                 await this.refreshMarkets();
                 
-                // Resubscribe
-                if (this.polymarketWs && this.polymarketWs.readyState === WebSocket.OPEN) {
-                    this.subscribeToMarkets();
-                }
-                
-                break;
+            }
+        }
+        
+        // Refresh markets once if any changed
+        const hasStaleMarkets = Object.entries(this.markets).some(([crypto, market]) => 
+            market.epoch !== Math.floor(Date.now() / 900000) * 900
+        );
+        
+        if (hasStaleMarkets) {
+            await this.refreshMarkets();
+            
+            // Resubscribe
+            if (this.polymarketWs && this.polymarketWs.readyState === WebSocket.OPEN) {
+                this.subscribeToMarkets();
             }
         }
     }

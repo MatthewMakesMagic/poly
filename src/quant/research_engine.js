@@ -371,10 +371,27 @@ export class ResearchEngine {
             // Determine significance
             const isSignificant = totalTrades >= 30 && Math.abs(sharpe) > 0.5;
             
+            // Get open positions for this strategy
+            const openPositions = [];
+            if (this.positions[name]) {
+                for (const [crypto, pos] of Object.entries(this.positions[name])) {
+                    if (pos) {
+                        openPositions.push({
+                            crypto,
+                            side: pos.side,
+                            entryPrice: pos.entryPrice,
+                            entryTime: pos.entryTime,
+                            holdingMs: Date.now() - pos.entryTime
+                        });
+                    }
+                }
+            }
+            
             report.strategies.push({
                 name,
                 signals: perf.signals,
-                trades: totalTrades,
+                trades: perf.trades, // Positions opened
+                closedTrades: totalTrades, // Positions closed (wins + losses)
                 wins: perf.wins,
                 losses: perf.losses,
                 winRate,
@@ -383,12 +400,16 @@ export class ResearchEngine {
                 avgPnl,
                 sharpe,
                 isSignificant,
+                openPositions,
                 recentPositions: perf.positions.slice(-5)
             });
         }
         
         // Sort by total P&L
         report.strategies.sort((a, b) => b.totalPnl - a.totalPnl);
+        
+        // Add summary of all open positions
+        report.totalOpenPositions = report.strategies.reduce((sum, s) => sum + s.openPositions.length, 0);
         
         return report;
     }
