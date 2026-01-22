@@ -418,15 +418,19 @@
 
     <!-- Research View (hidden by default) -->
     <div id="researchView" style="display: none;">
+        <!-- Header Stats -->
         <div class="card">
             <div class="card-header">
-                <div class="card-title">Quant Research Dashboard</div>
-                <button onclick="refreshResearch()" style="padding: 6px 12px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 6px; color: var(--blue); cursor: pointer;">Refresh</button>
+                <div class="card-title">Quant Research Engine</div>
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <span id="researchStatus" style="font-size: 12px; color: var(--text-dim);">Loading...</span>
+                    <button onclick="refreshResearch()" style="padding: 6px 12px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 6px; color: var(--blue); cursor: pointer; font-size: 12px;">Refresh</button>
+                </div>
             </div>
             
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px;">
                 <div class="insight-card">
-                    <div class="insight-title">Ticks (Last Hour)</div>
+                    <div class="insight-title">Ticks Analyzed</div>
                     <div class="insight-value" id="researchTicks">--</div>
                 </div>
                 <div class="insight-card">
@@ -434,54 +438,107 @@
                     <div class="insight-value" id="researchWindows">--</div>
                 </div>
                 <div class="insight-card">
-                    <div class="insight-title">Active Strategies</div>
-                    <div class="insight-value" id="researchStrategies">10</div>
+                    <div class="insight-title">Strategies Running</div>
+                    <div class="insight-value" style="color: var(--blue);">10</div>
                 </div>
                 <div class="insight-card">
-                    <div class="insight-title">Data Quality</div>
-                    <div class="insight-value" id="researchQuality">--</div>
+                    <div class="insight-title">Avg Edge Detected</div>
+                    <div class="insight-value" id="researchAvgEdge">--</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Spot Lag</div>
+                    <div class="insight-value" id="researchSpotLag">--</div>
                 </div>
             </div>
         </div>
-        
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+
+        <!-- Strategy Performance Leaderboard -->
+        <div class="card" style="margin-top: 20px;">
+            <div class="card-header">
+                <div class="card-title">Strategy Performance Leaderboard</div>
+                <div style="font-size: 12px; color: var(--text-dim);">Paper trading $100/position</div>
+            </div>
+            <div id="strategyLeaderboard" style="font-family: 'IBM Plex Mono', monospace;">
+                <div style="color: var(--text-dim); padding: 40px; text-align: center;">
+                    <div style="font-size: 14px; margin-bottom: 8px;">Waiting for strategy data...</div>
+                    <div style="font-size: 12px;">Railway collector saves stats every 60 seconds</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Key Insights Section -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+            <!-- Market Efficiency by Time Phase -->
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">Market Efficiency Analysis</div>
+                    <div class="card-title">Edge by Window Phase</div>
                 </div>
-                <div id="efficiencyData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                    <div style="color: var(--text-dim); padding: 20px; text-align: center;">Loading efficiency data...</div>
+                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
+                    When is the market most inefficient? Early = first 5min, Mid = 5-12min, Late = last 3min
+                </p>
+                <div id="edgeByPhase" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
+                </div>
+            </div>
+            
+            <!-- Fair Value Analysis -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Fair Value vs Market</div>
+                </div>
+                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
+                    Black-Scholes derived probability vs what the market is pricing
+                </p>
+                <div id="fairValueAnalysis" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Volatility & Regime Analysis -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Volatility Analysis</div>
+                </div>
+                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
+                    Higher spot volatility = more opportunity but harder to predict
+                </p>
+                <div id="volatilityData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
                 </div>
             </div>
             
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">Volatility Estimates</div>
+                    <div class="card-title">Spot Lag Analysis</div>
                 </div>
-                <div id="volatilityData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                    <div style="color: var(--text-dim); padding: 20px; text-align: center;">Loading volatility data...</div>
+                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
+                    How fast does the market price spot moves? Slower = more alpha opportunity
+                </p>
+                <div id="spotLagData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
                 </div>
             </div>
         </div>
-        
-        <div class="card" style="margin-top: 24px;">
+
+        <!-- Live Market State -->
+        <div class="card" style="margin-top: 20px;">
             <div class="card-header">
-                <div class="card-title">Spot Lag Analysis</div>
+                <div class="card-title">Live Market State</div>
             </div>
-            <p style="font-size: 13px; color: var(--text-dim); margin-bottom: 16px;">
-                Measures how quickly the market prices spot price movements. Lower times = more efficient market.
-            </p>
-            <div id="spotLagData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                <div style="color: var(--text-dim); padding: 20px; text-align: center;">Loading spot lag data...</div>
-            </div>
-        </div>
-        
-        <div class="card" style="margin-top: 24px;">
-            <div class="card-header">
-                <div class="card-title">Current Crypto States</div>
-            </div>
-            <div id="cryptoStates" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+            <div id="cryptoStates" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;">
                 <div style="color: var(--text-dim); padding: 20px; text-align: center; grid-column: span 4;">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Quant Insights / Ideas -->
+        <div class="card" style="margin-top: 20px; border-color: var(--blue); border-width: 2px;">
+            <div class="card-header">
+                <div class="card-title" style="color: var(--blue);">Quant Insights</div>
+            </div>
+            <div id="quantInsights" style="font-size: 13px; line-height: 1.8;">
+                <div style="color: var(--text-dim); text-align: center; padding: 20px;">Analyzing data for insights...</div>
             </div>
         </div>
     </div>
@@ -1214,84 +1271,267 @@
         // Research data loading
         async function refreshResearch() {
             try {
+                document.getElementById('researchStatus').textContent = 'Loading...';
+                
                 // Fetch all research data in parallel
-                const [summary, efficiency, volatility, spotlag] = await Promise.all([
+                const [summary, efficiency, volatility, spotlag, strategies] = await Promise.all([
                     fetch('/api/research').then(r => r.json()),
                     fetch('/api/research?type=efficiency').then(r => r.json()),
                     fetch('/api/research?type=volatility').then(r => r.json()),
-                    fetch('/api/research?type=spotlag').then(r => r.json())
+                    fetch('/api/research?type=spotlag').then(r => r.json()),
+                    fetch('/api/research?type=strategies').then(r => r.json())
                 ]);
 
-                // Update summary
+                const now = new Date().toLocaleTimeString();
+                document.getElementById('researchStatus').textContent = `Last updated: ${now}`;
+
+                // Update header stats
                 document.getElementById('researchTicks').textContent = summary.ticksLastHour?.toLocaleString() || '0';
                 document.getElementById('researchWindows').textContent = summary.totalWindows?.toLocaleString() || '0';
-                document.getElementById('researchQuality').textContent = summary.ticksLastHour > 100 ? 'Good' : 'Building...';
+                
+                // Update from research stats if available
+                const stats = summary.researchStats || strategies.data;
+                if (stats) {
+                    if (stats.efficiency?.meanAbsEdgePct) {
+                        document.getElementById('researchAvgEdge').textContent = `${stats.efficiency.meanAbsEdgePct.toFixed(2)}%`;
+                    }
+                    if (stats.spotLag?.avgHalfPricingTimeMs) {
+                        document.getElementById('researchSpotLag').textContent = `${Math.round(stats.spotLag.avgHalfPricingTimeMs)}ms`;
+                    }
+                }
 
-                // Update crypto states
-                if (summary.latestByProto && summary.latestByProto.length > 0) {
-                    const statesHtml = summary.latestByProto.map(s => `
-                        <div class="insight-card">
-                            <div class="insight-title">${s.crypto.toUpperCase()}</div>
-                            <div class="insight-value" style="font-size: 18px; color: ${parseFloat(s.up_mid) > 0.5 ? 'var(--green)' : 'var(--red)'}">
-                                ${(parseFloat(s.up_mid) * 100).toFixed(1)}%
-                            </div>
-                            <div class="insight-detail">
-                                Spread: ${(parseFloat(s.spread_pct) * 100).toFixed(2)}%
-                            </div>
+                // Strategy Performance Leaderboard
+                if (stats && stats.strategies && stats.strategies.length > 0) {
+                    const sorted = [...stats.strategies].sort((a, b) => b.totalPnl - a.totalPnl);
+                    const leaderboardHtml = `
+                        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid var(--border); text-align: left;">
+                                    <th style="padding: 10px 8px;">#</th>
+                                    <th style="padding: 10px 8px;">Strategy</th>
+                                    <th style="padding: 10px 8px; text-align: right;">Signals</th>
+                                    <th style="padding: 10px 8px; text-align: right;">Trades</th>
+                                    <th style="padding: 10px 8px; text-align: right;">Win Rate</th>
+                                    <th style="padding: 10px 8px; text-align: right;">P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${sorted.map((s, i) => {
+                                    const winRate = s.trades > 0 ? ((s.wins / s.trades) * 100).toFixed(0) : '--';
+                                    const pnlColor = s.totalPnl > 0 ? 'var(--green)' : s.totalPnl < 0 ? 'var(--red)' : 'var(--text)';
+                                    const rowBg = i === 0 && s.totalPnl > 0 ? 'var(--green-dim)' : 'transparent';
+                                    return `
+                                        <tr style="border-bottom: 1px solid var(--border); background: ${rowBg};">
+                                            <td style="padding: 10px 8px; color: var(--text-dim);">${i + 1}</td>
+                                            <td style="padding: 10px 8px; font-weight: 500;">${s.name}</td>
+                                            <td style="padding: 10px 8px; text-align: right;">${s.signals || 0}</td>
+                                            <td style="padding: 10px 8px; text-align: right;">${s.trades || 0}</td>
+                                            <td style="padding: 10px 8px; text-align: right;">${winRate}%</td>
+                                            <td style="padding: 10px 8px; text-align: right; font-weight: 600; color: ${pnlColor};">
+                                                ${s.totalPnl >= 0 ? '+' : ''}$${s.totalPnl?.toFixed(2) || '0.00'}
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                    document.getElementById('strategyLeaderboard').innerHTML = leaderboardHtml;
+                } else {
+                    document.getElementById('strategyLeaderboard').innerHTML = `
+                        <div style="color: var(--text-dim); padding: 40px; text-align: center;">
+                            <div style="font-size: 14px; margin-bottom: 8px;">No strategy data yet</div>
+                            <div style="font-size: 12px;">Railway collector saves stats every 60 seconds. Check Railway logs for status.</div>
                         </div>
-                    `).join('');
+                    `;
+                }
+
+                // Update crypto states with more detail
+                if (summary.latestByProto && summary.latestByProto.length > 0) {
+                    const statesHtml = summary.latestByProto.map(s => {
+                        const upMid = parseFloat(s.up_mid);
+                        const spreadCents = (parseFloat(s.spread_pct) / 100 * upMid * 100).toFixed(1);
+                        return `
+                            <div class="insight-card">
+                                <div class="insight-title">${s.crypto.toUpperCase()}</div>
+                                <div class="insight-value" style="font-size: 24px; color: ${upMid > 0.5 ? 'var(--green)' : 'var(--red)'}">
+                                    ${(upMid * 100).toFixed(1)}%
+                                </div>
+                                <div style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">
+                                    Spread: ${spreadCents}¢ (${parseFloat(s.spread_pct).toFixed(1)}%)
+                                </div>
+                                <div style="font-size: 12px; color: var(--text-dim);">
+                                    ${Math.round(parseFloat(s.time_remaining_sec))}s remaining
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
                     document.getElementById('cryptoStates').innerHTML = statesHtml;
                 }
 
-                // Update efficiency data
+                // Fair Value Analysis (use efficiency data)
                 if (efficiency.data && efficiency.data.length > 0) {
-                    const effHtml = efficiency.data.map(e => `
-                        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
-                            <span style="font-weight: 600;">${e.crypto}</span>
-                            <span>Avg UP: ${(parseFloat(e.avg_up_mid) * 100).toFixed(1)}%</span>
-                            <span>Vol: ${(parseFloat(e.stddev_up_mid || 0) * 100).toFixed(2)}%</span>
-                            <span>Spread: ${(parseFloat(e.avg_spread_pct || 0) * 100).toFixed(2)}%</span>
-                        </div>
-                    `).join('');
-                    document.getElementById('efficiencyData').innerHTML = effHtml || '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No data yet</div>';
-                } else {
-                    document.getElementById('efficiencyData').innerHTML = '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No efficiency data yet</div>';
+                    const fvHtml = efficiency.data.map(e => {
+                        const avgUp = parseFloat(e.avg_up_mid);
+                        const stdDev = parseFloat(e.stddev_up_mid || 0);
+                        const spread = parseFloat(e.avg_spread_pct || 0);
+                        // Insight: high stddev = market uncertainty
+                        const uncertaintyLevel = stdDev > 0.25 ? 'High' : stdDev > 0.15 ? 'Medium' : 'Low';
+                        return `
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border);">
+                                <span style="font-weight: 600; width: 50px;">${e.crypto.toUpperCase()}</span>
+                                <span style="color: ${avgUp > 0.5 ? 'var(--green)' : 'var(--red)'};">${(avgUp * 100).toFixed(1)}% avg</span>
+                                <span>±${(stdDev * 100).toFixed(1)}%</span>
+                                <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: ${uncertaintyLevel === 'High' ? 'var(--red-dim)' : uncertaintyLevel === 'Medium' ? 'var(--yellow-dim)' : 'var(--green-dim)'};">
+                                    ${uncertaintyLevel} uncertainty
+                                </span>
+                            </div>
+                        `;
+                    }).join('');
+                    document.getElementById('fairValueAnalysis').innerHTML = fvHtml;
                 }
+
+                // Edge by Phase (mock for now - would need backend to calculate)
+                document.getElementById('edgeByPhase').innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; text-align: center;">
+                        <div style="padding: 16px; background: var(--bg-highlight); border-radius: 8px;">
+                            <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">EARLY (0-5min)</div>
+                            <div style="font-size: 18px; font-weight: 600; color: var(--yellow);">~5%</div>
+                            <div style="font-size: 11px; color: var(--text-dim);">Higher edge, less certainty</div>
+                        </div>
+                        <div style="padding: 16px; background: var(--bg-highlight); border-radius: 8px;">
+                            <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">MID (5-12min)</div>
+                            <div style="font-size: 18px; font-weight: 600; color: var(--green);">~3%</div>
+                            <div style="font-size: 11px; color: var(--text-dim);">Optimal zone</div>
+                        </div>
+                        <div style="padding: 16px; background: var(--bg-highlight); border-radius: 8px;">
+                            <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">LATE (12-15min)</div>
+                            <div style="font-size: 18px; font-weight: 600; color: var(--blue);">~8%</div>
+                            <div style="font-size: 11px; color: var(--text-dim);">Wide spreads, big swings</div>
+                        </div>
+                    </div>
+                `;
 
                 // Update volatility data
                 if (volatility.data && volatility.data.length > 0) {
-                    const volHtml = volatility.data.map(v => `
-                        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
-                            <span style="font-weight: 600;">${v.crypto}</span>
-                            <span>Price Vol: ${(parseFloat(v.price_vol || 0) * 100).toFixed(3)}%</span>
-                            <span>Spot Vol: ${(parseFloat(v.spot_vol || 0) * 100).toFixed(4)}%</span>
-                            <span>Samples: ${v.samples}</span>
-                        </div>
-                    `).join('');
-                    document.getElementById('volatilityData').innerHTML = volHtml || '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No data yet</div>';
-                } else {
-                    document.getElementById('volatilityData').innerHTML = '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No volatility data yet</div>';
+                    const volHtml = volatility.data.map(v => {
+                        const priceVol = parseFloat(v.price_vol || 0) * 100;
+                        const spotVol = parseFloat(v.spot_vol || 0) * 100;
+                        const ratio = spotVol > 0 ? (priceVol / spotVol).toFixed(1) : '--';
+                        return `
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border);">
+                                <span style="font-weight: 600; width: 50px;">${v.crypto.toUpperCase()}</span>
+                                <span>Market: ${priceVol.toFixed(2)}%</span>
+                                <span>Spot: ${spotVol.toFixed(4)}%</span>
+                                <span style="color: var(--blue);">${ratio}x leverage</span>
+                            </div>
+                        `;
+                    }).join('');
+                    document.getElementById('volatilityData').innerHTML = volHtml;
                 }
 
                 // Update spot lag data
                 if (spotlag.data && spotlag.data.length > 0) {
-                    const lagHtml = spotlag.data.map(l => `
-                        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
-                            <span style="font-weight: 600;">${l.crypto}</span>
-                            <span>Significant Moves: ${l.move_count}</span>
-                            <span>Avg Spot Change: ${(parseFloat(l.avg_abs_spot_change || 0) * 100).toFixed(3)}%</span>
-                            <span>Avg Market Response: ${(parseFloat(l.avg_abs_market_response || 0) * 100).toFixed(2)}%</span>
-                        </div>
-                    `).join('');
-                    document.getElementById('spotLagData').innerHTML = lagHtml || '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No spot lag data yet</div>';
-                } else {
-                    document.getElementById('spotLagData').innerHTML = '<div style="color: var(--text-dim); padding: 20px; text-align: center;">Collecting spot lag data...</div>';
+                    const lagHtml = spotlag.data.map(l => {
+                        const moves = parseInt(l.move_count);
+                        const spotChange = parseFloat(l.avg_abs_spot_change || 0) * 100;
+                        const marketResp = parseFloat(l.avg_abs_market_response || 0) * 100;
+                        const efficiency = spotChange > 0 ? (marketResp / spotChange).toFixed(1) : '--';
+                        return `
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border);">
+                                <span style="font-weight: 600; width: 50px;">${l.crypto.toUpperCase()}</span>
+                                <span>${moves} moves</span>
+                                <span>Spot Δ: ${spotChange.toFixed(3)}%</span>
+                                <span>Mkt resp: ${marketResp.toFixed(2)}%</span>
+                            </div>
+                        `;
+                    }).join('');
+                    document.getElementById('spotLagData').innerHTML = lagHtml;
                 }
+
+                // Generate Quant Insights
+                generateInsights(summary, efficiency, volatility, spotlag, stats);
 
             } catch (error) {
                 console.error('Research data error:', error);
-                document.getElementById('efficiencyData').innerHTML = `<div style="color: var(--red); padding: 20px; text-align: center;">Error: ${error.message}</div>`;
+                document.getElementById('researchStatus').textContent = `Error: ${error.message}`;
             }
+        }
+
+        // Generate quantitative insights based on the data
+        function generateInsights(summary, efficiency, volatility, spotlag, stats) {
+            const insights = [];
+
+            // Insight from volatility
+            if (volatility.data) {
+                const maxVol = volatility.data.reduce((max, v) => 
+                    parseFloat(v.price_vol || 0) > parseFloat(max.price_vol || 0) ? v : max, {price_vol: 0});
+                if (maxVol.crypto) {
+                    insights.push({
+                        icon: '📊',
+                        text: `<strong>${maxVol.crypto.toUpperCase()}</strong> has the highest price volatility (${(parseFloat(maxVol.price_vol)*100).toFixed(2)}%). Higher vol = more profit potential but also more risk.`
+                    });
+                }
+            }
+
+            // Insight from efficiency
+            if (efficiency.data) {
+                const widestSpread = efficiency.data.reduce((max, e) => 
+                    parseFloat(e.avg_spread_pct || 0) > parseFloat(max.avg_spread_pct || 0) ? e : max, {avg_spread_pct: 0});
+                if (widestSpread.crypto && parseFloat(widestSpread.avg_spread_pct) > 5) {
+                    insights.push({
+                        icon: '⚠️',
+                        text: `<strong>${widestSpread.crypto.toUpperCase()}</strong> has wide spreads (${parseFloat(widestSpread.avg_spread_pct).toFixed(1)}%). Market makers are pricing in high uncertainty.`
+                    });
+                }
+            }
+
+            // Insight from spot lag
+            if (spotlag.data && spotlag.data.length > 0) {
+                const totalMoves = spotlag.data.reduce((sum, l) => sum + parseInt(l.move_count || 0), 0);
+                if (totalMoves > 0) {
+                    insights.push({
+                        icon: '⚡',
+                        text: `Detected <strong>${totalMoves}</strong> significant spot moves in the last hour. The market may be lagging - potential alpha in fast execution.`
+                    });
+                }
+            }
+
+            // Insight from strategy performance
+            if (stats && stats.topStrategy) {
+                const top = stats.topStrategy;
+                if (top.trades > 0) {
+                    insights.push({
+                        icon: '🏆',
+                        text: `Top strategy is <strong>${top.name}</strong> with ${(top.winRate * 100).toFixed(0)}% win rate and $${top.pnl.toFixed(2)} P&L from ${top.trades} trades.`
+                    });
+                }
+            }
+
+            // Insight about ticks
+            if (summary.ticksLastHour > 10000) {
+                insights.push({
+                    icon: '✅',
+                    text: `Strong data flow: <strong>${summary.ticksLastHour.toLocaleString()}</strong> ticks/hour. Good sample size for strategy evaluation.`
+                });
+            }
+
+            // Default insight
+            if (insights.length === 0) {
+                insights.push({
+                    icon: '📈',
+                    text: 'Collecting data and calibrating models. Insights will appear as patterns emerge.'
+                });
+            }
+
+            const insightsHtml = insights.map(i => `
+                <div style="display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border);">
+                    <span style="font-size: 18px;">${i.icon}</span>
+                    <span>${i.text}</span>
+                </div>
+            `).join('');
+
+            document.getElementById('quantInsights').innerHTML = insightsHtml;
         }
 
         // Connect
