@@ -691,6 +691,8 @@ class TickCollector {
             // Save research stats to database so dashboard can display them
             try {
                 const fullReport = this.researchEngine.getStrategyPerformanceReport();
+                const lagReport = this.researchEngine.getSpotLagReport();
+                
                 await saveResearchStats({
                     timestamp: Date.now(),
                     ticksProcessed: summary.ticksProcessed,
@@ -698,9 +700,19 @@ class TickCollector {
                     spotLag: summary.spotLag,
                     efficiency: summary.efficiency,
                     topStrategy: summary.topStrategy,
-                    strategies: fullReport.strategies
+                    strategies: fullReport.strategies,
+                    // Detailed lag analysis
+                    lagAnalysis: {
+                        totalLagEvents: lagReport.totalEvents,
+                        completedEvents: lagReport.completedEvents,
+                        avgHalfPricingTimeMs: lagReport.avgHalfPricingTimeMs,
+                        avgFullPricingTimeMs: lagReport.avgFullPricingTimeMs,
+                        avgMaxLagPct: lagReport.avgMaxLagPct,
+                        recentEvents: lagReport.recentEvents?.slice(-5) || [],
+                        alphaDecayCurve: lagReport.alphaDecayCurve
+                    }
                 });
-                console.log(`   ✅ Saved research stats to database`);
+                console.log(`   ✅ Saved research stats (${lagReport.totalEvents} lag events)`);
             } catch (error) {
                 console.error(`   ⚠️  Failed to save research stats:`, error.message);
             }

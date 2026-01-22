@@ -1441,9 +1441,41 @@
                     document.getElementById('volatilityData').innerHTML = volHtml;
                 }
 
-                // Update spot lag data
+                // Update spot lag data - combine DB data with lag analyzer stats
+                let lagHtml = '';
+                
+                // Show lag analyzer stats if available
+                if (stats && stats.lagAnalysis) {
+                    const lag = stats.lagAnalysis;
+                    const halfTime = lag.avgHalfPricingTimeMs ? `${Math.round(lag.avgHalfPricingTimeMs)}ms` : '--';
+                    const fullTime = lag.avgFullPricingTimeMs ? `${Math.round(lag.avgFullPricingTimeMs)}ms` : '--';
+                    const maxLag = lag.avgMaxLagPct ? `${lag.avgMaxLagPct.toFixed(1)}%` : '--';
+                    const events = lag.totalLagEvents || 0;
+                    
+                    lagHtml += `
+                        <div style="margin-bottom: 16px; padding: 12px; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);">
+                            <div style="font-weight: 600; margin-bottom: 8px; color: var(--blue);">Lag Analyzer (Live)</div>
+                            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 12px;">
+                                <div><span style="color: var(--text-dim);">Events Detected:</span> <strong>${events}</strong></div>
+                                <div><span style="color: var(--text-dim);">50% Pricing:</span> <strong>${halfTime}</strong></div>
+                                <div><span style="color: var(--text-dim);">90% Pricing:</span> <strong>${fullTime}</strong></div>
+                                <div><span style="color: var(--text-dim);">Avg Max Lag:</span> <strong style="color: ${lag.avgMaxLagPct > 3 ? 'var(--green)' : 'var(--text)'};">${maxLag}</strong></div>
+                            </div>
+                            ${events === 0 ? `
+                                <div style="margin-top: 8px; padding: 8px; background: var(--yellow-dim); border-radius: 4px; font-size: 11px; color: var(--yellow);">
+                                    No significant lag events detected yet. This could mean:
+                                    <br>• Market is pricing spot moves efficiently (no lag)
+                                    <br>• Spot isn't moving enough (>0.05% threshold)
+                                    <br>• Need more data (keep collecting)
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+                
+                // Show DB-based spot lag data
                 if (spotlag.data && spotlag.data.length > 0) {
-                    const lagHtml = spotlag.data.map(l => {
+                    lagHtml += spotlag.data.map(l => {
                         const moves = parseInt(l.move_count);
                         const spotChange = parseFloat(l.avg_abs_spot_change || 0) * 100;
                         const marketResp = parseFloat(l.avg_abs_market_response || 0) * 100;
@@ -1457,7 +1489,16 @@
                             </div>
                         `;
                     }).join('');
+                }
+                
+                if (lagHtml) {
                     document.getElementById('spotLagData').innerHTML = lagHtml;
+                } else {
+                    document.getElementById('spotLagData').innerHTML = `
+                        <div style="color: var(--text-dim); text-align: center; padding: 20px;">
+                            No lag data yet. Collecting...
+                        </div>
+                    `;
                 }
 
                 // Generate Quant Insights
