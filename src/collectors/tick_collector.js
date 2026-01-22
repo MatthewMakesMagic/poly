@@ -642,7 +642,7 @@ class TickCollector {
     /**
      * Log current stats
      */
-    logStats() {
+    async logStats() {
         const now = new Date().toISOString();
         console.log(`\n[${now}] 📊 Collector Stats:`);
         console.log(`   Ticks: ${this.stats.ticksCollected} | Messages: ${this.stats.messagesReceived} | Errors: ${this.stats.errors}`);
