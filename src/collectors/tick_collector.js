@@ -5,11 +5,13 @@
  * - Polymarket WebSocket (order book, prices)
  * - Binance WebSocket (spot prices)
  * 
- * Stores data to SQLite for analysis
+ * Also runs quant research engine with 10 strategies to measure performance.
+ * Stores data to PostgreSQL for analysis.
  */
 
 import WebSocket from 'ws';
 import { initDatabase, insertTick, upsertWindow, setState, getState } from '../db/connection.js';
+import { getResearchEngine } from '../quant/research_engine.js';
 
 // Configuration
 const CONFIG = {
@@ -52,6 +54,9 @@ class TickCollector {
         this.tickBuffer = [];       // Buffer ticks for batch insert
         this.isRunning = false;
         
+        // Quant research engine
+        this.researchEngine = null;
+        
         // Stats
         this.stats = {
             ticksCollected: 0,
@@ -70,12 +75,24 @@ class TickCollector {
      */
     async start() {
         console.log('═'.repeat(70));
-        console.log('     POLYMARKET TICK COLLECTOR');
-        console.log('     Starting data collection service...');
+        console.log('     POLYMARKET TICK COLLECTOR + QUANT RESEARCH ENGINE');
+        console.log('     Starting data collection & strategy analysis...');
         console.log('═'.repeat(70));
         
         // Initialize database
         this.db = initDatabase();
+        
+        // Initialize research engine
+        try {
+            this.researchEngine = getResearchEngine({ 
+                capitalPerTrade: 100,
+                enablePaperTrading: true 
+            });
+            console.log('✅ Research engine initialized with', this.researchEngine.strategies.length, 'strategies');
+        } catch (error) {
+            console.error('⚠️  Research engine init failed:', error.message);
+            this.researchEngine = null;
+        }
         
         this.isRunning = true;
         
@@ -91,6 +108,9 @@ class TickCollector {
         
         console.log('\n✅ Collector started successfully');
         console.log(`   Tracking: ${Object.keys(CONFIG.CRYPTOS).join(', ')}`);
+        if (this.researchEngine) {
+            console.log(`   Strategies: ${this.researchEngine.strategies.map(s => s.getName()).join(', ')}`);
+        }
         console.log('   Press Ctrl+C to stop\n');
     }
     
@@ -469,7 +489,9 @@ class TickCollector {
             // Prepare tick data
             const tick = {
                 timestamp_ms: now,
+                timestamp: now,  // Alias for research engine
                 crypto,
+                epoch: market.epoch,  // Alias for research engine
                 window_epoch: market.epoch,
                 time_remaining_sec: timeRemainingSec,
                 
@@ -489,7 +511,7 @@ class TickCollector {
                 spot_price: spotPrice,
                 price_to_beat: priceToBeat,
                 spot_delta: spotDelta,
-                spot_delta_pct: spotDeltaPct,
+                spot_delta_pct: spotDeltaPct / 100,  // Convert to decimal for research engine
                 
                 spread,
                 spread_pct: spreadPct,
@@ -498,6 +520,18 @@ class TickCollector {
                 up_book_depth: JSON.stringify(upBids.slice(0, CONFIG.DEPTH_LEVELS)),
                 down_book_depth: JSON.stringify(downBids.slice(0, CONFIG.DEPTH_LEVELS))
             };
+            
+            // Process tick through research engine
+            if (this.researchEngine) {
+                try {
+                    this.researchEngine.processTick(tick);
+                } catch (error) {
+                    // Don't let research engine errors stop data collection
+                    if (this.stats.errors % 100 === 0) {
+                        console.error('⚠️  Research engine error:', error.message);
+                    }
+                }
+            }
             
             this.tickBuffer.push(tick);
             this.lastTickTime[crypto] = now;
@@ -516,6 +550,26 @@ class TickCollector {
         for (const [crypto, market] of Object.entries(this.markets)) {
             if (market.epoch !== currentEpoch) {
                 console.log(`🔄 Window changed for ${crypto}: ${market.epoch} -> ${currentEpoch}`);
+                
+                // Determine outcome based on spot price vs price to beat
+                const spotPrice = this.spotPrices[crypto];
+                const priceToBeat = market.priceToBeat || spotPrice;
+                const outcome = spotPrice >= priceToBeat ? 'up' : 'down';
+                
+                // Notify research engine of window end
+                if (this.researchEngine) {
+                    try {
+                        this.researchEngine.onWindowEnd({
+                            crypto,
+                            epoch: market.epoch,
+                            outcome,
+                            finalPrice: spotPrice,
+                            priceToBeat
+                        });
+                    } catch (error) {
+                        console.error('⚠️  Research engine window end error:', error.message);
+                    }
+                }
                 
                 // Save window summary for old epoch
                 await this.saveWindowSummary(crypto, market.epoch);
@@ -604,6 +658,26 @@ class TickCollector {
                 const bestAsk = asks.reduce((min, a) => parseFloat(a.price) < parseFloat(min.price) ? a : min, { price: '1' });
                 
                 console.log(`   ${crypto.toUpperCase()}: Spot $${price.toLocaleString()} | Up ${bestBid.price}/${bestAsk.price}`);
+            }
+        }
+        
+        // Log research engine stats
+        if (this.researchEngine) {
+            const summary = this.researchEngine.getSummary();
+            console.log(`\n   📈 Research Engine:`);
+            console.log(`   Ticks analyzed: ${summary.ticksProcessed} | Windows: ${summary.windowsAnalyzed}`);
+            
+            if (summary.spotLag.avgHalfPricingTimeMs) {
+                console.log(`   Spot Lag: ${summary.spotLag.avgHalfPricingTimeMs.toFixed(0)}ms (half) / ${summary.spotLag.avgFullPricingTimeMs?.toFixed(0) || '?'}ms (full)`);
+            }
+            
+            if (summary.efficiency) {
+                console.log(`   Efficiency: ${summary.efficiency.meanAbsEdgePct?.toFixed(2) || '?'}% avg deviation from fair value`);
+            }
+            
+            if (summary.topStrategy) {
+                const ts = summary.topStrategy;
+                console.log(`   Top Strategy: ${ts.name} | ${ts.trades} trades | $${ts.pnl.toFixed(2)} P&L | ${(ts.winRate * 100).toFixed(0)}% win`);
             }
         }
     }

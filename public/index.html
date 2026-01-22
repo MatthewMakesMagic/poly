@@ -72,6 +72,36 @@
             50% { opacity: 0.5; }
         }
 
+        /* View Tabs */
+        .view-tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--bg-highlight);
+            padding: 4px;
+            border-radius: 8px;
+        }
+
+        .view-tab {
+            padding: 8px 16px;
+            border: none;
+            background: transparent;
+            color: var(--text-dim);
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .view-tab:hover {
+            color: var(--text);
+        }
+
+        .view-tab.active {
+            background: var(--blue);
+            color: white;
+        }
+
         /* Main Grid */
         .main-grid {
             display: grid;
@@ -373,13 +403,91 @@
 <body>
     <div class="header">
         <h1>📊 Poly Trading Strategy</h1>
-        <div class="status">
-            <div class="status-dot" id="statusDot"></div>
-            <span id="statusText">Connecting...</span>
-            <span class="mono" id="serverTime">--:--:--</span>
+        <div style="display: flex; align-items: center; gap: 16px;">
+            <div class="view-tabs">
+                <button class="view-tab active" data-view="trading" onclick="switchView('trading')">Trading</button>
+                <button class="view-tab" data-view="research" onclick="switchView('research')">Research</button>
+            </div>
+            <div class="status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+                <span class="mono" id="serverTime">--:--:--</span>
+            </div>
         </div>
     </div>
 
+    <!-- Research View (hidden by default) -->
+    <div id="researchView" style="display: none;">
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">Quant Research Dashboard</div>
+                <button onclick="refreshResearch()" style="padding: 6px 12px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 6px; color: var(--blue); cursor: pointer;">Refresh</button>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">
+                <div class="insight-card">
+                    <div class="insight-title">Ticks (Last Hour)</div>
+                    <div class="insight-value" id="researchTicks">--</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Windows Tracked</div>
+                    <div class="insight-value" id="researchWindows">--</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Active Strategies</div>
+                    <div class="insight-value" id="researchStrategies">10</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Data Quality</div>
+                    <div class="insight-value" id="researchQuality">--</div>
+                </div>
+            </div>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Market Efficiency Analysis</div>
+                </div>
+                <div id="efficiencyData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                    <div style="color: var(--text-dim); padding: 20px; text-align: center;">Loading efficiency data...</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">Volatility Estimates</div>
+                </div>
+                <div id="volatilityData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                    <div style="color: var(--text-dim); padding: 20px; text-align: center;">Loading volatility data...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card" style="margin-top: 24px;">
+            <div class="card-header">
+                <div class="card-title">Spot Lag Analysis</div>
+            </div>
+            <p style="font-size: 13px; color: var(--text-dim); margin-bottom: 16px;">
+                Measures how quickly the market prices spot price movements. Lower times = more efficient market.
+            </p>
+            <div id="spotLagData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
+                <div style="color: var(--text-dim); padding: 20px; text-align: center;">Loading spot lag data...</div>
+            </div>
+        </div>
+        
+        <div class="card" style="margin-top: 24px;">
+            <div class="card-header">
+                <div class="card-title">Current Crypto States</div>
+            </div>
+            <div id="cryptoStates" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+                <div style="color: var(--text-dim); padding: 20px; text-align: center; grid-column: span 4;">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trading View -->
+    <div id="tradingView">
     <div class="market-tabs" id="marketTabs">
         <div class="market-tab active" data-crypto="BTC">₿ Bitcoin</div>
         <div class="market-tab inactive" data-crypto="ETH">Ξ Ethereum</div>
@@ -622,10 +730,12 @@
             </div>
         </div>
     </div>
+    </div> <!-- End tradingView -->
 
     <script>
         // State
         let currentCrypto = 'BTC';
+        let currentView = 'trading';
         let marketData = { BTC: null, ETH: null, SOL: null, XRP: null };
         let priceHistory = { BTC: [], ETH: [], SOL: [], XRP: [] };
         let updateCount = 0;
@@ -1086,6 +1196,103 @@
         setInterval(() => {
             document.getElementById('serverTime').textContent = new Date().toLocaleTimeString();
         }, 1000);
+
+        // View switching
+        function switchView(view) {
+            currentView = view;
+            document.querySelectorAll('.view-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.view === view);
+            });
+            document.getElementById('tradingView').style.display = view === 'trading' ? 'block' : 'none';
+            document.getElementById('researchView').style.display = view === 'research' ? 'block' : 'none';
+            
+            if (view === 'research') {
+                refreshResearch();
+            }
+        }
+
+        // Research data loading
+        async function refreshResearch() {
+            try {
+                // Fetch all research data in parallel
+                const [summary, efficiency, volatility, spotlag] = await Promise.all([
+                    fetch('/api/research').then(r => r.json()),
+                    fetch('/api/research?type=efficiency').then(r => r.json()),
+                    fetch('/api/research?type=volatility').then(r => r.json()),
+                    fetch('/api/research?type=spotlag').then(r => r.json())
+                ]);
+
+                // Update summary
+                document.getElementById('researchTicks').textContent = summary.ticksLastHour?.toLocaleString() || '0';
+                document.getElementById('researchWindows').textContent = summary.totalWindows?.toLocaleString() || '0';
+                document.getElementById('researchQuality').textContent = summary.ticksLastHour > 100 ? 'Good' : 'Building...';
+
+                // Update crypto states
+                if (summary.latestByProto && summary.latestByProto.length > 0) {
+                    const statesHtml = summary.latestByProto.map(s => `
+                        <div class="insight-card">
+                            <div class="insight-title">${s.crypto.toUpperCase()}</div>
+                            <div class="insight-value" style="font-size: 18px; color: ${parseFloat(s.up_mid) > 0.5 ? 'var(--green)' : 'var(--red)'}">
+                                ${(parseFloat(s.up_mid) * 100).toFixed(1)}%
+                            </div>
+                            <div class="insight-detail">
+                                Spread: ${(parseFloat(s.spread_pct) * 100).toFixed(2)}%
+                            </div>
+                        </div>
+                    `).join('');
+                    document.getElementById('cryptoStates').innerHTML = statesHtml;
+                }
+
+                // Update efficiency data
+                if (efficiency.data && efficiency.data.length > 0) {
+                    const effHtml = efficiency.data.map(e => `
+                        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                            <span style="font-weight: 600;">${e.crypto}</span>
+                            <span>Avg UP: ${(parseFloat(e.avg_up_mid) * 100).toFixed(1)}%</span>
+                            <span>Vol: ${(parseFloat(e.stddev_up_mid || 0) * 100).toFixed(2)}%</span>
+                            <span>Spread: ${(parseFloat(e.avg_spread_pct || 0) * 100).toFixed(2)}%</span>
+                        </div>
+                    `).join('');
+                    document.getElementById('efficiencyData').innerHTML = effHtml || '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No data yet</div>';
+                } else {
+                    document.getElementById('efficiencyData').innerHTML = '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No efficiency data yet</div>';
+                }
+
+                // Update volatility data
+                if (volatility.data && volatility.data.length > 0) {
+                    const volHtml = volatility.data.map(v => `
+                        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                            <span style="font-weight: 600;">${v.crypto}</span>
+                            <span>Price Vol: ${(parseFloat(v.price_vol || 0) * 100).toFixed(3)}%</span>
+                            <span>Spot Vol: ${(parseFloat(v.spot_vol || 0) * 100).toFixed(4)}%</span>
+                            <span>Samples: ${v.samples}</span>
+                        </div>
+                    `).join('');
+                    document.getElementById('volatilityData').innerHTML = volHtml || '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No data yet</div>';
+                } else {
+                    document.getElementById('volatilityData').innerHTML = '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No volatility data yet</div>';
+                }
+
+                // Update spot lag data
+                if (spotlag.data && spotlag.data.length > 0) {
+                    const lagHtml = spotlag.data.map(l => `
+                        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                            <span style="font-weight: 600;">${l.crypto}</span>
+                            <span>Significant Moves: ${l.move_count}</span>
+                            <span>Avg Spot Change: ${(parseFloat(l.avg_abs_spot_change || 0) * 100).toFixed(3)}%</span>
+                            <span>Avg Market Response: ${(parseFloat(l.avg_abs_market_response || 0) * 100).toFixed(2)}%</span>
+                        </div>
+                    `).join('');
+                    document.getElementById('spotLagData').innerHTML = lagHtml || '<div style="color: var(--text-dim); padding: 20px; text-align: center;">No spot lag data yet</div>';
+                } else {
+                    document.getElementById('spotLagData').innerHTML = '<div style="color: var(--text-dim); padding: 20px; text-align: center;">Collecting spot lag data...</div>';
+                }
+
+            } catch (error) {
+                console.error('Research data error:', error);
+                document.getElementById('efficiencyData').innerHTML = `<div style="color: var(--red); padding: 20px; text-align: center;">Error: ${error.message}</div>`;
+            }
+        }
 
         // Connect
         connect();
