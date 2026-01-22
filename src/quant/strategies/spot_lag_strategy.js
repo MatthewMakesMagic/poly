@@ -23,8 +23,11 @@ export class SpotLagStrategy {
             lagThreshold: 0.03,        // Minimum 3% probability lag
             spotChangeThreshold: 0.0003, // Minimum 0.03% spot move
             maxPosition: 100,
-            profitTarget: 0.015,       // 1.5% profit target (faster exit)
-            stopLoss: 0.03,            // 3% stop loss
+            // BINARY OPTIONS: Hold until expiry
+            useProfitTarget: false,
+            useStopLoss: false,
+            profitTarget: 0.15,
+            stopLoss: 0.25,
             minTimeRemaining: 120,
             exitTimeRemaining: 60,
             confirmationTicks: 2,      // Wait for N ticks of confirmation
@@ -99,19 +102,20 @@ export class SpotLagStrategy {
             return this.createSignal('sell', null, 'time_exit', {});
         }
         
-        // Check position P&L
+        // Position management - BINARY OPTIONS hold until expiry
         if (position) {
-            const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
-            const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-            
-            if (pnl >= this.options.profitTarget) {
-                return this.createSignal('sell', null, 'profit_target', {});
+            if (this.options.useProfitTarget || this.options.useStopLoss) {
+                const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
+                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
+                
+                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
+                    return this.createSignal('sell', null, 'profit_target', {});
+                }
+                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
+                    return this.createSignal('sell', null, 'stop_loss', {});
+                }
             }
-            if (pnl <= -this.options.stopLoss) {
-                return this.createSignal('sell', null, 'stop_loss', {});
-            }
-            
-            return this.createSignal('hold', null, null, {});
+            return this.createSignal('hold', null, 'holding_for_expiry', {});
         }
         
         // Entry logic

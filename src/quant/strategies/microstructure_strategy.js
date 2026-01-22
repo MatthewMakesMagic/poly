@@ -27,8 +27,11 @@ export class MicrostructureStrategy {
             priceConfirmThreshold: 0.48, // Must not be extreme already
             
             maxPosition: 100,
-            profitTarget: 0.015,         // 1.5% target (quick trades)
-            stopLoss: 0.025,             // 2.5% stop
+            // BINARY OPTIONS: Hold until expiry
+            useProfitTarget: false,
+            useStopLoss: false,
+            profitTarget: 0.15,
+            stopLoss: 0.25,
             minTimeRemaining: 180,       // Need 3+ min for micro signals
             exitTimeRemaining: 60,
             
@@ -106,19 +109,20 @@ export class MicrostructureStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // Check position P&L
+        // Position management - BINARY OPTIONS hold until expiry
         if (position) {
-            const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
-            const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-            
-            if (pnl >= this.options.profitTarget) {
-                return this.createSignal('sell', null, 'profit_target', analysis);
+            if (this.options.useProfitTarget || this.options.useStopLoss) {
+                const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
+                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
+                
+                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
+                    return this.createSignal('sell', null, 'profit_target', analysis);
+                }
+                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
+                    return this.createSignal('sell', null, 'stop_loss', analysis);
+                }
             }
-            if (pnl <= -this.options.stopLoss) {
-                return this.createSignal('sell', null, 'stop_loss', analysis);
-            }
-            
-            return this.createSignal('hold', null, null, analysis);
+            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
         }
         
         // Entry logic

@@ -22,10 +22,13 @@ export class FairValueStrategy {
             edgeThreshold: 0.03,       // Minimum 3% edge to trade
             strongEdgeThreshold: 0.06, // 6% = strong signal
             maxPosition: 100,          // Max position size
-            profitTarget: 0.02,        // 2% profit target
-            stopLoss: 0.04,            // 4% stop loss
+            // BINARY OPTIONS: Hold until window end, don't scalp
+            useProfitTarget: false,    // Disabled - binary pays $1 or $0
+            useStopLoss: false,        // Disabled - let position expire
+            profitTarget: 0.15,        // Only if enabled: 15% (was 2%)
+            stopLoss: 0.25,            // Only if enabled: 25% (was 4%)
             minTimeRemaining: 120,     // Don't enter with <2 min left
-            exitTimeRemaining: 60,     // Exit with <1 min left
+            exitTimeRemaining: 30,     // Exit with <30s left (let expire)
             volType: 'realized',       // 'realized', 'ewma', 'parkinson'
             useDrift: false,           // Whether to incorporate drift
             ...options
@@ -78,19 +81,23 @@ export class FairValueStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // Check position P&L
+        // Position management - BINARY OPTIONS should generally HOLD until expiry
         if (position) {
-            const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
-            const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-            
-            if (pnl >= this.options.profitTarget) {
-                return this.createSignal('sell', null, 'profit_target', analysis);
+            // Only check P&L exits if explicitly enabled (not recommended for binary)
+            if (this.options.useProfitTarget || this.options.useStopLoss) {
+                const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
+                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
+                
+                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
+                    return this.createSignal('sell', null, 'profit_target', analysis);
+                }
+                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
+                    return this.createSignal('sell', null, 'stop_loss', analysis);
+                }
             }
-            if (pnl <= -this.options.stopLoss) {
-                return this.createSignal('sell', null, 'stop_loss', analysis);
-            }
             
-            return this.createSignal('hold', null, null, analysis);
+            // HOLD position - let it expire at window end for binary payout
+            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
         }
         
         // Entry logic

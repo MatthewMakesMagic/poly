@@ -32,8 +32,11 @@ export class CrossAssetStrategy {
             targetCryptos: ['eth', 'sol', 'xrp'],
             
             maxPosition: 100,
-            profitTarget: 0.015,
-            stopLoss: 0.025,
+            // BINARY OPTIONS: Hold until expiry
+            useProfitTarget: false,
+            useStopLoss: false,
+            profitTarget: 0.15,
+            stopLoss: 0.25,
             minTimeRemaining: 180,
             exitTimeRemaining: 60,
             
@@ -185,19 +188,20 @@ export class CrossAssetStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // Check position P&L
+        // Position management - BINARY OPTIONS hold until expiry
         if (position) {
-            const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
-            const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-            
-            if (pnl >= this.options.profitTarget) {
-                return this.createSignal('sell', null, 'profit_target', analysis);
+            if (this.options.useProfitTarget || this.options.useStopLoss) {
+                const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
+                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
+                
+                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
+                    return this.createSignal('sell', null, 'profit_target', analysis);
+                }
+                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
+                    return this.createSignal('sell', null, 'stop_loss', analysis);
+                }
             }
-            if (pnl <= -this.options.stopLoss) {
-                return this.createSignal('sell', null, 'stop_loss', analysis);
-            }
-            
-            return this.createSignal('hold', null, null, analysis);
+            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
         }
         
         // Entry logic
