@@ -59,6 +59,10 @@ class TickCollector {
             errors: 0,
             reconnects: 0
         };
+        
+        // CoinGecko fallback
+        this.useCoinGecko = false;
+        this.coinGeckoInterval = null;
     }
     
     /**
@@ -106,6 +110,9 @@ class TickCollector {
         }
         if (this.binanceWs) {
             this.binanceWs.close();
+        }
+        if (this.coinGeckoInterval) {
+            clearInterval(this.coinGeckoInterval);
         }
         
         // Save state
@@ -175,6 +182,7 @@ class TickCollector {
     
     /**
      * Connect to Binance WebSocket for spot prices
+     * Falls back to CoinGecko polling if Binance is blocked
      */
     async connectBinance() {
         return new Promise((resolve) => {
@@ -189,8 +197,18 @@ class TickCollector {
             
             this.binanceWs = new WebSocket(url);
             
+            // Timeout for connection - if Binance doesn't work, use CoinGecko
+            const connectionTimeout = setTimeout(() => {
+                console.log('⚠️  Binance connection timeout, switching to CoinGecko...');
+                this.useCoinGecko = true;
+                this.startCoinGeckoPolling();
+                resolve();
+            }, 10000);
+            
             this.binanceWs.on('open', () => {
+                clearTimeout(connectionTimeout);
                 console.log('✅ Binance connected');
+                this.useCoinGecko = false;
                 resolve();
             });
             
@@ -199,18 +217,72 @@ class TickCollector {
             });
             
             this.binanceWs.on('error', (error) => {
+                clearTimeout(connectionTimeout);
                 console.error('❌ Binance error:', error.message);
                 this.stats.errors++;
+                
+                // Switch to CoinGecko on error
+                if (!this.useCoinGecko) {
+                    console.log('⚠️  Switching to CoinGecko for spot prices...');
+                    this.useCoinGecko = true;
+                    this.startCoinGeckoPolling();
+                    resolve();
+                }
             });
             
             this.binanceWs.on('close', () => {
                 console.log('🔴 Binance disconnected');
-                if (this.isRunning) {
+                if (this.isRunning && !this.useCoinGecko) {
                     this.stats.reconnects++;
                     setTimeout(() => this.connectBinance(), CONFIG.RECONNECT_DELAY_MS);
                 }
             });
         });
+    }
+    
+    /**
+     * Start CoinGecko polling as fallback for spot prices
+     */
+    startCoinGeckoPolling() {
+        if (this.coinGeckoInterval) return;
+        
+        console.log('📊 Starting CoinGecko price polling...');
+        
+        // Map our crypto names to CoinGecko IDs
+        const coinGeckoIds = {
+            btc: 'bitcoin',
+            eth: 'ethereum', 
+            sol: 'solana',
+            xrp: 'ripple'
+        };
+        
+        const fetchPrices = async () => {
+            try {
+                const ids = Object.values(coinGeckoIds).join(',');
+                const response = await fetch(
+                    `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`
+                );
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Update spot prices
+                    for (const [crypto, geckoId] of Object.entries(coinGeckoIds)) {
+                        if (data[geckoId]?.usd) {
+                            this.spotPrices[crypto] = data[geckoId].usd;
+                        }
+                    }
+                    this.stats.messagesReceived++;
+                }
+            } catch (error) {
+                console.error('❌ CoinGecko error:', error.message);
+            }
+        };
+        
+        // Fetch immediately, then every 5 seconds
+        fetchPrices();
+        this.coinGeckoInterval = setInterval(fetchPrices, 5000);
+        console.log('✅ CoinGecko polling started');
     }
     
     /**
