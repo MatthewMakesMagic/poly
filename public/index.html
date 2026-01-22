@@ -625,51 +625,66 @@
 
     <script>
         // State
-        let ws;
         let currentCrypto = 'BTC';
         let marketData = { BTC: null, ETH: null, SOL: null, XRP: null };
         let priceHistory = { BTC: [], ETH: [], SOL: [], XRP: [] };
         let updateCount = 0;
+        let isConnected = false;
+        let pollInterval = null;
 
-        // Connect to WebSocket
-        function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.host || 'localhost:3333';
-            ws = new WebSocket(`${protocol}//${host}/ws`);
-
-            ws.onopen = () => {
-                document.getElementById('statusDot').style.background = 'var(--green)';
-                document.getElementById('statusText').textContent = 'Live';
-            };
-
-            ws.onclose = () => {
+        // Poll API for data (Vercel doesn't support WebSockets)
+        async function fetchTicks() {
+            try {
+                const cryptos = ['btc', 'eth', 'sol', 'xrp'];
+                const promises = cryptos.map(c => 
+                    fetch(`/api/ticks?crypto=${c}&limit=1`).then(r => r.json())
+                );
+                
+                const results = await Promise.all(promises);
+                
+                results.forEach((result, i) => {
+                    if (result.ticks && result.ticks.length > 0) {
+                        const tick = result.ticks[0];
+                        // Convert to expected format
+                        const formattedTick = {
+                            crypto: cryptos[i].toUpperCase(),
+                            timestamp: tick.timestamp,
+                            epoch: tick.window_epoch,
+                            time_remaining_sec: parseFloat(tick.time_remaining_sec) || 0,
+                            up_bid: parseFloat(tick.up_bid),
+                            up_ask: parseFloat(tick.up_ask),
+                            up_mid: parseFloat(tick.up_mid),
+                            down_bid: parseFloat(tick.down_bid),
+                            down_ask: parseFloat(tick.down_ask),
+                            down_mid: parseFloat(tick.down_mid) || (1 - parseFloat(tick.up_mid)),
+                            spot_price: parseFloat(tick.spot_price),
+                            price_to_beat: parseFloat(tick.price_to_beat),
+                            spot_delta_pct: parseFloat(tick.spot_delta_pct),
+                            spread: parseFloat(tick.spread),
+                            spread_pct: parseFloat(tick.spread_pct)
+                        };
+                        handleTick(formattedTick);
+                    }
+                });
+                
+                if (!isConnected) {
+                    isConnected = true;
+                    document.getElementById('statusDot').style.background = 'var(--green)';
+                    document.getElementById('statusText').textContent = 'Live';
+                }
+            } catch (e) {
+                console.error('Fetch error:', e);
+                isConnected = false;
                 document.getElementById('statusDot').style.background = 'var(--red)';
                 document.getElementById('statusText').textContent = 'Disconnected';
-                setTimeout(connect, 2000);
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    handleMessage(data);
-                } catch (e) {
-                    console.error('Parse error:', e);
-                }
-            };
+            }
         }
 
-        function handleMessage(data) {
-            if (data.type === 'tick') {
-                handleTick(data.payload);
-            } else if (data.type === 'prediction') {
-                // We'll compute our own signals
-            } else if (data.type === 'strategy_comparison') {
-                handleStrategyComparison(data.payload);
-            } else if (data.type === 'metrics') {
-                handleMetrics(data.payload);
-            } else if (data.type === 'trade_execution') {
-                handleTradeExecution(data.payload);
-            }
+        // Start polling
+        function connect() {
+            document.getElementById('statusText').textContent = 'Connecting...';
+            fetchTicks(); // Initial fetch
+            pollInterval = setInterval(fetchTicks, 3000); // Poll every 3 seconds
         }
         
         // Strategy comparison data
