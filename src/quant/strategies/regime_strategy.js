@@ -36,9 +36,8 @@ export class RegimeStrategy {
             
             maxPosition: 100,
             // Smart exits for binary options
+            // Only exit if fair value CONFIDENTLY reverses, or extreme drawdown
             exitOnEdgeReversal: true,
-            exitOnEdgeLoss: true,
-            minEdgeToHold: 0.01,
             maxDrawdown: 0.30,
             minTimeRemaining: 120,
             exitTimeRemaining: 60,
@@ -95,22 +94,16 @@ export class RegimeStrategy {
             const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
             
-            // Exit if edge reversed
-            if (this.options.exitOnEdgeReversal && fairValueAnalysis?.side !== position.side) {
+            // Exit ONLY if fair value CONFIDENTLY says opposite side
+            // (not just when it has no opinion)
+            if (this.options.exitOnEdgeReversal && 
+                fairValueAnalysis?.isSignificant && 
+                fairValueAnalysis?.side && 
+                fairValueAnalysis.side !== position.side) {
                 return this.createSignal('sell', null, 'edge_reversed', analysis);
             }
             
-            // Exit if edge insufficient
-            if (this.options.exitOnEdgeLoss) {
-                const ourEdge = position.side === 'up' 
-                    ? (fairValueAnalysis?.fairProb || 0.5) - marketProb
-                    : marketProb - (fairValueAnalysis?.fairProb || 0.5);
-                if (ourEdge < this.options.minEdgeToHold) {
-                    return this.createSignal('sell', null, 'edge_insufficient', analysis);
-                }
-            }
-            
-            // Exit on extreme drawdown
+            // Exit on extreme drawdown only (remove edge_insufficient - too noisy)
             if (pnlPct <= -this.options.maxDrawdown) {
                 return this.createSignal('sell', null, 'max_drawdown', analysis);
             }

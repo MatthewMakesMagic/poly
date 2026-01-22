@@ -24,10 +24,9 @@ export class FairValueStrategy {
             maxPosition: 100,          // Max position size
             
             // SMART EXIT RULES (not blind scalping)
-            // Exit if edge disappears or reverses
-            exitOnEdgeReversal: true,  // Exit if fair value now favors opposite side
-            exitOnEdgeLoss: true,      // Exit if edge drops below threshold
-            minEdgeToHold: 0.01,       // Minimum 1% edge to continue holding
+            // Exit ONLY if fair value CONFIDENTLY says opposite side
+            exitOnEdgeReversal: true,  // Exit if fair value strongly favors opposite
+            // Removed exitOnEdgeLoss - caused too many exits on noise
             
             // Risk management (extreme moves only)
             maxDrawdown: 0.30,         // Exit if down >30% (something very wrong)
@@ -92,41 +91,30 @@ export class FairValueStrategy {
         }
         
         // SMART POSITION MANAGEMENT
-        // Exit if: edge disappears, edge reverses, or extreme drawdown
-        // Hold if: still have edge in our direction
+        // Exit ONLY if: edge CONFIDENTLY reverses, or extreme drawdown
+        // Hold through noise - binary options need to reach expiry
         if (position) {
             const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
             
-            // 1. EDGE REVERSAL - fair value now favors opposite side
-            if (this.options.exitOnEdgeReversal && analysis.isSignificant) {
-                const currentFairSide = analysis.side; // 'up' or 'down'
-                if (currentFairSide && currentFairSide !== position.side) {
-                    // Our position is now WRONG according to fair value
-                    return this.createSignal('sell', null, 'edge_reversed', analysis);
-                }
+            // 1. EDGE REVERSAL - only exit if fair value CONFIDENTLY says opposite
+            // Must have: isSignificant=true AND side is defined AND side is opposite
+            if (this.options.exitOnEdgeReversal && 
+                analysis.isSignificant && 
+                analysis.side && 
+                analysis.side !== position.side &&
+                Math.abs(analysis.edge) >= this.options.edgeThreshold) {
+                // Fair value strongly disagrees with our position
+                return this.createSignal('sell', null, 'edge_reversed', analysis);
             }
             
-            // 2. EDGE DISAPPEARED - no longer have meaningful edge
-            if (this.options.exitOnEdgeLoss) {
-                // Check if we still have edge in our direction
-                const ourEdge = position.side === 'up' 
-                    ? (analysis.fairProb - analysis.marketProb)  // We're long UP
-                    : (analysis.marketProb - analysis.fairProb); // We're long DOWN
-                
-                if (ourEdge < this.options.minEdgeToHold) {
-                    return this.createSignal('sell', null, 'edge_insufficient', analysis);
-                }
-            }
-            
-            // 3. EXTREME DRAWDOWN - risk management
+            // 2. EXTREME DRAWDOWN - risk management (keep this)
             if (pnlPct <= -this.options.maxDrawdown) {
                 return this.createSignal('sell', null, 'max_drawdown', analysis);
             }
             
-            // 4. TRAILING STOP (optional) - lock in gains
+            // 3. TRAILING STOP (optional) - only if explicitly enabled
             if (this.options.useTrailingStop && pnlPct >= this.options.trailingStopActivation) {
-                // Track high water mark (would need to store this in position)
                 const highWaterMark = position.highWaterMark || pnlPct;
                 position.highWaterMark = Math.max(highWaterMark, pnlPct);
                 
@@ -135,8 +123,8 @@ export class FairValueStrategy {
                 }
             }
             
-            // Still have edge, HOLD the position
-            return this.createSignal('hold', null, 'holding_with_edge', analysis);
+            // HOLD through noise - let position reach expiry
+            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
         }
         
         // Entry logic
