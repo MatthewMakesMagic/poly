@@ -1,9 +1,11 @@
 /**
  * Database Connection Manager
- * Handles SQLite database operations with connection pooling
+ * 
+ * Uses PostgreSQL when DATABASE_URL is set (production/Railway)
+ * Falls back to SQLite for local development
  */
 
-import Database from 'better-sqlite3';
+import pg from 'pg';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -11,198 +13,351 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let db = null;
+// Database mode
+const USE_POSTGRES = !!process.env.DATABASE_URL;
+
+// PostgreSQL pool
+let pgPool = null;
+
+// SQLite db (lazy loaded)
+let sqliteDb = null;
+
+/**
+ * Initialize PostgreSQL connection
+ */
+function initPostgres() {
+    if (pgPool) return pgPool;
+    
+    console.log('📂 Initializing PostgreSQL connection...');
+    
+    pgPool = new pg.Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false },
+        max: 10,
+        idleTimeoutMillis: 30000
+    });
+    
+    pgPool.on('error', (err) => {
+        console.error('PostgreSQL pool error:', err);
+    });
+    
+    console.log('✅ PostgreSQL initialized');
+    return pgPool;
+}
+
+/**
+ * Initialize SQLite (for local dev only)
+ */
+async function initSQLite(dbPath = null) {
+    if (sqliteDb) return sqliteDb;
+    
+    // Dynamic import to avoid loading better-sqlite3 on Vercel
+    const Database = (await import('better-sqlite3')).default;
+    
+    const defaultPath = join(__dirname, '../../data/polymarket.db');
+    const path = dbPath || defaultPath;
+    
+    console.log(`📂 Initializing SQLite at: ${path}`);
+    
+    sqliteDb = new Database(path);
+    sqliteDb.pragma('journal_mode = WAL');
+    sqliteDb.pragma('synchronous = NORMAL');
+    
+    // Initialize schema
+    const schemaPath = join(__dirname, 'schema.sql');
+    const schema = readFileSync(schemaPath, 'utf-8');
+    sqliteDb.exec(schema);
+    
+    console.log('✅ SQLite initialized');
+    return sqliteDb;
+}
 
 /**
  * Initialize the database connection
  */
 export function initDatabase(dbPath = null) {
-    if (db) return db;
-    
-    const defaultPath = join(__dirname, '../../data/polymarket.db');
-    const path = dbPath || defaultPath;
-    
-    console.log(`📂 Initializing database at: ${path}`);
-    
-    db = new Database(path);
-    
-    // Enable WAL mode for better concurrent access
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
-    
-    // Initialize schema
-    const schemaPath = join(__dirname, 'schema.sql');
-    const schema = readFileSync(schemaPath, 'utf-8');
-    db.exec(schema);
-    
-    console.log('✅ Database initialized');
-    
-    return db;
+    if (USE_POSTGRES) {
+        return initPostgres();
+    } else {
+        return initSQLite(dbPath);
+    }
 }
 
 /**
  * Get database instance
  */
 export function getDatabase() {
-    if (!db) {
-        return initDatabase();
+    if (USE_POSTGRES) {
+        if (!pgPool) initPostgres();
+        return pgPool;
+    } else {
+        if (!sqliteDb) initSQLite();
+        return sqliteDb;
     }
-    return db;
 }
 
 /**
  * Close database connection
  */
-export function closeDatabase() {
-    if (db) {
-        db.close();
-        db = null;
-        console.log('🔴 Database closed');
+export async function closeDatabase() {
+    if (pgPool) {
+        await pgPool.end();
+        pgPool = null;
+        console.log('🔴 PostgreSQL closed');
+    }
+    if (sqliteDb) {
+        sqliteDb.close();
+        sqliteDb = null;
+        console.log('🔴 SQLite closed');
     }
 }
 
 /**
  * Insert a tick record
  */
-export function insertTick(tick) {
-    const db = getDatabase();
-    
-    const stmt = db.prepare(`
-        INSERT INTO ticks (
-            timestamp_ms, crypto, window_epoch, time_remaining_sec,
-            up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
-            down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
-            spot_price, price_to_beat, spot_delta, spot_delta_pct,
-            spread, spread_pct, implied_prob_up,
-            up_book_depth, down_book_depth
-        ) VALUES (
-            @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
-            @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
-            @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
-            @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
-            @spread, @spread_pct, @implied_prob_up,
-            @up_book_depth, @down_book_depth
-        )
-    `);
-    
-    return stmt.run(tick);
+export async function insertTick(tick) {
+    if (USE_POSTGRES) {
+        const pool = getDatabase();
+        const query = `
+            INSERT INTO ticks (
+                timestamp_ms, crypto, window_epoch, time_remaining_sec,
+                up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
+                down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
+                spot_price, price_to_beat, spot_delta, spot_delta_pct,
+                spread, spread_pct, implied_prob_up,
+                up_book_depth, down_book_depth
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+            )
+        `;
+        const values = [
+            tick.timestamp_ms, tick.crypto, tick.window_epoch, tick.time_remaining_sec,
+            tick.up_bid, tick.up_ask, tick.up_bid_size, tick.up_ask_size, tick.up_last_trade, tick.up_mid,
+            tick.down_bid, tick.down_ask, tick.down_bid_size, tick.down_ask_size, tick.down_last_trade,
+            tick.spot_price, tick.price_to_beat, tick.spot_delta, tick.spot_delta_pct,
+            tick.spread, tick.spread_pct, tick.implied_prob_up,
+            tick.up_book_depth, tick.down_book_depth
+        ];
+        return pool.query(query, values);
+    } else {
+        const db = getDatabase();
+        const stmt = db.prepare(`
+            INSERT INTO ticks (
+                timestamp_ms, crypto, window_epoch, time_remaining_sec,
+                up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
+                down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
+                spot_price, price_to_beat, spot_delta, spot_delta_pct,
+                spread, spread_pct, implied_prob_up,
+                up_book_depth, down_book_depth
+            ) VALUES (
+                @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
+                @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
+                @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
+                @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
+                @spread, @spread_pct, @implied_prob_up,
+                @up_book_depth, @down_book_depth
+            )
+        `);
+        return stmt.run(tick);
+    }
 }
 
 /**
  * Batch insert ticks for better performance
  */
-export function insertTicksBatch(ticks) {
-    const db = getDatabase();
-    
-    const stmt = db.prepare(`
-        INSERT INTO ticks (
-            timestamp_ms, crypto, window_epoch, time_remaining_sec,
-            up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
-            down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
-            spot_price, price_to_beat, spot_delta, spot_delta_pct,
-            spread, spread_pct, implied_prob_up,
-            up_book_depth, down_book_depth
-        ) VALUES (
-            @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
-            @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
-            @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
-            @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
-            @spread, @spread_pct, @implied_prob_up,
-            @up_book_depth, @down_book_depth
-        )
-    `);
-    
-    const insertMany = db.transaction((ticks) => {
-        for (const tick of ticks) {
-            stmt.run(tick);
+export async function insertTicksBatch(ticks) {
+    if (USE_POSTGRES) {
+        const pool = getDatabase();
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            for (const tick of ticks) {
+                await insertTick(tick);
+            }
+            await client.query('COMMIT');
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
         }
-    });
-    
-    insertMany(ticks);
+    } else {
+        const db = getDatabase();
+        const stmt = db.prepare(`
+            INSERT INTO ticks (
+                timestamp_ms, crypto, window_epoch, time_remaining_sec,
+                up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
+                down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
+                spot_price, price_to_beat, spot_delta, spot_delta_pct,
+                spread, spread_pct, implied_prob_up,
+                up_book_depth, down_book_depth
+            ) VALUES (
+                @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
+                @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
+                @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
+                @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
+                @spread, @spread_pct, @implied_prob_up,
+                @up_book_depth, @down_book_depth
+            )
+        `);
+        const insertMany = db.transaction((ticks) => {
+            for (const tick of ticks) {
+                stmt.run(tick);
+            }
+        });
+        insertMany(ticks);
+    }
 }
 
 /**
  * Insert or update a window record
  */
-export function upsertWindow(window) {
-    const db = getDatabase();
-    
-    const stmt = db.prepare(`
-        INSERT INTO windows (
-            epoch, crypto, start_price, end_price, outcome, resolved_at,
-            opening_up_price, closing_up_price, high_up_price, low_up_price,
-            tick_count, price_change_count,
-            up_price_volatility, spot_volatility, max_spot_delta_pct
-        ) VALUES (
-            @epoch, @crypto, @start_price, @end_price, @outcome, @resolved_at,
-            @opening_up_price, @closing_up_price, @high_up_price, @low_up_price,
-            @tick_count, @price_change_count,
-            @up_price_volatility, @spot_volatility, @max_spot_delta_pct
-        )
-        ON CONFLICT(epoch, crypto) DO UPDATE SET
-            end_price = @end_price,
-            outcome = @outcome,
-            resolved_at = @resolved_at,
-            closing_up_price = @closing_up_price,
-            high_up_price = MAX(high_up_price, @high_up_price),
-            low_up_price = MIN(low_up_price, @low_up_price),
-            tick_count = @tick_count,
-            price_change_count = @price_change_count,
-            up_price_volatility = @up_price_volatility,
-            spot_volatility = @spot_volatility,
-            max_spot_delta_pct = MAX(max_spot_delta_pct, @max_spot_delta_pct)
-    `);
-    
-    return stmt.run(window);
+export async function upsertWindow(window) {
+    if (USE_POSTGRES) {
+        const pool = getDatabase();
+        const query = `
+            INSERT INTO windows (
+                epoch, crypto, start_price, end_price, outcome, resolved_at,
+                opening_up_price, closing_up_price, high_up_price, low_up_price,
+                tick_count, price_change_count,
+                up_price_volatility, spot_volatility, max_spot_delta_pct
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ON CONFLICT(epoch, crypto) DO UPDATE SET
+                end_price = EXCLUDED.end_price,
+                outcome = EXCLUDED.outcome,
+                resolved_at = EXCLUDED.resolved_at,
+                closing_up_price = EXCLUDED.closing_up_price,
+                high_up_price = GREATEST(windows.high_up_price, EXCLUDED.high_up_price),
+                low_up_price = LEAST(windows.low_up_price, EXCLUDED.low_up_price),
+                tick_count = EXCLUDED.tick_count,
+                price_change_count = EXCLUDED.price_change_count,
+                up_price_volatility = EXCLUDED.up_price_volatility,
+                spot_volatility = EXCLUDED.spot_volatility,
+                max_spot_delta_pct = GREATEST(windows.max_spot_delta_pct, EXCLUDED.max_spot_delta_pct)
+        `;
+        const values = [
+            window.epoch, window.crypto, window.start_price, window.end_price,
+            window.outcome, window.resolved_at, window.opening_up_price, window.closing_up_price,
+            window.high_up_price, window.low_up_price, window.tick_count, window.price_change_count,
+            window.up_price_volatility, window.spot_volatility, window.max_spot_delta_pct
+        ];
+        return pool.query(query, values);
+    } else {
+        const db = getDatabase();
+        const stmt = db.prepare(`
+            INSERT INTO windows (
+                epoch, crypto, start_price, end_price, outcome, resolved_at,
+                opening_up_price, closing_up_price, high_up_price, low_up_price,
+                tick_count, price_change_count,
+                up_price_volatility, spot_volatility, max_spot_delta_pct
+            ) VALUES (
+                @epoch, @crypto, @start_price, @end_price, @outcome, @resolved_at,
+                @opening_up_price, @closing_up_price, @high_up_price, @low_up_price,
+                @tick_count, @price_change_count,
+                @up_price_volatility, @spot_volatility, @max_spot_delta_pct
+            )
+            ON CONFLICT(epoch, crypto) DO UPDATE SET
+                end_price = @end_price,
+                outcome = @outcome,
+                resolved_at = @resolved_at,
+                closing_up_price = @closing_up_price,
+                high_up_price = MAX(high_up_price, @high_up_price),
+                low_up_price = MIN(low_up_price, @low_up_price),
+                tick_count = @tick_count,
+                price_change_count = @price_change_count,
+                up_price_volatility = @up_price_volatility,
+                spot_volatility = @spot_volatility,
+                max_spot_delta_pct = MAX(max_spot_delta_pct, @max_spot_delta_pct)
+        `);
+        return stmt.run(window);
+    }
 }
 
 /**
  * Insert a trade record
  */
-export function insertTrade(trade) {
-    const db = getDatabase();
-    
-    const stmt = db.prepare(`
-        INSERT INTO trades (
-            timestamp_ms, trade_id, mode, strategy,
-            crypto, window_epoch, side, size, price,
-            fee, slippage, spot_price, up_bid, up_ask,
-            time_remaining_sec, notes
-        ) VALUES (
-            @timestamp_ms, @trade_id, @mode, @strategy,
-            @crypto, @window_epoch, @side, @size, @price,
-            @fee, @slippage, @spot_price, @up_bid, @up_ask,
-            @time_remaining_sec, @notes
-        )
-    `);
-    
-    return stmt.run(trade);
+export async function insertTrade(trade) {
+    if (USE_POSTGRES) {
+        const pool = getDatabase();
+        const query = `
+            INSERT INTO trades (
+                timestamp_ms, trade_id, mode, strategy,
+                crypto, window_epoch, side, size, price,
+                fee, slippage, spot_price, up_bid, up_ask,
+                time_remaining_sec, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        `;
+        const values = [
+            trade.timestamp_ms, trade.trade_id, trade.mode, trade.strategy,
+            trade.crypto, trade.window_epoch, trade.side, trade.size, trade.price,
+            trade.fee, trade.slippage, trade.spot_price, trade.up_bid, trade.up_ask,
+            trade.time_remaining_sec, trade.notes
+        ];
+        return pool.query(query, values);
+    } else {
+        const db = getDatabase();
+        const stmt = db.prepare(`
+            INSERT INTO trades (
+                timestamp_ms, trade_id, mode, strategy,
+                crypto, window_epoch, side, size, price,
+                fee, slippage, spot_price, up_bid, up_ask,
+                time_remaining_sec, notes
+            ) VALUES (
+                @timestamp_ms, @trade_id, @mode, @strategy,
+                @crypto, @window_epoch, @side, @size, @price,
+                @fee, @slippage, @spot_price, @up_bid, @up_ask,
+                @time_remaining_sec, @notes
+            )
+        `);
+        return stmt.run(trade);
+    }
 }
 
 /**
  * Get system state value
  */
-export function getState(key) {
-    const db = getDatabase();
-    const stmt = db.prepare('SELECT value FROM system_state WHERE key = ?');
-    const row = stmt.get(key);
-    return row ? row.value : null;
+export async function getState(key) {
+    if (USE_POSTGRES) {
+        const pool = getDatabase();
+        const result = await pool.query('SELECT value FROM system_state WHERE key = $1', [key]);
+        return result.rows[0]?.value || null;
+    } else {
+        const db = getDatabase();
+        const stmt = db.prepare('SELECT value FROM system_state WHERE key = ?');
+        const row = stmt.get(key);
+        return row ? row.value : null;
+    }
 }
 
 /**
  * Set system state value
  */
-export function setState(key, value) {
-    const db = getDatabase();
-    const stmt = db.prepare(`
-        INSERT INTO system_state (key, value, updated_at)
-        VALUES (?, ?, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET
-            value = excluded.value,
-            updated_at = datetime('now')
-    `);
-    return stmt.run(key, value);
+export async function setState(key, value) {
+    if (USE_POSTGRES) {
+        const pool = getDatabase();
+        return pool.query(`
+            INSERT INTO system_state (key, value, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT(key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = NOW()
+        `, [key, value]);
+    } else {
+        const db = getDatabase();
+        const stmt = db.prepare(`
+            INSERT INTO system_state (key, value, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = datetime('now')
+        `);
+        return stmt.run(key, value);
+    }
 }
+
+// Log which mode we're using
+console.log(`🗄️  Database mode: ${USE_POSTGRES ? 'PostgreSQL' : 'SQLite'}`);
 
 export default {
     initDatabase,
@@ -215,4 +370,3 @@ export default {
     getState,
     setState
 };
-

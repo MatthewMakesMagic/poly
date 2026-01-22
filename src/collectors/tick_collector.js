@@ -497,37 +497,12 @@ class TickCollector {
     /**
      * Flush tick buffer to database
      */
-    flushTickBuffer() {
+    async flushTickBuffer() {
         if (this.tickBuffer.length === 0) return;
         
         try {
-            const db = this.db;
-            
-            const stmt = db.prepare(`
-                INSERT INTO ticks (
-                    timestamp_ms, crypto, window_epoch, time_remaining_sec,
-                    up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
-                    down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
-                    spot_price, price_to_beat, spot_delta, spot_delta_pct,
-                    spread, spread_pct, implied_prob_up,
-                    up_book_depth, down_book_depth
-                ) VALUES (
-                    @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
-                    @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
-                    @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
-                    @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
-                    @spread, @spread_pct, @implied_prob_up,
-                    @up_book_depth, @down_book_depth
-                )
-            `);
-            
-            const insertMany = db.transaction((ticks) => {
-                for (const tick of ticks) {
-                    stmt.run(tick);
-                }
-            });
-            
-            insertMany(this.tickBuffer);
+            const { insertTicksBatch } = await import('../db/connection.js');
+            await insertTicksBatch(this.tickBuffer);
             
             const count = this.tickBuffer.length;
             this.tickBuffer = [];
