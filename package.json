@@ -1,0 +1,34 @@
+{
+  "name": "polymarket-quant",
+  "version": "1.0.0",
+  "description": "Quantitative trading platform for Polymarket 15-minute crypto markets",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "collect": "node scripts/start_collector.js",
+    "analyze": "node scripts/run_analysis.js",
+    "backtest": "node scripts/backtest.js",
+    "paper": "node scripts/paper_trade.js",
+    "dashboard": "node src/dashboard/server.js",
+    "15m": "node scripts/crypto-15min-tracker.js status",
+    "15m:stream": "node scripts/crypto-15min-tracker.js stream btc",
+    "15m:watch": "node scripts/crypto-15min-tracker.js watch",
+    "docker:build": "docker build -t poly-trading .",
+    "docker:run": "docker-compose up -d",
+    "docker:logs": "docker-compose logs -f",
+    "docker:stop": "docker-compose down"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "better-sqlite3": "^9.4.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.0",
+    "pg": "^8.17.2",
+    "simple-statistics": "^7.8.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

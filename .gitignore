@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Database (local SQLite)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.local
+.env.production
+config/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Build
+dist/
+build/
+.next/
+.vercel/
+
+# Cache
+.cache/
+.npm/
+
+# Test
+coverage/
+
+# Secrets
+*.pem
+*.key
+credentials.json
