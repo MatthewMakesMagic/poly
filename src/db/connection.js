@@ -356,6 +356,29 @@ export async function setState(key, value) {
     }
 }
 
+/**
+ * Save research engine stats (strategy performance, signals, etc.)
+ * Stores as JSON in system_state for simplicity
+ */
+export async function saveResearchStats(stats) {
+    return setState('research_stats', JSON.stringify(stats));
+}
+
+/**
+ * Get research engine stats
+ */
+export async function getResearchStats() {
+    const result = await getState('research_stats');
+    if (result) {
+        try {
+            return JSON.parse(result);
+        } catch (e) {
+            return null;
+        }
+    }
+    return null;
+}
+
 // Log which mode we're using
 console.log(`🗄️  Database mode: ${USE_POSTGRES ? 'PostgreSQL' : 'SQLite'}`);
 
@@ -368,5 +391,7 @@ export default {
     upsertWindow,
     insertTrade,
     getState,
-    setState
+    setState,
+    saveResearchStats,
+    getResearchStats
 };

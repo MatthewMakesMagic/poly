@@ -114,6 +114,28 @@ export default async function handler(req, res) {
             });
         }
         
+        if (type === 'strategies') {
+            // Get saved research stats from system_state
+            const result = await pool.query(
+                "SELECT value FROM system_state WHERE key = 'research_stats'"
+            );
+            
+            if (result.rows.length > 0) {
+                try {
+                    const stats = JSON.parse(result.rows[0].value);
+                    return res.json({
+                        type: 'strategies',
+                        timestamp: Date.now(),
+                        data: stats
+                    });
+                } catch (e) {
+                    return res.json({ type: 'strategies', timestamp: Date.now(), data: null, error: 'Failed to parse stats' });
+                }
+            }
+            
+            return res.json({ type: 'strategies', timestamp: Date.now(), data: null, message: 'No strategy data yet' });
+        }
+        
         // Default: return summary
         const tickCount = await pool.query('SELECT COUNT(*) as count FROM ticks WHERE timestamp_ms > $1', [Date.now() - 3600000]);
         const windowCount = await pool.query('SELECT COUNT(*) as count FROM windows');
@@ -124,13 +146,25 @@ export default async function handler(req, res) {
             ORDER BY crypto, timestamp_ms DESC
         `);
         
+        // Also get research stats if available
+        let researchStats = null;
+        try {
+            const statsResult = await pool.query(
+                "SELECT value FROM system_state WHERE key = 'research_stats'"
+            );
+            if (statsResult.rows.length > 0) {
+                researchStats = JSON.parse(statsResult.rows[0].value);
+            }
+        } catch (e) { /* ignore */ }
+        
         return res.json({
             type: 'summary',
             timestamp: Date.now(),
             ticksLastHour: parseInt(tickCount.rows[0].count),
             totalWindows: parseInt(windowCount.rows[0].count),
             latestByProto: latestTicks.rows,
-            availableReports: ['efficiency', 'volatility', 'spotlag']
+            researchStats: researchStats,
+            availableReports: ['efficiency', 'volatility', 'spotlag', 'strategies']
         });
         
     } catch (error) {

@@ -10,7 +10,7 @@
  */
 
 import WebSocket from 'ws';
-import { initDatabase, insertTick, upsertWindow, setState, getState } from '../db/connection.js';
+import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats } from '../db/connection.js';
 import { getResearchEngine } from '../quant/research_engine.js';
 
 // Configuration
@@ -661,7 +661,7 @@ class TickCollector {
             }
         }
         
-        // Log research engine stats
+        // Log and save research engine stats
         if (this.researchEngine) {
             const summary = this.researchEngine.getSummary();
             console.log(`\n   📈 Research Engine:`);
@@ -678,6 +678,23 @@ class TickCollector {
             if (summary.topStrategy) {
                 const ts = summary.topStrategy;
                 console.log(`   Top Strategy: ${ts.name} | ${ts.trades} trades | $${ts.pnl.toFixed(2)} P&L | ${(ts.winRate * 100).toFixed(0)}% win`);
+            }
+            
+            // Save research stats to database so dashboard can display them
+            try {
+                const fullReport = this.researchEngine.getStrategyPerformanceReport();
+                await saveResearchStats({
+                    timestamp: Date.now(),
+                    ticksProcessed: summary.ticksProcessed,
+                    windowsAnalyzed: summary.windowsAnalyzed,
+                    spotLag: summary.spotLag,
+                    efficiency: summary.efficiency,
+                    topStrategy: summary.topStrategy,
+                    strategies: fullReport.strategies
+                });
+                console.log(`   ✅ Saved research stats to database`);
+            } catch (error) {
+                console.error(`   ⚠️  Failed to save research stats:`, error.message);
             }
         }
     }
