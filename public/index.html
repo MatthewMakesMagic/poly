@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poly Trading - Strategy Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0c0c0f;
+            --bg-card: #141419;
+            --bg-highlight: #1c1c24;
+            --border: #2a2a35;
+            --text: #e4e4e7;
+            --text-dim: #71717a;
+            --green: #22c55e;
+            --green-dim: rgba(34, 197, 94, 0.15);
+            --red: #ef4444;
+            --red-dim: rgba(239, 68, 68, 0.15);
+            --yellow: #eab308;
+            --yellow-dim: rgba(234, 179, 8, 0.15);
+            --blue: #3b82f6;
+            --blue-dim: rgba(59, 130, 246, 0.15);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        .mono { font-family: 'IBM Plex Mono', monospace; }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Main Grid */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 24px;
+        }
+
+        @media (max-width: 1200px) {
+            .main-grid { grid-template-columns: 1fr; }
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-dim);
+        }
+
+        /* Market Card */
+        .market-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+
+        .market-name {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .market-time {
+            text-align: right;
+        }
+
+        .time-remaining {
+            font-size: 32px;
+            font-weight: 700;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .time-label {
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        /* Price Display */
+        .price-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .price-box {
+            background: var(--bg-highlight);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .price-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+        }
+
+        .price-value {
+            font-size: 28px;
+            font-weight: 700;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .price-value.up { color: var(--green); }
+        .price-value.down { color: var(--red); }
+        .price-value.neutral { color: var(--text); }
+
+        .price-change {
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .price-change.positive { color: var(--green); }
+        .price-change.negative { color: var(--red); }
+
+        /* Spot Correlation */
+        .correlation-section {
+            background: var(--bg-highlight);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+
+        .correlation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .correlation-title {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .correlation-bar {
+            height: 8px;
+            background: var(--bg);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .correlation-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s, background 0.3s;
+        }
+
+        .correlation-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+
+        /* Trade Signal */
+        .signal-box {
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .signal-box.opportunity { background: var(--green-dim); border: 1px solid var(--green); }
+        .signal-box.caution { background: var(--yellow-dim); border: 1px solid var(--yellow); }
+        .signal-box.wait { background: var(--bg-highlight); border: 1px solid var(--border); }
+
+        .signal-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .signal-text {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .signal-reason {
+            font-size: 13px;
+            color: var(--text-dim);
+            margin-top: 8px;
+        }
+
+        /* Strategy Thresholds */
+        .threshold-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .threshold-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: var(--bg-highlight);
+            border-radius: 8px;
+        }
+
+        .threshold-item.active {
+            border: 1px solid var(--green);
+            background: var(--green-dim);
+        }
+
+        .threshold-name {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .threshold-value {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        /* Right Panel */
+        .insight-card {
+            background: var(--bg-highlight);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .insight-title {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+        }
+
+        .insight-value {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .insight-detail {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-top: 4px;
+        }
+
+        /* Trade History */
+        .trade-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .trade-item:last-child { border-bottom: none; }
+
+        .trade-side {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .trade-side.buy { background: var(--green-dim); color: var(--green); }
+        .trade-side.sell { background: var(--red-dim); color: var(--red); }
+
+        /* No Data State */
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-dim);
+        }
+
+        .no-data-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+
+        /* Market Tabs */
+        .market-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .market-tab {
+            padding: 8px 16px;
+            background: var(--bg-highlight);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .market-tab:hover { border-color: var(--text-dim); }
+        .market-tab.active { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+        .market-tab.inactive { opacity: 0.5; }
+
+        /* Live indicator */
+        .live-value {
+            transition: background 0.1s;
+        }
+
+        .live-value.flash {
+            background: var(--yellow-dim);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Poly Trading Strategy</h1>
+        <div class="status">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connecting...</span>
+            <span class="mono" id="serverTime">--:--:--</span>
+        </div>
+    </div>
+
+    <div class="market-tabs" id="marketTabs">
+        <div class="market-tab active" data-crypto="BTC">₿ Bitcoin</div>
+        <div class="market-tab inactive" data-crypto="ETH">Ξ Ethereum</div>
+        <div class="market-tab inactive" data-crypto="SOL">◎ Solana</div>
+        <div class="market-tab inactive" data-crypto="XRP">✕ XRP</div>
+    </div>
+
+    <div class="main-grid">
+        <div class="left-panel">
+            <!-- Main Market Card -->
+            <div class="card" id="marketCard">
+                <div class="market-header">
+                    <div>
+                        <div class="market-name" id="marketName">Bitcoin Up/Down</div>
+                        <div style="color: var(--text-dim); font-size: 13px; margin-top: 4px;">
+                            Window: <span id="windowEpoch" class="mono">--</span>
+                        </div>
+                    </div>
+                    <div class="market-time">
+                        <div class="time-remaining" id="timeRemaining">--:--</div>
+                        <div class="time-label">remaining</div>
+                    </div>
+                </div>
+
+                <!-- Price Display -->
+                <div class="price-row">
+                    <div class="price-box">
+                        <div class="price-label">UP Price (Bid/Ask)</div>
+                        <div class="price-value up" id="upPrice">--</div>
+                        <div class="price-change" id="upBidAsk">-- / --</div>
+                    </div>
+                    <div class="price-box">
+                        <div class="price-label">DOWN Price</div>
+                        <div class="price-value down" id="downPrice">--</div>
+                        <div class="price-change" id="downBidAsk">-- / --</div>
+                    </div>
+                    <div class="price-box">
+                        <div class="price-label">Spread</div>
+                        <div class="price-value neutral" id="spread">--%</div>
+                        <div class="price-change">cost to cross</div>
+                    </div>
+                </div>
+
+                <!-- Spot vs Market Correlation -->
+                <div class="correlation-section">
+                    <div class="correlation-header">
+                        <div class="correlation-title">📈 Spot Price vs Price to Beat</div>
+                        <div class="mono" id="spotPrice">$--</div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                        <div>
+                            <div class="price-label">Price to Beat</div>
+                            <div class="mono" style="font-size: 16px; font-weight: 600;" id="priceToBeat">$--</div>
+                        </div>
+                        <div>
+                            <div class="price-label">Spot Δ</div>
+                            <div class="mono" style="font-size: 16px; font-weight: 600;" id="spotDelta">+0.000%</div>
+                        </div>
+                        <div>
+                            <div class="price-label">Market Implied</div>
+                            <div class="mono" style="font-size: 16px; font-weight: 600;" id="marketImplied">50% up</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 12px;">
+                        <div class="price-label">Direction</div>
+                        <div id="impliedDirection" style="font-size: 16px; font-weight: 600; margin-top: 4px;">
+                            --
+                        </div>
+                    </div>
+                    <div style="margin-top: 12px;">
+                        <div class="price-label">Correlation Insight</div>
+                        <div id="correlationInsight" style="font-size: 14px; margin-top: 4px;">
+                            Waiting for data...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade Signal -->
+                <div class="signal-box wait" id="signalBox">
+                    <div class="signal-label">Current Assessment</div>
+                    <div class="signal-text" id="signalText">Analyzing...</div>
+                    <div class="signal-reason" id="signalReason">Waiting for price data</div>
+                </div>
+            </div>
+
+            <!-- Strategy Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🎯 Your Strategy: Threshold Exit</div>
+                </div>
+                <p style="font-size: 13px; color: var(--text-dim); margin-bottom: 16px;">
+                    Trade swings within the 15-min window. Don't hold to resolution. 
+                    Enter when market misprices, exit at target profit.
+                </p>
+                <div class="threshold-list" id="thresholdList">
+                    <div class="threshold-item" data-threshold="entry-low">
+                        <div>
+                            <div class="threshold-name">📥 Entry Zone (Buy UP)</div>
+                            <div style="font-size: 12px; color: var(--text-dim);">When UP price drops below this</div>
+                        </div>
+                        <div class="threshold-value" style="color: var(--green);">≤ 0.45</div>
+                    </div>
+                    <div class="threshold-item" data-threshold="entry-high">
+                        <div>
+                            <div class="threshold-name">📥 Entry Zone (Buy DOWN)</div>
+                            <div style="font-size: 12px; color: var(--text-dim);">When UP price rises above this</div>
+                        </div>
+                        <div class="threshold-value" style="color: var(--red);">≥ 0.55</div>
+                    </div>
+                    <div class="threshold-item" data-threshold="profit-target">
+                        <div>
+                            <div class="threshold-name">💰 Profit Target</div>
+                            <div style="font-size: 12px; color: var(--text-dim);">Exit when you hit this gain</div>
+                        </div>
+                        <div class="threshold-value">3%</div>
+                    </div>
+                    <div class="threshold-item" data-threshold="stop-loss">
+                        <div>
+                            <div class="threshold-name">🛑 Stop Loss</div>
+                            <div style="font-size: 12px; color: var(--text-dim);">Exit to limit losses</div>
+                        </div>
+                        <div class="threshold-value" style="color: var(--red);">-2%</div>
+                    </div>
+                    <div class="threshold-item" data-threshold="time-exit">
+                        <div>
+                            <div class="threshold-name">⏱️ Time Exit</div>
+                            <div style="font-size: 12px; color: var(--text-dim);">Exit before resolution risk</div>
+                        </div>
+                        <div class="threshold-value">< 2 min left</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <!-- Key Metrics -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">📊 Window Stats</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Price Range (this window)</div>
+                    <div class="insight-value">
+                        <span id="priceHigh" style="color: var(--green);">--</span> / 
+                        <span id="priceLow" style="color: var(--red);">--</span>
+                    </div>
+                    <div class="insight-detail">High / Low</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Price Volatility</div>
+                    <div class="insight-value" id="volatility">--%</div>
+                    <div class="insight-detail">Standard deviation of returns</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-title">Updates Received</div>
+                    <div class="insight-value" id="updateCount">0</div>
+                    <div class="insight-detail">Price changes this window</div>
+                </div>
+            </div>
+
+            <!-- Market Selection Info -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">ℹ️ About This Market</div>
+                </div>
+                <div style="font-size: 13px; line-height: 1.6;">
+                    <p style="margin-bottom: 12px;">
+                        <strong>Resolution:</strong> UP wins if BTC price at window end ≥ start price.
+                    </p>
+                    <p style="margin-bottom: 12px;">
+                        <strong>Your Edge:</strong> Market often overreacts to short-term moves. 
+                        Buy when price swings too far, sell when it reverts.
+                    </p>
+                    <p style="color: var(--text-dim);">
+                        <strong>Costs:</strong> ~1% spread + 0.1% taker fee = ~1.1% round trip
+                    </p>
+                </div>
+            </div>
+
+            <!-- Recent Price Changes -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🔄 Recent Price Changes</div>
+                </div>
+                <div id="recentChanges" style="font-family: 'IBM Plex Mono', monospace; font-size: 12px;">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">
+                        Waiting for updates...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Strategy Comparison -->
+            <div class="card" id="strategyCard">
+                <div class="card-header">
+                    <div class="card-title">📊 Strategy Comparison ($100/trade)</div>
+                </div>
+                <div id="strategyComparison">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">
+                        Waiting for strategy data...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Trades -->
+            <div class="card" id="tradesCard">
+                <div class="card-header">
+                    <div class="card-title">🔄 Open Positions</div>
+                    <span class="mono" id="openCount" style="color: var(--blue);">0</span>
+                </div>
+                <div id="openPositions">
+                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">
+                        No open positions
+                    </div>
+                </div>
+            </div>
+
+            <!-- Session P&L -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">💰 Session P&L</div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div class="insight-card">
+                        <div class="insight-title">Total P&L</div>
+                        <div class="insight-value" id="totalPnl" style="color: var(--text);">$0.00</div>
+                    </div>
+                    <div class="insight-card">
+                        <div class="insight-title">Win Rate</div>
+                        <div class="insight-value" id="winRate">0%</div>
+                    </div>
+                    <div class="insight-card">
+                        <div class="insight-title">Total Trades</div>
+                        <div class="insight-value" id="totalTrades">0</div>
+                    </div>
+                    <div class="insight-card">
+                        <div class="insight-title">Best Strategy</div>
+                        <div class="insight-value" id="bestStrategy" style="font-size: 14px;">--</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let ws;
+        let currentCrypto = 'BTC';
+        let marketData = { BTC: null, ETH: null, SOL: null, XRP: null };
+        let priceHistory = { BTC: [], ETH: [], SOL: [], XRP: [] };
+        let updateCount = 0;
+
+        // Connect to WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host || 'localhost:3333';
+            ws = new WebSocket(`${protocol}//${host}/ws`);
+
+            ws.onopen = () => {
+                document.getElementById('statusDot').style.background = 'var(--green)';
+                document.getElementById('statusText').textContent = 'Live';
+            };
+
+            ws.onclose = () => {
+                document.getElementById('statusDot').style.background = 'var(--red)';
+                document.getElementById('statusText').textContent = 'Disconnected';
+                setTimeout(connect, 2000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+        }
+
+        function handleMessage(data) {
+            if (data.type === 'tick') {
+                handleTick(data.payload);
+            } else if (data.type === 'prediction') {
+                // We'll compute our own signals
+            } else if (data.type === 'strategy_comparison') {
+                handleStrategyComparison(data.payload);
+            } else if (data.type === 'metrics') {
+                handleMetrics(data.payload);
+            } else if (data.type === 'trade_execution') {
+                handleTradeExecution(data.payload);
+            }
+        }
+        
+        // Strategy comparison data
+        let strategyData = {};
+        
+        function handleStrategyComparison(comparison) {
+            strategyData = comparison;
+            updateStrategyDisplay();
+        }
+        
+        function handleMetrics(metrics) {
+            // Update session P&L
+            if (metrics.totalPnl !== undefined) {
+                const pnlEl = document.getElementById('totalPnl');
+                const pnl = metrics.totalPnl;
+                pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            }
+            
+            if (metrics.totalTrades !== undefined) {
+                document.getElementById('totalTrades').textContent = metrics.totalTrades;
+            }
+            
+            if (metrics.winRate !== undefined) {
+                document.getElementById('winRate').textContent = `${(metrics.winRate * 100).toFixed(0)}%`;
+            }
+            
+            if (metrics.openPositions !== undefined) {
+                document.getElementById('openCount').textContent = metrics.openPositions;
+            }
+        }
+        
+        function handleTradeExecution(execution) {
+            // Could show toast notification for trade entries/exits
+            console.log('Trade execution:', execution);
+        }
+        
+        function updateStrategyDisplay() {
+            const container = document.getElementById('strategyComparison');
+            
+            if (!strategyData || Object.keys(strategyData).length === 0) {
+                container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">No strategy data yet</div>';
+                return;
+            }
+            
+            let html = '';
+            let bestPnl = -Infinity;
+            let bestName = '--';
+            
+            for (const [name, data] of Object.entries(strategyData)) {
+                const metrics = data.tradeMetrics || {};
+                const signals = data.signalStats || {};
+                
+                const pnl = metrics.netPnl || 0;
+                const trades = metrics.tradeCount || 0;
+                const winRate = metrics.winRate || 0;
+                
+                if (pnl > bestPnl && trades > 0) {
+                    bestPnl = pnl;
+                    bestName = name;
+                }
+                
+                const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                const pnlStr = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                
+                html += `
+                    <div style="background: var(--bg-highlight); border-radius: 8px; padding: 12px; margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; font-size: 13px;">${name}</span>
+                            <span class="mono" style="color: ${pnlColor}; font-weight: 600;">${pnlStr}</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; font-size: 11px;">
+                            <div>
+                                <div style="color: var(--text-dim);">Trades</div>
+                                <div class="mono">${trades}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Win Rate</div>
+                                <div class="mono">${(winRate * 100).toFixed(0)}%</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Signals</div>
+                                <div class="mono">${signals.totalSignals || 0}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+            document.getElementById('bestStrategy').textContent = bestName;
+        }
+
+        function handleTick(tick) {
+            const crypto = tick.crypto;
+            marketData[crypto] = tick;
+            
+            // Track price history
+            if (tick.up_mid && tick.up_mid !== 0.5) {
+                priceHistory[crypto].push({
+                    time: tick.timestamp,
+                    price: tick.up_mid,
+                    spot: tick.spot_price
+                });
+                // Keep last 100
+                if (priceHistory[crypto].length > 100) {
+                    priceHistory[crypto].shift();
+                }
+            }
+
+            // Update tab states
+            updateTabs();
+            
+            // Update display if this is the selected crypto
+            if (crypto === currentCrypto) {
+                updateDisplay(tick);
+            }
+        }
+
+        function updateTabs() {
+            document.querySelectorAll('.market-tab').forEach(tab => {
+                const crypto = tab.dataset.crypto;
+                const data = marketData[crypto];
+                
+                if (data && data.up_mid && data.up_mid !== 0.5) {
+                    tab.classList.remove('inactive');
+                } else {
+                    if (crypto !== currentCrypto) {
+                        tab.classList.add('inactive');
+                    }
+                }
+            });
+        }
+
+        function updateDisplay(tick) {
+            updateCount++;
+            
+            // Time remaining
+            const mins = Math.floor(tick.time_remaining_sec / 60);
+            const secs = tick.time_remaining_sec % 60;
+            document.getElementById('timeRemaining').textContent = 
+                `${mins}:${secs.toString().padStart(2, '0')}`;
+            
+            // Window epoch
+            document.getElementById('windowEpoch').textContent = tick.epoch || '--';
+            
+            // Prices
+            const hasRealData = tick.up_mid && tick.up_mid !== 0.5;
+            
+            if (hasRealData) {
+                // UP price
+                const upEl = document.getElementById('upPrice');
+                upEl.textContent = tick.up_mid.toFixed(4);
+                flashElement(upEl);
+                
+                // DOWN price
+                const downEl = document.getElementById('downPrice');
+                downEl.textContent = tick.down_mid.toFixed(4);
+                
+                // Bid/Ask
+                if (tick.up_bid && tick.up_ask) {
+                    document.getElementById('upBidAsk').textContent = 
+                        `${tick.up_bid.toFixed(2)} / ${tick.up_ask.toFixed(2)}`;
+                }
+                
+                // Spread
+                const spread = tick.spread || (tick.up_ask - tick.up_bid) || 0;
+                document.getElementById('spread').textContent = 
+                    `${(spread * 100).toFixed(1)}%`;
+                
+                // Market implied
+                document.getElementById('marketImplied').textContent = 
+                    `${(tick.up_mid * 100).toFixed(0)}% up`;
+            } else {
+                document.getElementById('upPrice').textContent = 'No data';
+                document.getElementById('downPrice').textContent = 'No data';
+                document.getElementById('upBidAsk').textContent = '-- / --';
+                document.getElementById('spread').textContent = '--%';
+                document.getElementById('marketImplied').textContent = 'Unknown';
+            }
+            
+            // Spot price
+            if (tick.spot_price) {
+                const spotEl = document.getElementById('spotPrice');
+                // Format based on crypto (XRP needs more decimals)
+                const decimals = currentCrypto === 'XRP' ? 4 : 2;
+                spotEl.textContent = `$${tick.spot_price.toLocaleString(undefined, {minimumFractionDigits: decimals, maximumFractionDigits: decimals})}`;
+                flashElement(spotEl);
+            }
+            
+            // Price to beat
+            const ptb = tick.price_to_beat || tick.window_start_price;
+            if (ptb) {
+                const decimals = currentCrypto === 'XRP' ? 4 : 2;
+                document.getElementById('priceToBeat').textContent = 
+                    `$${ptb.toLocaleString(undefined, {minimumFractionDigits: decimals, maximumFractionDigits: decimals})}`;
+            }
+            
+            // Spot delta
+            if (tick.spot_delta_pct !== undefined && tick.spot_delta_pct !== 0) {
+                const delta = tick.spot_delta_pct * 100;
+                const deltaEl = document.getElementById('spotDelta');
+                deltaEl.textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(3)}%`;
+                deltaEl.style.color = delta >= 0 ? 'var(--green)' : 'var(--red)';
+            } else if (tick.spot_price && ptb) {
+                // Calculate it ourselves
+                const delta = ((tick.spot_price - ptb) / ptb) * 100;
+                const deltaEl = document.getElementById('spotDelta');
+                deltaEl.textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(3)}%`;
+                deltaEl.style.color = delta >= 0 ? 'var(--green)' : 'var(--red)';
+            }
+            
+            // Implied direction
+            const dirEl = document.getElementById('impliedDirection');
+            if (tick.implied_direction) {
+                dirEl.textContent = tick.implied_direction === 'up' ? '📈 UP (Spot ≥ PTB)' : '📉 DOWN (Spot < PTB)';
+                dirEl.style.color = tick.implied_direction === 'up' ? 'var(--green)' : 'var(--red)';
+            } else if (tick.spot_price && ptb) {
+                const isUp = tick.spot_price >= ptb;
+                dirEl.textContent = isUp ? '📈 UP (Spot ≥ PTB)' : '📉 DOWN (Spot < PTB)';
+                dirEl.style.color = isUp ? 'var(--green)' : 'var(--red)';
+            }
+            
+            // Correlation insight
+            updateCorrelationInsight(tick);
+            
+            // Trade signal
+            updateSignal(tick);
+            
+            // Stats
+            updateStats(tick.crypto);
+            
+            // Recent changes
+            addRecentChange(tick);
+            
+            // Update count
+            document.getElementById('updateCount').textContent = updateCount;
+        }
+
+        function updateCorrelationInsight(tick) {
+            const el = document.getElementById('correlationInsight');
+            
+            if (!tick.spot_delta_pct && (!tick.spot_price || !tick.window_start_price)) {
+                el.textContent = 'Waiting for spot data...';
+                el.style.color = 'var(--text-dim)';
+                return;
+            }
+            
+            const spotDelta = tick.spot_delta_pct || 
+                ((tick.spot_price - tick.window_start_price) / tick.window_start_price);
+            const marketImplied = tick.up_mid || 0.5;
+            
+            // Is spot up but market hasn't caught up?
+            if (spotDelta > 0.001 && marketImplied < 0.55) {
+                el.innerHTML = '🔥 <strong>Potential opportunity:</strong> Spot is UP but market hasn\'t fully priced it in';
+                el.style.color = 'var(--green)';
+            } else if (spotDelta < -0.001 && marketImplied > 0.45) {
+                el.innerHTML = '🔥 <strong>Potential opportunity:</strong> Spot is DOWN but market hasn\'t fully priced it in';
+                el.style.color = 'var(--red)';
+            } else if (Math.abs(spotDelta) < 0.0005) {
+                el.innerHTML = '⚖️ Spot is flat - market is uncertain (50/50)';
+                el.style.color = 'var(--text-dim)';
+            } else {
+                el.innerHTML = '✓ Market appears fairly priced relative to spot movement';
+                el.style.color = 'var(--text-dim)';
+            }
+        }
+
+        function updateSignal(tick) {
+            const signalBox = document.getElementById('signalBox');
+            const signalText = document.getElementById('signalText');
+            const signalReason = document.getElementById('signalReason');
+            
+            const hasRealData = tick.up_mid && tick.up_mid !== 0.5;
+            const timeLeft = tick.time_remaining_sec;
+            
+            if (!hasRealData) {
+                signalBox.className = 'signal-box wait';
+                signalText.textContent = 'NO DATA';
+                signalReason.textContent = 'Waiting for Polymarket price data';
+                return;
+            }
+            
+            const upPrice = tick.up_mid;
+            const spread = tick.spread || 0.01;
+            
+            // Time-based exit warning
+            if (timeLeft < 120) {
+                signalBox.className = 'signal-box caution';
+                signalText.textContent = '⚠️ EXIT ZONE';
+                signalReason.textContent = `Only ${Math.floor(timeLeft/60)}:${(timeLeft%60).toString().padStart(2,'0')} left - resolution risk too high`;
+                return;
+            }
+            
+            // Entry opportunities
+            if (upPrice <= 0.45) {
+                signalBox.className = 'signal-box opportunity';
+                signalText.textContent = '📈 BUY UP';
+                signalReason.textContent = `UP at ${upPrice.toFixed(2)} - below entry threshold. Target: ${(upPrice + 0.03).toFixed(2)}`;
+                highlightThreshold('entry-low');
+            } else if (upPrice >= 0.55) {
+                signalBox.className = 'signal-box opportunity';
+                signalText.textContent = '📉 BUY DOWN';
+                signalReason.textContent = `UP at ${upPrice.toFixed(2)} - above entry threshold. Target: ${(upPrice - 0.03).toFixed(2)}`;
+                highlightThreshold('entry-high');
+            } else if (spread > 0.02) {
+                signalBox.className = 'signal-box caution';
+                signalText.textContent = '⚠️ HIGH SPREAD';
+                signalReason.textContent = `Spread is ${(spread*100).toFixed(1)}% - wait for tighter market`;
+            } else {
+                signalBox.className = 'signal-box wait';
+                signalText.textContent = '👀 WATCHING';
+                signalReason.textContent = `UP at ${upPrice.toFixed(2)} - waiting for entry at ≤0.45 or ≥0.55`;
+                clearThresholdHighlights();
+            }
+        }
+
+        function highlightThreshold(id) {
+            clearThresholdHighlights();
+            const item = document.querySelector(`[data-threshold="${id}"]`);
+            if (item) item.classList.add('active');
+        }
+
+        function clearThresholdHighlights() {
+            document.querySelectorAll('.threshold-item').forEach(el => el.classList.remove('active'));
+        }
+
+        function updateStats(crypto) {
+            const history = priceHistory[crypto];
+            if (history.length < 2) return;
+            
+            const prices = history.map(h => h.price);
+            const high = Math.max(...prices);
+            const low = Math.min(...prices);
+            
+            document.getElementById('priceHigh').textContent = high.toFixed(4);
+            document.getElementById('priceLow').textContent = low.toFixed(4);
+            
+            // Volatility (std dev of returns)
+            const returns = [];
+            for (let i = 1; i < prices.length; i++) {
+                returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+            }
+            if (returns.length > 1) {
+                const mean = returns.reduce((a,b) => a+b, 0) / returns.length;
+                const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+                const std = Math.sqrt(variance);
+                document.getElementById('volatility').textContent = `${(std * 100).toFixed(2)}%`;
+            }
+        }
+
+        function addRecentChange(tick) {
+            if (!tick.up_mid || tick.up_mid === 0.5) return;
+            
+            const container = document.getElementById('recentChanges');
+            const time = new Date(tick.timestamp).toLocaleTimeString();
+            
+            const html = `<div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+                <span style="color: var(--text-dim)">${time}</span>
+                <span style="color: var(--green)">${tick.up_mid.toFixed(4)}</span>
+                <span style="color: var(--text-dim)">$${tick.spot_price?.toLocaleString(undefined, {maximumFractionDigits: 0}) || '--'}</span>
+            </div>`;
+            
+            // Keep last 10
+            const items = container.querySelectorAll('div');
+            if (items.length >= 10) {
+                container.removeChild(container.lastChild);
+            }
+            container.insertAdjacentHTML('afterbegin', html);
+        }
+
+        function flashElement(el) {
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 200);
+        }
+
+        // Tab switching
+        document.querySelectorAll('.market-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                currentCrypto = tab.dataset.crypto;
+                document.querySelectorAll('.market-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // Update market name
+                const names = { BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana', XRP: 'XRP' };
+                document.getElementById('marketName').textContent = `${names[currentCrypto]} Up/Down`;
+                
+                // Clear and refresh
+                document.getElementById('recentChanges').innerHTML = 
+                    '<div style="color: var(--text-dim); text-align: center; padding: 20px;">Waiting for updates...</div>';
+                
+                if (marketData[currentCrypto]) {
+                    updateDisplay(marketData[currentCrypto]);
+                }
+            });
+        });
+
+        // Update server time
+        setInterval(() => {
+            document.getElementById('serverTime').textContent = new Date().toLocaleTimeString();
+        }, 1000);
+
+        // Connect
+        connect();
+    </script>
+</body>
+</html>
