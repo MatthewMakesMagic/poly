@@ -19,16 +19,26 @@ export class FairValueStrategy {
     constructor(options = {}) {
         this.name = options.name || 'FairValue';
         this.options = {
-            edgeThreshold: 0.03,       // Minimum 3% edge to trade
+            edgeThreshold: 0.03,       // Minimum 3% edge to enter
             strongEdgeThreshold: 0.06, // 6% = strong signal
             maxPosition: 100,          // Max position size
-            // BINARY OPTIONS: Hold until window end, don't scalp
-            useProfitTarget: false,    // Disabled - binary pays $1 or $0
-            useStopLoss: false,        // Disabled - let position expire
-            profitTarget: 0.15,        // Only if enabled: 15% (was 2%)
-            stopLoss: 0.25,            // Only if enabled: 25% (was 4%)
+            
+            // SMART EXIT RULES (not blind scalping)
+            // Exit if edge disappears or reverses
+            exitOnEdgeReversal: true,  // Exit if fair value now favors opposite side
+            exitOnEdgeLoss: true,      // Exit if edge drops below threshold
+            minEdgeToHold: 0.01,       // Minimum 1% edge to continue holding
+            
+            // Risk management (extreme moves only)
+            maxDrawdown: 0.30,         // Exit if down >30% (something very wrong)
+            useTrailingStop: false,    // Optional: lock in gains
+            trailingStopActivation: 0.20, // Activate trailing after 20% gain
+            trailingStopDistance: 0.10,   // Trail by 10%
+            
+            // Time-based rules
             minTimeRemaining: 120,     // Don't enter with <2 min left
-            exitTimeRemaining: 30,     // Exit with <30s left (let expire)
+            exitTimeRemaining: 30,     // Exit with <30s left (let binary expire)
+            
             volType: 'realized',       // 'realized', 'ewma', 'parkinson'
             useDrift: false,           // Whether to incorporate drift
             ...options
@@ -81,23 +91,52 @@ export class FairValueStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // Position management - BINARY OPTIONS should generally HOLD until expiry
+        // SMART POSITION MANAGEMENT
+        // Exit if: edge disappears, edge reverses, or extreme drawdown
+        // Hold if: still have edge in our direction
         if (position) {
-            // Only check P&L exits if explicitly enabled (not recommended for binary)
-            if (this.options.useProfitTarget || this.options.useStopLoss) {
-                const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
-                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-                
-                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
-                    return this.createSignal('sell', null, 'profit_target', analysis);
-                }
-                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
-                    return this.createSignal('sell', null, 'stop_loss', analysis);
+            const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // 1. EDGE REVERSAL - fair value now favors opposite side
+            if (this.options.exitOnEdgeReversal && analysis.isSignificant) {
+                const currentFairSide = analysis.side; // 'up' or 'down'
+                if (currentFairSide && currentFairSide !== position.side) {
+                    // Our position is now WRONG according to fair value
+                    return this.createSignal('sell', null, 'edge_reversed', analysis);
                 }
             }
             
-            // HOLD position - let it expire at window end for binary payout
-            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
+            // 2. EDGE DISAPPEARED - no longer have meaningful edge
+            if (this.options.exitOnEdgeLoss) {
+                // Check if we still have edge in our direction
+                const ourEdge = position.side === 'up' 
+                    ? (analysis.fairProb - analysis.marketProb)  // We're long UP
+                    : (analysis.marketProb - analysis.fairProb); // We're long DOWN
+                
+                if (ourEdge < this.options.minEdgeToHold) {
+                    return this.createSignal('sell', null, 'edge_insufficient', analysis);
+                }
+            }
+            
+            // 3. EXTREME DRAWDOWN - risk management
+            if (pnlPct <= -this.options.maxDrawdown) {
+                return this.createSignal('sell', null, 'max_drawdown', analysis);
+            }
+            
+            // 4. TRAILING STOP (optional) - lock in gains
+            if (this.options.useTrailingStop && pnlPct >= this.options.trailingStopActivation) {
+                // Track high water mark (would need to store this in position)
+                const highWaterMark = position.highWaterMark || pnlPct;
+                position.highWaterMark = Math.max(highWaterMark, pnlPct);
+                
+                if (pnlPct < position.highWaterMark - this.options.trailingStopDistance) {
+                    return this.createSignal('sell', null, 'trailing_stop', analysis);
+                }
+            }
+            
+            // Still have edge, HOLD the position
+            return this.createSignal('hold', null, 'holding_with_edge', analysis);
         }
         
         // Entry logic

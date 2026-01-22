@@ -35,11 +35,11 @@ export class RegimeStrategy {
             reversionThreshold: 0.15,  // Deviation from 0.5
             
             maxPosition: 100,
-            // BINARY OPTIONS: Hold until expiry, don't scalp
-            useProfitTarget: false,
-            useStopLoss: false,
-            profitTarget: 0.15,
-            stopLoss: 0.25,
+            // Smart exits for binary options
+            exitOnEdgeReversal: true,
+            exitOnEdgeLoss: true,
+            minEdgeToHold: 0.01,
+            maxDrawdown: 0.30,
             minTimeRemaining: 120,
             exitTimeRemaining: 60,
             
@@ -90,20 +90,32 @@ export class RegimeStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // Position management - BINARY OPTIONS hold until expiry
+        // Smart position management
         if (position) {
-            if (this.options.useProfitTarget || this.options.useStopLoss) {
-                const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
-                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-                
-                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
-                    return this.createSignal('sell', null, 'profit_target', analysis);
-                }
-                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
-                    return this.createSignal('sell', null, 'stop_loss', analysis);
+            const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Exit if edge reversed
+            if (this.options.exitOnEdgeReversal && fairValueAnalysis?.side !== position.side) {
+                return this.createSignal('sell', null, 'edge_reversed', analysis);
+            }
+            
+            // Exit if edge insufficient
+            if (this.options.exitOnEdgeLoss) {
+                const ourEdge = position.side === 'up' 
+                    ? (fairValueAnalysis?.fairProb || 0.5) - marketProb
+                    : marketProb - (fairValueAnalysis?.fairProb || 0.5);
+                if (ourEdge < this.options.minEdgeToHold) {
+                    return this.createSignal('sell', null, 'edge_insufficient', analysis);
                 }
             }
-            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
+            
+            // Exit on extreme drawdown
+            if (pnlPct <= -this.options.maxDrawdown) {
+                return this.createSignal('sell', null, 'max_drawdown', analysis);
+            }
+            
+            return this.createSignal('hold', null, 'holding_with_edge', analysis);
         }
         
         // Entry logic

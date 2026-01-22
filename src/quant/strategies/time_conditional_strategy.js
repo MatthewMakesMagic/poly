@@ -32,11 +32,9 @@ export class TimeConditionalStrategy {
             lateEdgeThreshold: 0.10,   // 10% edge required
             
             maxPosition: 100,
-            // BINARY OPTIONS: Hold until expiry
-            useProfitTarget: false,
-            useStopLoss: false,
-            profitTarget: 0.15,
-            stopLoss: 0.25,
+            // Smart exits - exit if edge disappears, not on small moves
+            maxDrawdown: 0.30,
+            minEdgeToHold: 0.01,
             
             ...options
         };
@@ -118,20 +116,17 @@ export class TimeConditionalStrategy {
             return this.createSignal('hold', null, 'exit_phase', { phase, analysis });
         }
         
-        // Position management - BINARY OPTIONS hold until expiry
+        // Smart position management - hold unless extreme conditions
         if (position) {
-            if (this.options.useProfitTarget || this.options.useStopLoss) {
-                const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
-                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-                
-                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
-                    return this.createSignal('sell', null, 'profit_target', { phase, analysis });
-                }
-                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
-                    return this.createSignal('sell', null, 'stop_loss', { phase, analysis });
-                }
+            const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Exit on extreme drawdown only
+            if (pnlPct <= -this.options.maxDrawdown) {
+                return this.createSignal('sell', null, 'max_drawdown', { phase, analysis });
             }
-            return this.createSignal('hold', null, 'holding_for_expiry', { phase, analysis });
+            
+            return this.createSignal('hold', null, 'holding_with_edge', { phase, analysis });
         }
         
         // Phase-specific entry logic

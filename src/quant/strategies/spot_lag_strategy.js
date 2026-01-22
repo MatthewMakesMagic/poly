@@ -23,11 +23,8 @@ export class SpotLagStrategy {
             lagThreshold: 0.03,        // Minimum 3% probability lag
             spotChangeThreshold: 0.0003, // Minimum 0.03% spot move
             maxPosition: 100,
-            // BINARY OPTIONS: Hold until expiry
-            useProfitTarget: false,
-            useStopLoss: false,
-            profitTarget: 0.15,
-            stopLoss: 0.25,
+            // Smart exits - hold unless extreme conditions
+            maxDrawdown: 0.30,
             minTimeRemaining: 120,
             exitTimeRemaining: 60,
             confirmationTicks: 2,      // Wait for N ticks of confirmation
@@ -102,20 +99,17 @@ export class SpotLagStrategy {
             return this.createSignal('sell', null, 'time_exit', {});
         }
         
-        // Position management - BINARY OPTIONS hold until expiry
+        // Smart position management - spot lag positions should hold
         if (position) {
-            if (this.options.useProfitTarget || this.options.useStopLoss) {
-                const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
-                const pnl = (currentPrice - position.entryPrice) / position.entryPrice;
-                
-                if (this.options.useProfitTarget && pnl >= this.options.profitTarget) {
-                    return this.createSignal('sell', null, 'profit_target', {});
-                }
-                if (this.options.useStopLoss && pnl <= -this.options.stopLoss) {
-                    return this.createSignal('sell', null, 'stop_loss', {});
-                }
+            const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Exit only on extreme drawdown
+            if (pnlPct <= -this.options.maxDrawdown) {
+                return this.createSignal('sell', null, 'max_drawdown', {});
             }
-            return this.createSignal('hold', null, 'holding_for_expiry', {});
+            
+            return this.createSignal('hold', null, 'holding_for_lag_resolution', {});
         }
         
         // Entry logic
