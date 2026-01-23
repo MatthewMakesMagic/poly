@@ -35,12 +35,11 @@ export class RegimeStrategy {
             reversionThreshold: 0.15,  // Deviation from 0.5
             
             maxPosition: 100,
-            // Smart exits for binary options
-            // Only exit if fair value CONFIDENTLY reverses, or extreme drawdown
-            exitOnEdgeReversal: true,
-            maxDrawdown: 0.30,
+            // Binary options: HOLD to expiry
+            // DISABLED edge reversal - fair value too noisy
+            maxDrawdown: 0.30,  // Only exit on extreme loss
             minTimeRemaining: 120,
-            exitTimeRemaining: 60,
+            exitTimeRemaining: 5,  // Let binary expire
             
             ...options
         };
@@ -89,26 +88,24 @@ export class RegimeStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // Smart position management
+        // Smart position management for BINARY OPTIONS
+        // Key insight: Hold to expiry unless extreme conditions
         if (position) {
             const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            const holdingTime = Date.now() - position.entryTime;
             
-            // Exit ONLY if fair value CONFIDENTLY says opposite side
-            // (not just when it has no opinion)
-            if (this.options.exitOnEdgeReversal && 
-                fairValueAnalysis?.isSignificant && 
-                fairValueAnalysis?.side && 
-                fairValueAnalysis.side !== position.side) {
-                return this.createSignal('sell', null, 'edge_reversed', analysis);
-            }
+            // DISABLE edge reversal exit - it causes churning due to fair value noise
+            // Fair value swings 18% on a 0.1% spot move, causing constant flip-flops
+            // Instead, hold to expiry and let the binary resolve
             
-            // Exit on extreme drawdown only (remove edge_insufficient - too noisy)
+            // Exit on extreme drawdown only (>30% loss = something very wrong)
             if (pnlPct <= -this.options.maxDrawdown) {
                 return this.createSignal('sell', null, 'max_drawdown', analysis);
             }
             
-            return this.createSignal('hold', null, 'holding_with_edge', analysis);
+            // HOLD for binary expiry
+            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
         }
         
         // Entry logic

@@ -35,7 +35,7 @@ export class CrossAssetStrategy {
             // Smart exits - hold unless extreme conditions
             maxDrawdown: 0.30,
             minTimeRemaining: 180,
-            exitTimeRemaining: 60,
+            exitTimeRemaining: 5,  // Let binary expire
             
             ...options
         };

@@ -30,7 +30,7 @@ export class MicrostructureStrategy {
             // Smart exits - hold unless extreme conditions
             maxDrawdown: 0.30,
             minTimeRemaining: 180,       // Need 3+ min for micro signals
-            exitTimeRemaining: 60,
+            exitTimeRemaining: 5,  // Let binary expire
             
             ...options
         };

@@ -23,10 +23,9 @@ export class FairValueStrategy {
             strongEdgeThreshold: 0.06, // 6% = strong signal
             maxPosition: 100,          // Max position size
             
-            // SMART EXIT RULES (not blind scalping)
-            // Exit ONLY if fair value CONFIDENTLY says opposite side
-            exitOnEdgeReversal: true,  // Exit if fair value strongly favors opposite
-            // Removed exitOnEdgeLoss - caused too many exits on noise
+            // EXIT RULES: Hold to expiry for binary payout
+            // DISABLED edge reversal - fair value too noisy (0.1% spot = 18% prob swing)
+            // Only exit on extreme drawdown
             
             // Risk management (extreme moves only)
             maxDrawdown: 0.30,         // Exit if down >30% (something very wrong)
@@ -90,40 +89,23 @@ export class FairValueStrategy {
             return this.createSignal('sell', null, 'time_exit', analysis);
         }
         
-        // SMART POSITION MANAGEMENT
-        // Exit ONLY if: edge CONFIDENTLY reverses, or extreme drawdown
-        // Hold through noise - binary options need to reach expiry
+        // BINARY OPTIONS POSITION MANAGEMENT
+        // Key learning: Fair value is TOO NOISY for exit signals
+        // A 0.1% spot move causes 18% fair value swing = constant flip-flops
+        // Solution: HOLD to expiry, only exit on extreme drawdown
         if (position) {
             const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
             
-            // 1. EDGE REVERSAL - only exit if fair value CONFIDENTLY says opposite
-            // Must have: isSignificant=true AND side is defined AND side is opposite
-            if (this.options.exitOnEdgeReversal && 
-                analysis.isSignificant && 
-                analysis.side && 
-                analysis.side !== position.side &&
-                Math.abs(analysis.edge) >= this.options.edgeThreshold) {
-                // Fair value strongly disagrees with our position
-                return this.createSignal('sell', null, 'edge_reversed', analysis);
-            }
+            // DISABLED: Edge reversal exit - causes churning
+            // Fair value swings wildly on small spot moves
             
-            // 2. EXTREME DRAWDOWN - risk management (keep this)
+            // EXIT only on extreme drawdown (>30% loss = cut losses)
             if (pnlPct <= -this.options.maxDrawdown) {
                 return this.createSignal('sell', null, 'max_drawdown', analysis);
             }
             
-            // 3. TRAILING STOP (optional) - only if explicitly enabled
-            if (this.options.useTrailingStop && pnlPct >= this.options.trailingStopActivation) {
-                const highWaterMark = position.highWaterMark || pnlPct;
-                position.highWaterMark = Math.max(highWaterMark, pnlPct);
-                
-                if (pnlPct < position.highWaterMark - this.options.trailingStopDistance) {
-                    return this.createSignal('sell', null, 'trailing_stop', analysis);
-                }
-            }
-            
-            // HOLD through noise - let position reach expiry
+            // HOLD for binary expiry - let the $1/$0 payout resolve
             return this.createSignal('hold', null, 'holding_for_expiry', analysis);
         }
         

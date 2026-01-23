@@ -26,7 +26,7 @@ export class SpotLagStrategy {
             // Smart exits - hold unless extreme conditions
             maxDrawdown: 0.30,
             minTimeRemaining: 120,
-            exitTimeRemaining: 60,
+            exitTimeRemaining: 5,  // Let binary expire - exit only at 5s left
             confirmationTicks: 2,      // Wait for N ticks of confirmation
             ...options
         };
