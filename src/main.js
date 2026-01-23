@@ -32,6 +32,7 @@ import { getStrategyRunner } from './analysis/strategy-runner.js';
 import { getExecutionTracker } from './trading/execution-tracker.js';
 import { getNotifier } from './notifications/notifier.js';
 import { initDatabase, getDatabase } from './db/connection.js';
+import { getResearchEngine } from './quant/research_engine.js';
 
 const CONFIG = {
     DASHBOARD_PORT: process.env.DASHBOARD_PORT || 3333,
@@ -64,6 +65,12 @@ class TradingOrchestrator {
         // Execution tracker reference
         this.executionTracker = getExecutionTracker({
             capitalPerTrade: CONFIG.CAPITAL_PER_TRADE
+        });
+        
+        // Research engine for crypto-level strategy tracking
+        this.researchEngine = getResearchEngine({
+            capitalPerTrade: CONFIG.CAPITAL_PER_TRADE,
+            enablePaperTrading: true
         });
         
         // Initialize tick history for each crypto
@@ -158,6 +165,11 @@ class TradingOrchestrator {
             }
         }
         
+        // Also run through research engine (has crypto-level tracking)
+        if (this.researchEngine) {
+            this.researchEngine.processTick(enhancedTick);
+        }
+        
         // Check for significant moves
         if (CONFIG.ENABLE_NOTIFICATIONS && tick.spot_delta_pct) {
             if (Math.abs(tick.spot_delta_pct) > 0.005) { // 0.5% move
@@ -222,6 +234,11 @@ class TradingOrchestrator {
             }
         }
         
+        // Also notify research engine (has crypto-level tracking)
+        if (this.researchEngine) {
+            this.researchEngine.onWindowEnd(window);
+        }
+        
         delete this.currentWindow[window.crypto];
     }
     
@@ -230,21 +247,22 @@ class TradingOrchestrator {
             // Get metrics from execution tracker (real-time)
             const trackerSummary = this.executionTracker.getSummary();
             
-            // Get strategy comparison
-            const comparison = CONFIG.COMPARE_STRATEGIES 
-                ? this.strategyRunner.getStrategyComparison()
-                : {};
+            // Get research engine strategy report (has crypto-level breakdown)
+            const researchReport = this.researchEngine 
+                ? this.researchEngine.getStrategyPerformanceReport()
+                : { strategies: [] };
             
-            // Calculate aggregate metrics
+            // Calculate aggregate metrics from research engine
             let totalTrades = 0;
             let totalPnl = 0;
             let wins = 0;
+            let openCount = 0;
             
-            for (const [name, data] of Object.entries(comparison)) {
-                const m = data.tradeMetrics;
-                totalTrades += m.tradeCount || 0;
-                totalPnl += m.netPnl || 0;
-                wins += m.winners || 0;
+            for (const strat of researchReport.strategies) {
+                totalTrades += strat.closedTrades || 0;
+                totalPnl += strat.totalPnl || 0;
+                wins += strat.wins || 0;
+                openCount += strat.openPositions?.length || 0;
             }
             
             const winRate = totalTrades > 0 ? wins / totalTrades : 0;
@@ -254,14 +272,14 @@ class TradingOrchestrator {
                 totalTrades,
                 totalPnl,
                 winRate,
-                openPositions: trackerSummary.openPositions,
+                openPositions: openCount,
                 capitalPerTrade: CONFIG.CAPITAL_PER_TRADE,
-                strategies: Object.keys(comparison)
+                strategies: researchReport.strategies.map(s => s.name)
             });
             
-            // Send detailed strategy comparison
+            // Send detailed strategy comparison with crypto-level data
             if (typeof sendStrategyComparison === 'function') {
-                sendStrategyComparison(comparison);
+                sendStrategyComparison(researchReport);
             }
             
             // Also try DB metrics for historical data

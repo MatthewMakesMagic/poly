@@ -113,8 +113,32 @@ export class FairValueStrategy {
             return this.createSignal('hold', null, 'insufficient_time', analysis);
         }
         
-        // Check for significant edge
-        if (analysis.isSignificant) {
+        // VARIANT DIFFERENTIATION:
+        // - RealizedVol (default): Standard fair value edge
+        // - EWMA: More responsive vol, use tighter threshold
+        // - WithDrift: Also require spot momentum confirmation
+        
+        let effectiveThreshold = this.options.edgeThreshold;
+        let additionalCheck = true;
+        
+        // EWMA variant: More responsive, use tighter threshold (2.5% vs 3%)
+        if (this.options.volType === 'ewma') {
+            effectiveThreshold = this.options.edgeThreshold * 0.85;  // 2.55% threshold
+        }
+        
+        // WithDrift variant: Require spot momentum confirmation
+        if (this.options.useDrift) {
+            // Only enter if spot is moving in the direction of our trade
+            const spotMove = tick.spot_delta_pct || 0;
+            const spotDirection = spotMove > 0 ? 'up' : 'down';
+            // Require spot to be moving in same direction OR flat
+            additionalCheck = !analysis.side || spotDirection === analysis.side || Math.abs(spotMove) < 0.0001;
+        }
+        
+        // Check for significant edge (with variant-specific threshold)
+        const hasEdge = Math.abs(analysis.edge || 0) >= effectiveThreshold;
+        
+        if (hasEdge && additionalCheck) {
             const isStrong = Math.abs(analysis.edge) >= this.options.strongEdgeThreshold;
             const size = isStrong ? this.options.maxPosition : this.options.maxPosition * 0.7;
             

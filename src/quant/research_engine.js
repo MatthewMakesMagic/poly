@@ -249,6 +249,8 @@ export class ResearchEngine {
                 entryPrice: position.entryPrice,
                 exitPrice,
                 pnl,
+                entryTime: position.entryTime,
+                exitTime: Date.now(),
                 holdingTimeMs: Date.now() - position.entryTime,
                 reason: signal.reason,
                 windowEpoch: position.windowEpoch
@@ -315,6 +317,8 @@ export class ResearchEngine {
                 entryPrice: position.entryPrice,
                 exitPrice,
                 pnl,
+                entryTime: position.entryTime,
+                exitTime: Date.now(),
                 holdingTimeMs: Date.now() - position.entryTime,
                 reason: 'window_expiry',
                 outcome: windowInfo.outcome,
