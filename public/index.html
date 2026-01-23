@@ -72,36 +72,6 @@
             50% { opacity: 0.5; }
         }
 
-        /* View Tabs */
-        .view-tabs {
-            display: flex;
-            gap: 4px;
-            background: var(--bg-highlight);
-            padding: 4px;
-            border-radius: 8px;
-        }
-
-        .view-tab {
-            padding: 8px 16px;
-            border: none;
-            background: transparent;
-            color: var(--text-dim);
-            font-size: 13px;
-            font-weight: 500;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .view-tab:hover {
-            color: var(--text);
-        }
-
-        .view-tab.active {
-            background: var(--blue);
-            color: white;
-        }
-
         /* Main Grid */
         .main-grid {
             display: grid;
@@ -403,148 +373,13 @@
 <body>
     <div class="header">
         <h1>📊 Poly Trading Strategy</h1>
-        <div style="display: flex; align-items: center; gap: 16px;">
-            <div class="view-tabs">
-                <button class="view-tab active" data-view="trading" onclick="switchView('trading')">Trading</button>
-                <button class="view-tab" data-view="research" onclick="switchView('research')">Research</button>
-            </div>
-            <div class="status">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Connecting...</span>
-                <span class="mono" id="serverTime">--:--:--</span>
-            </div>
+        <div class="status">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connecting...</span>
+            <span class="mono" id="serverTime">--:--:--</span>
         </div>
     </div>
 
-    <!-- Research View (hidden by default) -->
-    <div id="researchView" style="display: none;">
-        <!-- Header Stats -->
-        <div class="card">
-            <div class="card-header">
-                <div class="card-title">Quant Research Engine</div>
-                <div style="display: flex; gap: 12px; align-items: center;">
-                    <span id="researchStatus" style="font-size: 12px; color: var(--text-dim);">Loading...</span>
-                    <button onclick="refreshResearch()" style="padding: 6px 12px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 6px; color: var(--blue); cursor: pointer; font-size: 12px;">Refresh</button>
-                </div>
-            </div>
-            
-            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px;">
-                <div class="insight-card">
-                    <div class="insight-title">Ticks Analyzed</div>
-                    <div class="insight-value" id="researchTicks">--</div>
-                </div>
-                <div class="insight-card">
-                    <div class="insight-title">Windows Tracked</div>
-                    <div class="insight-value" id="researchWindows">--</div>
-                </div>
-                <div class="insight-card">
-                    <div class="insight-title">Strategies Running</div>
-                    <div class="insight-value" style="color: var(--blue);">10</div>
-                </div>
-                <div class="insight-card">
-                    <div class="insight-title">Avg Edge Detected</div>
-                    <div class="insight-value" id="researchAvgEdge">--</div>
-                </div>
-                <div class="insight-card">
-                    <div class="insight-title">Spot Lag</div>
-                    <div class="insight-value" id="researchSpotLag">--</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Strategy Performance Leaderboard -->
-        <div class="card" style="margin-top: 20px;">
-            <div class="card-header">
-                <div class="card-title">Strategy Performance Leaderboard</div>
-                <div style="font-size: 12px; color: var(--text-dim);">Paper trading $100/position</div>
-            </div>
-            <div id="strategyLeaderboard" style="font-family: 'IBM Plex Mono', monospace;">
-                <div style="color: var(--text-dim); padding: 40px; text-align: center;">
-                    <div style="font-size: 14px; margin-bottom: 8px;">Waiting for strategy data...</div>
-                    <div style="font-size: 12px;">Railway collector saves stats every 60 seconds</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Key Insights Section -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-            <!-- Market Efficiency by Time Phase -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">Edge by Window Phase</div>
-                </div>
-                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
-                    When is the market most inefficient? Early = first 5min, Mid = 5-12min, Late = last 3min
-                </p>
-                <div id="edgeByPhase" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
-                </div>
-            </div>
-            
-            <!-- Fair Value Analysis -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">Fair Value vs Market</div>
-                </div>
-                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
-                    Black-Scholes derived probability vs what the market is pricing
-                </p>
-                <div id="fairValueAnalysis" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Volatility & Regime Analysis -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">Volatility Analysis</div>
-                </div>
-                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
-                    Higher spot volatility = more opportunity but harder to predict
-                </p>
-                <div id="volatilityData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">Spot Lag Analysis</div>
-                </div>
-                <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
-                    How fast does the market price spot moves? Slower = more alpha opportunity
-                </p>
-                <div id="spotLagData" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">
-                    <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Live Market State -->
-        <div class="card" style="margin-top: 20px;">
-            <div class="card-header">
-                <div class="card-title">Live Market State</div>
-            </div>
-            <div id="cryptoStates" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;">
-                <div style="color: var(--text-dim); padding: 20px; text-align: center; grid-column: span 4;">Loading...</div>
-            </div>
-        </div>
-
-        <!-- Quant Insights / Ideas -->
-        <div class="card" style="margin-top: 20px; border-color: var(--blue); border-width: 2px;">
-            <div class="card-header">
-                <div class="card-title" style="color: var(--blue);">Quant Insights</div>
-            </div>
-            <div id="quantInsights" style="font-size: 13px; line-height: 1.8;">
-                <div style="color: var(--text-dim); text-align: center; padding: 20px;">Analyzing data for insights...</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Trading View -->
-    <div id="tradingView">
     <div class="market-tabs" id="marketTabs">
         <div class="market-tab active" data-crypto="BTC">₿ Bitcoin</div>
         <div class="market-tab inactive" data-crypto="ETH">Ξ Ethereum</div>
@@ -736,14 +571,66 @@
                 </div>
             </div>
 
-            <!-- Strategy Comparison -->
+            <!-- Strategy Performance Leaderboard -->
             <div class="card" id="strategyCard">
                 <div class="card-header">
-                    <div class="card-title">📊 Strategy Comparison ($100/trade)</div>
+                    <div class="card-title">📊 STRATEGY PERFORMANCE LEADERBOARD</div>
                 </div>
-                <div id="strategyComparison">
+                <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 12px;">
+                    Paper trading $100/position. <span id="openPositionsTotal" style="color: var(--green);">0 positions currently open.</span>
+                </div>
+                
+                <!-- Crypto Filter Tabs -->
+                <div class="strategy-crypto-tabs" id="strategyCryptoTabs" style="display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap;">
+                    <div class="crypto-filter-tab active" data-filter="all" style="padding: 6px 12px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;">All</div>
+                    <div class="crypto-filter-tab" data-filter="btc" style="padding: 6px 12px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 12px;">BTC</div>
+                    <div class="crypto-filter-tab" data-filter="eth" style="padding: 6px 12px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 12px;">ETH</div>
+                    <div class="crypto-filter-tab" data-filter="sol" style="padding: 6px 12px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 12px;">SOL</div>
+                    <div class="crypto-filter-tab" data-filter="xrp" style="padding: 6px 12px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 12px;">XRP</div>
+                </div>
+                
+                <!-- Strategy Table -->
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <th style="text-align: left; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">#</th>
+                                <th style="text-align: left; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">Strategy</th>
+                                <th style="text-align: center; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">Signals</th>
+                                <th style="text-align: center; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">Open</th>
+                                <th style="text-align: center; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">Closed</th>
+                                <th style="text-align: center; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">W/L</th>
+                                <th style="text-align: right; padding: 8px 4px; color: var(--text-dim); font-weight: 500;">P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody id="strategyTableBody">
+                            <tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--text-dim);">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Trade Log -->
+            <div class="card" id="tradeLogCard">
+                <div class="card-header">
+                    <div class="card-title">📝 TRADE LOG</div>
+                    <select id="tradeLogFilter" style="background: var(--bg-highlight); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 11px;">
+                        <option value="all">All Strategies</option>
+                    </select>
+                </div>
+                
+                <!-- Trade Log Crypto Filter -->
+                <div class="trade-log-crypto-tabs" id="tradeLogCryptoTabs" style="display: flex; gap: 6px; margin-bottom: 12px;">
+                    <div class="trade-log-tab active" data-filter="all" style="padding: 4px 10px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 4px; cursor: pointer; font-size: 11px;">All</div>
+                    <div class="trade-log-tab" data-filter="btc" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">BTC</div>
+                    <div class="trade-log-tab" data-filter="eth" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">ETH</div>
+                    <div class="trade-log-tab" data-filter="sol" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">SOL</div>
+                    <div class="trade-log-tab" data-filter="xrp" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">XRP</div>
+                </div>
+                
+                <div id="tradeLogEntries" style="max-height: 400px; overflow-y: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px;">
                     <div style="color: var(--text-dim); text-align: center; padding: 20px;">
-                        Waiting for strategy data...
+                        No trades yet...
                     </div>
                 </div>
             </div>
@@ -787,79 +674,87 @@
             </div>
         </div>
     </div>
-    </div> <!-- End tradingView -->
 
     <script>
         // State
+        let ws;
         let currentCrypto = 'BTC';
-        let currentView = 'trading';
         let marketData = { BTC: null, ETH: null, SOL: null, XRP: null };
         let priceHistory = { BTC: [], ETH: [], SOL: [], XRP: [] };
         let updateCount = 0;
-        let isConnected = false;
-        let pollInterval = null;
 
-        // Poll API for data (Vercel doesn't support WebSockets)
-        async function fetchTicks() {
-            try {
-                const cryptos = ['btc', 'eth', 'sol', 'xrp'];
-                const promises = cryptos.map(c => 
-                    fetch(`/api/ticks?crypto=${c}&limit=1`).then(r => r.json())
-                );
-                
-                const results = await Promise.all(promises);
-                
-                results.forEach((result, i) => {
-                    if (result.ticks && result.ticks.length > 0) {
-                        const tick = result.ticks[0];
-                        // Convert to expected format
-                        const formattedTick = {
-                            crypto: cryptos[i].toUpperCase(),
-                            timestamp: tick.timestamp,
-                            epoch: tick.window_epoch,
-                            time_remaining_sec: parseFloat(tick.time_remaining_sec) || 0,
-                            up_bid: parseFloat(tick.up_bid),
-                            up_ask: parseFloat(tick.up_ask),
-                            up_mid: parseFloat(tick.up_mid),
-                            down_bid: parseFloat(tick.down_bid),
-                            down_ask: parseFloat(tick.down_ask),
-                            down_mid: parseFloat(tick.down_mid) || (1 - parseFloat(tick.up_mid)),
-                            spot_price: parseFloat(tick.spot_price),
-                            price_to_beat: parseFloat(tick.price_to_beat),
-                            spot_delta_pct: parseFloat(tick.spot_delta_pct),
-                            spread: parseFloat(tick.spread),
-                            spread_pct: parseFloat(tick.spread_pct)
-                        };
-                        handleTick(formattedTick);
-                    }
-                });
-                
-                if (!isConnected) {
-                    isConnected = true;
-                    document.getElementById('statusDot').style.background = 'var(--green)';
-                    document.getElementById('statusText').textContent = 'Live';
-                }
-            } catch (e) {
-                console.error('Fetch error:', e);
-                isConnected = false;
+        // Connect to WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host || 'localhost:3333';
+            ws = new WebSocket(`${protocol}//${host}/ws`);
+
+            ws.onopen = () => {
+                document.getElementById('statusDot').style.background = 'var(--green)';
+                document.getElementById('statusText').textContent = 'Live';
+            };
+
+            ws.onclose = () => {
                 document.getElementById('statusDot').style.background = 'var(--red)';
                 document.getElementById('statusText').textContent = 'Disconnected';
-            }
+                setTimeout(connect, 2000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
         }
 
-        // Start polling
-        function connect() {
-            document.getElementById('statusText').textContent = 'Connecting...';
-            fetchTicks(); // Initial fetch
-            pollInterval = setInterval(fetchTicks, 3000); // Poll every 3 seconds
+        function handleMessage(data) {
+            if (data.type === 'tick') {
+                handleTick(data.payload);
+            } else if (data.type === 'prediction') {
+                // We'll compute our own signals
+            } else if (data.type === 'strategy_comparison') {
+                handleStrategyComparison(data.payload);
+            } else if (data.type === 'metrics') {
+                handleMetrics(data.payload);
+            } else if (data.type === 'trade_execution') {
+                handleTradeExecution(data.payload);
+            }
         }
         
         // Strategy comparison data
-        let strategyData = {};
+        let strategyData = [];
+        let allTrades = [];
+        let currentStrategyCryptoFilter = 'all';
+        let currentTradeLogCryptoFilter = 'all';
+        let currentTradeLogStrategyFilter = 'all';
         
         function handleStrategyComparison(comparison) {
-            strategyData = comparison;
-            updateStrategyDisplay();
+            if (comparison.strategies) {
+                strategyData = comparison.strategies;
+                
+                // Collect all trades for the trade log
+                allTrades = [];
+                for (const strat of strategyData) {
+                    if (strat.recentPositions) {
+                        for (const pos of strat.recentPositions) {
+                            allTrades.push({
+                                ...pos,
+                                strategyName: strat.name
+                            });
+                        }
+                    }
+                }
+                // Sort by most recent
+                allTrades.sort((a, b) => (b.entryTime || 0) - (a.entryTime || 0));
+                
+                updateStrategyTable();
+                updateTradeLog();
+                updateStrategyDropdown();
+                updateOpenPositions();
+            }
         }
         
         function handleMetrics(metrics) {
@@ -889,52 +784,151 @@
             console.log('Trade execution:', execution);
         }
         
-        function updateStrategyDisplay() {
-            const container = document.getElementById('strategyComparison');
+        function updateStrategyTable() {
+            const tbody = document.getElementById('strategyTableBody');
             
-            if (!strategyData || Object.keys(strategyData).length === 0) {
-                container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">No strategy data yet</div>';
+            if (!strategyData || strategyData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--text-dim);">No strategy data yet</td></tr>';
+                return;
+            }
+            
+            // Calculate total open positions
+            let totalOpen = 0;
+            
+            // Sort by P&L descending
+            const sorted = [...strategyData].sort((a, b) => {
+                const pnlA = currentStrategyCryptoFilter === 'all' ? a.totalPnl : (a.byCrypto?.[currentStrategyCryptoFilter]?.totalPnl || 0);
+                const pnlB = currentStrategyCryptoFilter === 'all' ? b.totalPnl : (b.byCrypto?.[currentStrategyCryptoFilter]?.totalPnl || 0);
+                return pnlB - pnlA;
+            });
+            
+            let html = '';
+            let rank = 1;
+            
+            for (const strat of sorted) {
+                // Get stats for current filter
+                let signals, trades, wins, losses, pnl, openCount;
+                
+                if (currentStrategyCryptoFilter === 'all') {
+                    signals = strat.signals || 0;
+                    trades = strat.trades || 0;
+                    wins = strat.wins || 0;
+                    losses = strat.losses || 0;
+                    pnl = strat.totalPnl || 0;
+                    openCount = strat.openPositions?.length || 0;
+                } else {
+                    const crypto = strat.byCrypto?.[currentStrategyCryptoFilter] || {};
+                    signals = crypto.signals || 0;
+                    trades = crypto.trades || 0;
+                    wins = crypto.wins || 0;
+                    losses = crypto.losses || 0;
+                    pnl = crypto.totalPnl || 0;
+                    openCount = (strat.openPositions || []).filter(p => p.crypto === currentStrategyCryptoFilter).length;
+                }
+                
+                totalOpen += openCount;
+                const closed = wins + losses;
+                const winLoss = closed > 0 ? `${wins}/${losses}` : '--';
+                const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text)';
+                const pnlStr = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                const openBadge = openCount > 0 ? `<span style="background: var(--green-dim); color: var(--green); padding: 2px 6px; border-radius: 10px; font-size: 10px;">${openCount}</span>` : openCount;
+                const signalBadge = signals > 0 ? `<span style="background: var(--yellow-dim); color: var(--yellow); padding: 2px 6px; border-radius: 10px; font-size: 10px;">${signals}</span>` : signals;
+                
+                html += `
+                    <tr style="border-bottom: 1px solid var(--border);" data-strategy="${strat.name}">
+                        <td style="padding: 10px 4px; color: var(--text-dim);">${rank}</td>
+                        <td style="padding: 10px 4px; font-weight: 500;">${strat.name}</td>
+                        <td style="padding: 10px 4px; text-align: center;">${signalBadge}</td>
+                        <td style="padding: 10px 4px; text-align: center;">${openBadge}</td>
+                        <td style="padding: 10px 4px; text-align: center;">${closed}</td>
+                        <td style="padding: 10px 4px; text-align: center;">${winLoss}</td>
+                        <td style="padding: 10px 4px; text-align: right; font-weight: 600; color: ${pnlColor};">${pnlStr}</td>
+                    </tr>
+                `;
+                rank++;
+            }
+            
+            tbody.innerHTML = html;
+            document.getElementById('openPositionsTotal').textContent = `${totalOpen} positions currently open.`;
+            
+            // Update best strategy
+            if (sorted.length > 0 && sorted[0].totalPnl > 0) {
+                document.getElementById('bestStrategy').textContent = sorted[0].name;
+            }
+        }
+        
+        function updateTradeLog() {
+            const container = document.getElementById('tradeLogEntries');
+            
+            // Filter trades
+            let filteredTrades = allTrades;
+            
+            if (currentTradeLogCryptoFilter !== 'all') {
+                filteredTrades = filteredTrades.filter(t => t.crypto === currentTradeLogCryptoFilter);
+            }
+            
+            if (currentTradeLogStrategyFilter !== 'all') {
+                filteredTrades = filteredTrades.filter(t => t.strategyName === currentTradeLogStrategyFilter);
+            }
+            
+            if (filteredTrades.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">No trades matching filter...</div>';
                 return;
             }
             
             let html = '';
-            let bestPnl = -Infinity;
-            let bestName = '--';
             
-            for (const [name, data] of Object.entries(strategyData)) {
-                const metrics = data.tradeMetrics || {};
-                const signals = data.signalStats || {};
-                
-                const pnl = metrics.netPnl || 0;
-                const trades = metrics.tradeCount || 0;
-                const winRate = metrics.winRate || 0;
-                
-                if (pnl > bestPnl && trades > 0) {
-                    bestPnl = pnl;
-                    bestName = name;
-                }
-                
-                const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            for (const trade of filteredTrades.slice(0, 50)) {
+                const entryTime = trade.entryTime ? new Date(trade.entryTime).toLocaleTimeString() : '--';
+                const exitTime = trade.exitTime ? new Date(trade.exitTime).toLocaleTimeString() : 
+                                 trade.holdingTimeMs ? new Date((trade.entryTime || 0) + trade.holdingTimeMs).toLocaleTimeString() : '--';
+                const pnl = trade.pnl || 0;
+                const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-dim)';
                 const pnlStr = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                const sideColor = trade.side === 'up' ? 'var(--green)' : 'var(--red)';
+                const outcomeIcon = trade.outcome === 'up' ? '📈' : trade.outcome === 'down' ? '📉' : '';
+                const cryptoEmoji = { btc: '₿', eth: 'Ξ', sol: '◎', xrp: '✕' }[trade.crypto] || '•';
                 
                 html += `
-                    <div style="background: var(--bg-highlight); border-radius: 8px; padding: 12px; margin-bottom: 8px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="font-weight: 600; font-size: 13px;">${name}</span>
-                            <span class="mono" style="color: ${pnlColor}; font-weight: 600;">${pnlStr}</span>
+                    <div style="padding: 10px; margin-bottom: 8px; background: var(--bg-highlight); border-radius: 6px; border-left: 3px solid ${pnlColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-weight: 600; font-size: 12px;">${trade.strategyName}</span>
+                            <span style="color: ${pnlColor}; font-weight: 600;">${pnlStr}</span>
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; font-size: 11px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; font-size: 10px;">
                             <div>
-                                <div style="color: var(--text-dim);">Trades</div>
-                                <div class="mono">${trades}</div>
+                                <div style="color: var(--text-dim);">Crypto</div>
+                                <div>${cryptoEmoji} ${(trade.crypto || '').toUpperCase()}</div>
                             </div>
                             <div>
-                                <div style="color: var(--text-dim);">Win Rate</div>
-                                <div class="mono">${(winRate * 100).toFixed(0)}%</div>
+                                <div style="color: var(--text-dim);">Side</div>
+                                <div style="color: ${sideColor}; text-transform: uppercase;">${trade.side || '--'}</div>
                             </div>
                             <div>
-                                <div style="color: var(--text-dim);">Signals</div>
-                                <div class="mono">${signals.totalSignals || 0}</div>
+                                <div style="color: var(--text-dim);">Entry</div>
+                                <div>${entryTime}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Exit</div>
+                                <div>${exitTime} ${outcomeIcon}</div>
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; font-size: 10px; margin-top: 6px;">
+                            <div>
+                                <div style="color: var(--text-dim);">Entry $</div>
+                                <div>${(trade.entryPrice || 0).toFixed(3)}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Exit $</div>
+                                <div>${(trade.exitPrice || 0).toFixed(3)}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Window</div>
+                                <div>${trade.windowEpoch || '--'}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Reason</div>
+                                <div style="font-size: 9px; color: var(--text-dim);">${trade.reason || '--'}</div>
                             </div>
                         </div>
                     </div>
@@ -942,7 +936,109 @@
             }
             
             container.innerHTML = html;
-            document.getElementById('bestStrategy').textContent = bestName;
+        }
+        
+        function updateStrategyDropdown() {
+            const select = document.getElementById('tradeLogFilter');
+            const currentValue = select.value;
+            
+            let html = '<option value="all">All Strategies</option>';
+            
+            const strategyNames = [...new Set(allTrades.map(t => t.strategyName))].sort();
+            for (const name of strategyNames) {
+                const selected = currentValue === name ? 'selected' : '';
+                html += `<option value="${name}" ${selected}>${name}</option>`;
+            }
+            
+            select.innerHTML = html;
+        }
+        
+        // Strategy crypto tab click handlers
+        document.querySelectorAll('#strategyCryptoTabs .crypto-filter-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('#strategyCryptoTabs .crypto-filter-tab').forEach(t => {
+                    t.classList.remove('active');
+                    t.style.background = 'var(--bg-highlight)';
+                    t.style.borderColor = 'var(--border)';
+                });
+                tab.classList.add('active');
+                tab.style.background = 'var(--blue-dim)';
+                tab.style.borderColor = 'var(--blue)';
+                currentStrategyCryptoFilter = tab.dataset.filter;
+                updateStrategyTable();
+            });
+        });
+        
+        // Trade log crypto tab click handlers
+        document.querySelectorAll('#tradeLogCryptoTabs .trade-log-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('#tradeLogCryptoTabs .trade-log-tab').forEach(t => {
+                    t.classList.remove('active');
+                    t.style.background = 'var(--bg-highlight)';
+                    t.style.borderColor = 'var(--border)';
+                });
+                tab.classList.add('active');
+                tab.style.background = 'var(--blue-dim)';
+                tab.style.borderColor = 'var(--blue)';
+                currentTradeLogCryptoFilter = tab.dataset.filter;
+                updateTradeLog();
+            });
+        });
+        
+        // Trade log strategy filter
+        document.getElementById('tradeLogFilter').addEventListener('change', (e) => {
+            currentTradeLogStrategyFilter = e.target.value;
+            updateTradeLog();
+        });
+        
+        // Update open positions display
+        function updateOpenPositions() {
+            const container = document.getElementById('openPositions');
+            
+            // Collect all open positions from strategies
+            let allOpen = [];
+            for (const strat of strategyData) {
+                if (strat.openPositions) {
+                    for (const pos of strat.openPositions) {
+                        allOpen.push({
+                            ...pos,
+                            strategyName: strat.name
+                        });
+                    }
+                }
+            }
+            
+            document.getElementById('openCount').textContent = allOpen.length;
+            
+            if (allOpen.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">No open positions</div>';
+                return;
+            }
+            
+            let html = '';
+            for (const pos of allOpen) {
+                const holdingMs = pos.holdingMs || (Date.now() - (pos.entryTime || 0));
+                const holdingMins = Math.floor(holdingMs / 60000);
+                const holdingSecs = Math.floor((holdingMs % 60000) / 1000);
+                const sideColor = pos.side === 'up' ? 'var(--green)' : 'var(--red)';
+                const cryptoEmoji = { btc: '₿', eth: 'Ξ', sol: '◎', xrp: '✕' }[pos.crypto] || '•';
+                
+                html += `
+                    <div style="background: var(--bg-highlight); border-radius: 6px; padding: 10px; margin-bottom: 8px; border-left: 3px solid ${sideColor};">
+                        <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 500; margin-bottom: 4px;">
+                            <span>${pos.strategyName}</span>
+                            <span>${cryptoEmoji} ${(pos.crypto || '').toUpperCase()}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim);">
+                            <span style="color: ${sideColor}; text-transform: uppercase;">${pos.side}</span>
+                            <span>Entry: ${(pos.entryPrice || 0).toFixed(3)}</span>
+                            <span>Holding: ${holdingMins}:${holdingSecs.toString().padStart(2, '0')}</span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
         }
 
         function handleTick(tick) {
@@ -1253,338 +1349,6 @@
         setInterval(() => {
             document.getElementById('serverTime').textContent = new Date().toLocaleTimeString();
         }, 1000);
-
-        // View switching
-        function switchView(view) {
-            currentView = view;
-            document.querySelectorAll('.view-tab').forEach(t => {
-                t.classList.toggle('active', t.dataset.view === view);
-            });
-            document.getElementById('tradingView').style.display = view === 'trading' ? 'block' : 'none';
-            document.getElementById('researchView').style.display = view === 'research' ? 'block' : 'none';
-            
-            if (view === 'research') {
-                refreshResearch();
-            }
-        }
-
-        // Research data loading
-        async function refreshResearch() {
-            try {
-                document.getElementById('researchStatus').textContent = 'Loading...';
-                
-                // Fetch all research data in parallel
-                const [summary, efficiency, volatility, spotlag, strategies] = await Promise.all([
-                    fetch('/api/research').then(r => r.json()),
-                    fetch('/api/research?type=efficiency').then(r => r.json()),
-                    fetch('/api/research?type=volatility').then(r => r.json()),
-                    fetch('/api/research?type=spotlag').then(r => r.json()),
-                    fetch('/api/research?type=strategies').then(r => r.json())
-                ]);
-
-                const now = new Date().toLocaleTimeString();
-                document.getElementById('researchStatus').textContent = `Last updated: ${now}`;
-
-                // Update header stats
-                document.getElementById('researchTicks').textContent = summary.ticksLastHour?.toLocaleString() || '0';
-                document.getElementById('researchWindows').textContent = summary.totalWindows?.toLocaleString() || '0';
-                
-                // Update from research stats if available
-                const stats = summary.researchStats || strategies.data;
-                if (stats) {
-                    if (stats.efficiency?.meanAbsEdgePct) {
-                        document.getElementById('researchAvgEdge').textContent = `${stats.efficiency.meanAbsEdgePct.toFixed(2)}%`;
-                    }
-                    if (stats.spotLag?.avgHalfPricingTimeMs) {
-                        document.getElementById('researchSpotLag').textContent = `${Math.round(stats.spotLag.avgHalfPricingTimeMs)}ms`;
-                    }
-                }
-
-                // Strategy Performance Leaderboard
-                if (stats && stats.strategies && stats.strategies.length > 0) {
-                    const sorted = [...stats.strategies].sort((a, b) => b.totalPnl - a.totalPnl);
-                    const totalOpen = stats.totalOpenPositions || sorted.reduce((sum, s) => sum + (s.openPositions?.length || 0), 0);
-                    
-                    const leaderboardHtml = `
-                        <div style="margin-bottom: 12px; font-size: 12px; color: var(--text-dim);">
-                            Strategies run on ALL cryptos (BTC, ETH, SOL, XRP) simultaneously.
-                            ${totalOpen > 0 ? `<span style="color: var(--yellow);"> ${totalOpen} positions currently open.</span>` : ''}
-                        </div>
-                        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                            <thead>
-                                <tr style="border-bottom: 2px solid var(--border); text-align: left;">
-                                    <th style="padding: 10px 8px;">#</th>
-                                    <th style="padding: 10px 8px;">Strategy</th>
-                                    <th style="padding: 10px 8px; text-align: right;">Signals</th>
-                                    <th style="padding: 10px 8px; text-align: right;">Open</th>
-                                    <th style="padding: 10px 8px; text-align: right;">Closed</th>
-                                    <th style="padding: 10px 8px; text-align: right;">W/L</th>
-                                    <th style="padding: 10px 8px; text-align: right;">P&L</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${sorted.map((s, i) => {
-                                    const closedTrades = s.closedTrades || (s.wins + s.losses) || 0;
-                                    const openCount = s.openPositions?.length || 0;
-                                    const winLoss = closedTrades > 0 ? `${s.wins}/${s.losses}` : '--';
-                                    const pnlColor = s.totalPnl > 0 ? 'var(--green)' : s.totalPnl < 0 ? 'var(--red)' : 'var(--text)';
-                                    const rowBg = i === 0 && s.totalPnl > 0 ? 'var(--green-dim)' : 'transparent';
-                                    const openBadge = openCount > 0 ? `<span style="background: var(--yellow-dim); color: var(--yellow); padding: 2px 6px; border-radius: 4px; font-size: 11px;">${openCount}</span>` : '0';
-                                    return `
-                                        <tr style="border-bottom: 1px solid var(--border); background: ${rowBg};">
-                                            <td style="padding: 10px 8px; color: var(--text-dim);">${i + 1}</td>
-                                            <td style="padding: 10px 8px; font-weight: 500;">${s.name}</td>
-                                            <td style="padding: 10px 8px; text-align: right;">${s.signals || 0}</td>
-                                            <td style="padding: 10px 8px; text-align: right;">${openBadge}</td>
-                                            <td style="padding: 10px 8px; text-align: right;">${closedTrades}</td>
-                                            <td style="padding: 10px 8px; text-align: right;">${winLoss}</td>
-                                            <td style="padding: 10px 8px; text-align: right; font-weight: 600; color: ${pnlColor};">
-                                                ${s.totalPnl >= 0 ? '+' : ''}$${s.totalPnl?.toFixed(2) || '0.00'}
-                                            </td>
-                                        </tr>
-                                    `;
-                                }).join('')}
-                            </tbody>
-                        </table>
-                    `;
-                    document.getElementById('strategyLeaderboard').innerHTML = leaderboardHtml;
-                } else {
-                    document.getElementById('strategyLeaderboard').innerHTML = `
-                        <div style="color: var(--text-dim); padding: 40px; text-align: center;">
-                            <div style="font-size: 14px; margin-bottom: 8px;">No strategy data yet</div>
-                            <div style="font-size: 12px;">Railway collector saves stats every 60 seconds. Check Railway logs for status.</div>
-                        </div>
-                    `;
-                }
-
-                // Update crypto states with more detail
-                if (summary.latestByProto && summary.latestByProto.length > 0) {
-                    const statesHtml = summary.latestByProto.map(s => {
-                        const upMid = parseFloat(s.up_mid);
-                        const spreadCents = (parseFloat(s.spread_pct) / 100 * upMid * 100).toFixed(1);
-                        return `
-                            <div class="insight-card">
-                                <div class="insight-title">${s.crypto.toUpperCase()}</div>
-                                <div class="insight-value" style="font-size: 24px; color: ${upMid > 0.5 ? 'var(--green)' : 'var(--red)'}">
-                                    ${(upMid * 100).toFixed(1)}%
-                                </div>
-                                <div style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">
-                                    Spread: ${spreadCents}¢ (${parseFloat(s.spread_pct).toFixed(1)}%)
-                                </div>
-                                <div style="font-size: 12px; color: var(--text-dim);">
-                                    ${Math.round(parseFloat(s.time_remaining_sec))}s remaining
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-                    document.getElementById('cryptoStates').innerHTML = statesHtml;
-                }
-
-                // Fair Value Analysis (use efficiency data)
-                if (efficiency.data && efficiency.data.length > 0) {
-                    const fvHtml = efficiency.data.map(e => {
-                        const avgUp = parseFloat(e.avg_up_mid);
-                        const stdDev = parseFloat(e.stddev_up_mid || 0);
-                        const spread = parseFloat(e.avg_spread_pct || 0);
-                        // Insight: high stddev = market uncertainty
-                        const uncertaintyLevel = stdDev > 0.25 ? 'High' : stdDev > 0.15 ? 'Medium' : 'Low';
-                        return `
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border);">
-                                <span style="font-weight: 600; width: 50px;">${e.crypto.toUpperCase()}</span>
-                                <span style="color: ${avgUp > 0.5 ? 'var(--green)' : 'var(--red)'};">${(avgUp * 100).toFixed(1)}% avg</span>
-                                <span>±${(stdDev * 100).toFixed(1)}%</span>
-                                <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: ${uncertaintyLevel === 'High' ? 'var(--red-dim)' : uncertaintyLevel === 'Medium' ? 'var(--yellow-dim)' : 'var(--green-dim)'};">
-                                    ${uncertaintyLevel} uncertainty
-                                </span>
-                            </div>
-                        `;
-                    }).join('');
-                    document.getElementById('fairValueAnalysis').innerHTML = fvHtml;
-                }
-
-                // Edge by Phase (mock for now - would need backend to calculate)
-                document.getElementById('edgeByPhase').innerHTML = `
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; text-align: center;">
-                        <div style="padding: 16px; background: var(--bg-highlight); border-radius: 8px;">
-                            <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">EARLY (0-5min)</div>
-                            <div style="font-size: 18px; font-weight: 600; color: var(--yellow);">~5%</div>
-                            <div style="font-size: 11px; color: var(--text-dim);">Higher edge, less certainty</div>
-                        </div>
-                        <div style="padding: 16px; background: var(--bg-highlight); border-radius: 8px;">
-                            <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">MID (5-12min)</div>
-                            <div style="font-size: 18px; font-weight: 600; color: var(--green);">~3%</div>
-                            <div style="font-size: 11px; color: var(--text-dim);">Optimal zone</div>
-                        </div>
-                        <div style="padding: 16px; background: var(--bg-highlight); border-radius: 8px;">
-                            <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 4px;">LATE (12-15min)</div>
-                            <div style="font-size: 18px; font-weight: 600; color: var(--blue);">~8%</div>
-                            <div style="font-size: 11px; color: var(--text-dim);">Wide spreads, big swings</div>
-                        </div>
-                    </div>
-                `;
-
-                // Update volatility data
-                if (volatility.data && volatility.data.length > 0) {
-                    const volHtml = volatility.data.map(v => {
-                        const priceVol = parseFloat(v.price_vol || 0) * 100;
-                        const spotVol = parseFloat(v.spot_vol || 0) * 100;
-                        const ratio = spotVol > 0 ? (priceVol / spotVol).toFixed(1) : '--';
-                        return `
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border);">
-                                <span style="font-weight: 600; width: 50px;">${v.crypto.toUpperCase()}</span>
-                                <span>Market: ${priceVol.toFixed(2)}%</span>
-                                <span>Spot: ${spotVol.toFixed(4)}%</span>
-                                <span style="color: var(--blue);">${ratio}x leverage</span>
-                            </div>
-                        `;
-                    }).join('');
-                    document.getElementById('volatilityData').innerHTML = volHtml;
-                }
-
-                // Update spot lag data - combine DB data with lag analyzer stats
-                let lagHtml = '';
-                
-                // Show lag analyzer stats if available
-                if (stats && stats.lagAnalysis) {
-                    const lag = stats.lagAnalysis;
-                    const halfTime = lag.avgHalfPricingTimeMs ? `${Math.round(lag.avgHalfPricingTimeMs)}ms` : '--';
-                    const fullTime = lag.avgFullPricingTimeMs ? `${Math.round(lag.avgFullPricingTimeMs)}ms` : '--';
-                    const maxLag = lag.avgMaxLagPct ? `${lag.avgMaxLagPct.toFixed(1)}%` : '--';
-                    const events = lag.totalLagEvents || 0;
-                    
-                    lagHtml += `
-                        <div style="margin-bottom: 16px; padding: 12px; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);">
-                            <div style="font-weight: 600; margin-bottom: 8px; color: var(--blue);">Lag Analyzer (Live)</div>
-                            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 12px;">
-                                <div><span style="color: var(--text-dim);">Events Detected:</span> <strong>${events}</strong></div>
-                                <div><span style="color: var(--text-dim);">50% Pricing:</span> <strong>${halfTime}</strong></div>
-                                <div><span style="color: var(--text-dim);">90% Pricing:</span> <strong>${fullTime}</strong></div>
-                                <div><span style="color: var(--text-dim);">Avg Max Lag:</span> <strong style="color: ${lag.avgMaxLagPct > 3 ? 'var(--green)' : 'var(--text)'};">${maxLag}</strong></div>
-                            </div>
-                            ${events === 0 ? `
-                                <div style="margin-top: 8px; padding: 8px; background: var(--yellow-dim); border-radius: 4px; font-size: 11px; color: var(--yellow);">
-                                    No significant lag events detected yet. This could mean:
-                                    <br>• Market is pricing spot moves efficiently (no lag)
-                                    <br>• Spot isn't moving enough (>0.05% threshold)
-                                    <br>• Need more data (keep collecting)
-                                </div>
-                            ` : ''}
-                        </div>
-                    `;
-                }
-                
-                // Show DB-based spot lag data
-                if (spotlag.data && spotlag.data.length > 0) {
-                    lagHtml += spotlag.data.map(l => {
-                        const moves = parseInt(l.move_count);
-                        const spotChange = parseFloat(l.avg_abs_spot_change || 0) * 100;
-                        const marketResp = parseFloat(l.avg_abs_market_response || 0) * 100;
-                        const efficiency = spotChange > 0 ? (marketResp / spotChange).toFixed(1) : '--';
-                        return `
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border);">
-                                <span style="font-weight: 600; width: 50px;">${l.crypto.toUpperCase()}</span>
-                                <span>${moves} moves</span>
-                                <span>Spot Δ: ${spotChange.toFixed(3)}%</span>
-                                <span>Mkt resp: ${marketResp.toFixed(2)}%</span>
-                            </div>
-                        `;
-                    }).join('');
-                }
-                
-                if (lagHtml) {
-                    document.getElementById('spotLagData').innerHTML = lagHtml;
-                } else {
-                    document.getElementById('spotLagData').innerHTML = `
-                        <div style="color: var(--text-dim); text-align: center; padding: 20px;">
-                            No lag data yet. Collecting...
-                        </div>
-                    `;
-                }
-
-                // Generate Quant Insights
-                generateInsights(summary, efficiency, volatility, spotlag, stats);
-
-            } catch (error) {
-                console.error('Research data error:', error);
-                document.getElementById('researchStatus').textContent = `Error: ${error.message}`;
-            }
-        }
-
-        // Generate quantitative insights based on the data
-        function generateInsights(summary, efficiency, volatility, spotlag, stats) {
-            const insights = [];
-
-            // Insight from volatility
-            if (volatility.data) {
-                const maxVol = volatility.data.reduce((max, v) => 
-                    parseFloat(v.price_vol || 0) > parseFloat(max.price_vol || 0) ? v : max, {price_vol: 0});
-                if (maxVol.crypto) {
-                    insights.push({
-                        icon: '📊',
-                        text: `<strong>${maxVol.crypto.toUpperCase()}</strong> has the highest price volatility (${(parseFloat(maxVol.price_vol)*100).toFixed(2)}%). Higher vol = more profit potential but also more risk.`
-                    });
-                }
-            }
-
-            // Insight from efficiency
-            if (efficiency.data) {
-                const widestSpread = efficiency.data.reduce((max, e) => 
-                    parseFloat(e.avg_spread_pct || 0) > parseFloat(max.avg_spread_pct || 0) ? e : max, {avg_spread_pct: 0});
-                if (widestSpread.crypto && parseFloat(widestSpread.avg_spread_pct) > 5) {
-                    insights.push({
-                        icon: '⚠️',
-                        text: `<strong>${widestSpread.crypto.toUpperCase()}</strong> has wide spreads (${parseFloat(widestSpread.avg_spread_pct).toFixed(1)}%). Market makers are pricing in high uncertainty.`
-                    });
-                }
-            }
-
-            // Insight from spot lag
-            if (spotlag.data && spotlag.data.length > 0) {
-                const totalMoves = spotlag.data.reduce((sum, l) => sum + parseInt(l.move_count || 0), 0);
-                if (totalMoves > 0) {
-                    insights.push({
-                        icon: '⚡',
-                        text: `Detected <strong>${totalMoves}</strong> significant spot moves in the last hour. The market may be lagging - potential alpha in fast execution.`
-                    });
-                }
-            }
-
-            // Insight from strategy performance
-            if (stats && stats.topStrategy) {
-                const top = stats.topStrategy;
-                if (top.trades > 0) {
-                    insights.push({
-                        icon: '🏆',
-                        text: `Top strategy is <strong>${top.name}</strong> with ${(top.winRate * 100).toFixed(0)}% win rate and $${top.pnl.toFixed(2)} P&L from ${top.trades} trades.`
-                    });
-                }
-            }
-
-            // Insight about ticks
-            if (summary.ticksLastHour > 10000) {
-                insights.push({
-                    icon: '✅',
-                    text: `Strong data flow: <strong>${summary.ticksLastHour.toLocaleString()}</strong> ticks/hour. Good sample size for strategy evaluation.`
-                });
-            }
-
-            // Default insight
-            if (insights.length === 0) {
-                insights.push({
-                    icon: '📈',
-                    text: 'Collecting data and calibrating models. Insights will appear as patterns emerge.'
-                });
-            }
-
-            const insightsHtml = insights.map(i => `
-                <div style="display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border);">
-                    <span style="font-size: 18px;">${i.icon}</span>
-                    <span>${i.text}</span>
-                </div>
-            `).join('');
-
-            document.getElementById('quantInsights').innerHTML = insightsHtml;
-        }
 
         // Connect
         connect();
