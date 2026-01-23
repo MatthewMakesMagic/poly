@@ -580,6 +580,16 @@
                     Paper trading $100/position. <span id="openPositionsTotal" style="color: var(--green);">0 positions currently open.</span>
                 </div>
                 
+                <!-- Time Period Selector -->
+                <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
+                    <span style="font-size: 11px; color: var(--text-dim); margin-right: 4px;">Period:</span>
+                    <div class="time-filter-tab active" data-period="live" style="padding: 4px 10px; background: var(--green-dim); border: 1px solid var(--green); border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 500;">Live</div>
+                    <div class="time-filter-tab" data-period="hour" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">1 Hour</div>
+                    <div class="time-filter-tab" data-period="day" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">24 Hours</div>
+                    <div class="time-filter-tab" data-period="week" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">7 Days</div>
+                    <div class="time-filter-tab" data-period="all" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">Lifetime</div>
+                </div>
+                
                 <!-- Crypto Filter Tabs -->
                 <div class="strategy-crypto-tabs" id="strategyCryptoTabs" style="display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap;">
                     <div class="crypto-filter-tab active" data-filter="all" style="padding: 6px 12px; background: var(--blue-dim); border: 1px solid var(--blue); border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;">All</div>
@@ -957,6 +967,153 @@
             select.innerHTML = html;
         }
         
+        // Time period state
+        let currentTimePeriod = 'live';
+        let historicalData = null;
+        
+        // Time period click handlers
+        document.querySelectorAll('.time-filter-tab').forEach(tab => {
+            tab.addEventListener('click', async () => {
+                document.querySelectorAll('.time-filter-tab').forEach(t => {
+                    t.classList.remove('active');
+                    t.style.background = 'var(--bg-highlight)';
+                    t.style.borderColor = 'var(--border)';
+                });
+                tab.classList.add('active');
+                tab.style.background = 'var(--green-dim)';
+                tab.style.borderColor = 'var(--green)';
+                currentTimePeriod = tab.dataset.period;
+                
+                if (currentTimePeriod === 'live') {
+                    // Use live WebSocket data
+                    historicalData = null;
+                    updateStrategyTable();
+                    updateTradeLog();
+                } else {
+                    // Fetch historical data from API
+                    await fetchHistoricalData(currentTimePeriod);
+                }
+            });
+        });
+        
+        // Fetch historical trade data
+        async function fetchHistoricalData(period) {
+            try {
+                const crypto = currentStrategyCryptoFilter === 'all' ? '' : currentStrategyCryptoFilter;
+                const url = `https://${BACKEND_URL}/api/paper-trades?period=${period}&crypto=${crypto}`;
+                const response = await fetch(url);
+                historicalData = await response.json();
+                updateStrategyTableWithHistorical();
+                updateTradeLogWithHistorical();
+            } catch (error) {
+                console.error('Failed to fetch historical data:', error);
+            }
+        }
+        
+        // Update strategy table with historical data
+        function updateStrategyTableWithHistorical() {
+            const tbody = document.getElementById('strategyTableBody');
+            
+            if (!historicalData || !historicalData.strategyStats || historicalData.strategyStats.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--text-dim);">No trades in this period</td></tr>';
+                document.getElementById('openPositionsTotal').textContent = `${historicalData?.overall?.total_trades || 0} trades in period.`;
+                return;
+            }
+            
+            // Group by strategy
+            const byStrategy = {};
+            for (const row of historicalData.strategyStats) {
+                if (!byStrategy[row.strategy_name]) {
+                    byStrategy[row.strategy_name] = { signals: 0, trades: 0, wins: 0, losses: 0, pnl: 0 };
+                }
+                const s = byStrategy[row.strategy_name];
+                s.trades += parseInt(row.total_trades) || 0;
+                s.wins += parseInt(row.wins) || 0;
+                s.losses += parseInt(row.losses) || 0;
+                s.pnl += parseFloat(row.total_pnl) || 0;
+            }
+            
+            // Sort by P&L
+            const sorted = Object.entries(byStrategy).sort((a, b) => b[1].pnl - a[1].pnl);
+            
+            let html = '';
+            let rank = 1;
+            
+            for (const [name, stats] of sorted) {
+                const winLoss = stats.trades > 0 ? `${stats.wins}/${stats.losses}` : '--';
+                const pnlColor = stats.pnl > 0 ? 'var(--green)' : stats.pnl < 0 ? 'var(--red)' : 'var(--text)';
+                const pnlStr = `${stats.pnl >= 0 ? '+' : ''}$${stats.pnl.toFixed(2)}`;
+                
+                html += `
+                    <tr style="border-bottom: 1px solid var(--border);">
+                        <td style="padding: 10px 4px; color: var(--text-dim);">${rank}</td>
+                        <td style="padding: 10px 4px; font-weight: 500;">${name}</td>
+                        <td style="padding: 10px 4px; text-align: center;">-</td>
+                        <td style="padding: 10px 4px; text-align: center;">-</td>
+                        <td style="padding: 10px 4px; text-align: center;">${stats.trades}</td>
+                        <td style="padding: 10px 4px; text-align: center;">${winLoss}</td>
+                        <td style="padding: 10px 4px; text-align: right; font-weight: 600; color: ${pnlColor};">${pnlStr}</td>
+                    </tr>
+                `;
+                rank++;
+            }
+            
+            tbody.innerHTML = html || '<tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--text-dim);">No data</td></tr>';
+            
+            const overall = historicalData.overall;
+            document.getElementById('openPositionsTotal').textContent = `${overall.total_trades || 0} trades, ${overall.windows_traded || 0} windows.`;
+        }
+        
+        // Update trade log with historical data
+        function updateTradeLogWithHistorical() {
+            const container = document.getElementById('tradeLogEntries');
+            
+            if (!historicalData || !historicalData.trades || historicalData.trades.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">No trades in this period</div>';
+                return;
+            }
+            
+            let html = '';
+            for (const trade of historicalData.trades.slice(0, 50)) {
+                const entryTime = trade.entry_time ? new Date(trade.entry_time).toLocaleString() : '--';
+                const exitTime = trade.exit_time ? new Date(trade.exit_time).toLocaleString() : '--';
+                const pnl = parseFloat(trade.pnl) || 0;
+                const pnlColor = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text-dim)';
+                const pnlStr = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                const sideColor = trade.side === 'up' ? 'var(--green)' : 'var(--red)';
+                const cryptoEmoji = { btc: '₿', eth: 'Ξ', sol: '◎', xrp: '✕' }[trade.crypto] || '•';
+                
+                html += `
+                    <div style="padding: 10px; margin-bottom: 8px; background: var(--bg-highlight); border-radius: 6px; border-left: 3px solid ${pnlColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-weight: 600; font-size: 12px;">${trade.strategy_name}</span>
+                            <span style="color: ${pnlColor}; font-weight: 600;">${pnlStr}</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; font-size: 10px;">
+                            <div>
+                                <div style="color: var(--text-dim);">Crypto</div>
+                                <div>${cryptoEmoji} ${(trade.crypto || '').toUpperCase()}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Side</div>
+                                <div style="color: ${sideColor}; text-transform: uppercase;">${trade.side || '--'}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Entry</div>
+                                <div style="font-size: 9px;">${entryTime}</div>
+                            </div>
+                            <div>
+                                <div style="color: var(--text-dim);">Exit</div>
+                                <div style="font-size: 9px;">${exitTime}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+        }
+        
         // Strategy crypto tab click handlers
         document.querySelectorAll('#strategyCryptoTabs .crypto-filter-tab').forEach(tab => {
             tab.addEventListener('click', () => {
@@ -969,7 +1126,12 @@
                 tab.style.background = 'var(--blue-dim)';
                 tab.style.borderColor = 'var(--blue)';
                 currentStrategyCryptoFilter = tab.dataset.filter;
-                updateStrategyTable();
+                
+                if (currentTimePeriod === 'live') {
+                    updateStrategyTable();
+                } else {
+                    fetchHistoricalData(currentTimePeriod);
+                }
             });
         });
         

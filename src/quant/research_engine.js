@@ -15,6 +15,7 @@ import { VolatilityEstimator } from './volatility.js';
 import { SpotLagAnalyzer } from './spot_lag_analyzer.js';
 import { RegimeDetector } from './regime_detector.js';
 import { createAllQuantStrategies } from './strategies/index.js';
+import { savePaperTrade } from '../db/connection.js';
 
 /**
  * Main Research Engine
@@ -248,7 +249,7 @@ export class ResearchEngine {
             perf.totalPnl += pnl;
             cryptoPerf.totalPnl += pnl;
             
-            perf.positions.push({
+            const closedPosition = {
                 crypto,
                 side: position.side,
                 entryPrice: position.entryPrice,
@@ -267,9 +268,14 @@ export class ResearchEngine {
                 timeRemainingAtExit: tick.time_remaining_sec,
                 entryMarketProb: position.entryMarketProb,
                 exitMarketProb: tick.up_mid
-            });
+            };
             
-            // Keep last 100 positions
+            perf.positions.push(closedPosition);
+            
+            // Save to database for historical tracking
+            savePaperTrade({ strategyName, ...closedPosition }).catch(() => {});
+            
+            // Keep last 100 positions in memory
             if (perf.positions.length > 100) {
                 perf.positions.shift();
             }
@@ -324,7 +330,7 @@ export class ResearchEngine {
             cryptoPerf.totalPnl += pnl;
             
             // Log the closed position
-            perf.positions.push({
+            const closedPosition = {
                 crypto,
                 side: position.side,
                 entryPrice: position.entryPrice,
@@ -342,9 +348,14 @@ export class ResearchEngine {
                 priceToBeat: position.priceToBeat,
                 timeRemainingAtEntry: position.timeRemainingAtEntry,
                 entryMarketProb: position.entryMarketProb
-            });
+            };
             
-            // Keep last 100 positions
+            perf.positions.push(closedPosition);
+            
+            // Save to database for historical tracking
+            savePaperTrade({ strategyName, ...closedPosition }).catch(() => {});
+            
+            // Keep last 100 positions in memory
             if (perf.positions.length > 100) {
                 perf.positions.shift();
             }

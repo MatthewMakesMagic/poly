@@ -379,6 +379,138 @@ export async function getResearchStats() {
     return null;
 }
 
+/**
+ * Save a completed paper trade to database for historical tracking
+ */
+export async function savePaperTrade(trade) {
+    if (USE_POSTGRES && pgPool) {
+        try {
+            await pgPool.query(`
+                INSERT INTO paper_trades (
+                    strategy_name, crypto, side,
+                    entry_time, exit_time, window_epoch, holding_time_ms,
+                    entry_price, exit_price, entry_spot_price, exit_spot_price, price_to_beat,
+                    entry_market_prob, exit_market_prob, time_remaining_at_entry,
+                    pnl, outcome, reason
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            `, [
+                trade.strategyName,
+                trade.crypto,
+                trade.side,
+                new Date(trade.entryTime),
+                new Date(trade.exitTime),
+                trade.windowEpoch,
+                trade.holdingTimeMs,
+                trade.entryPrice,
+                trade.exitPrice,
+                trade.entrySpotPrice,
+                trade.exitSpotPrice,
+                trade.priceToBeat,
+                trade.entryMarketProb,
+                trade.exitMarketProb,
+                trade.timeRemainingAtEntry,
+                trade.pnl,
+                trade.outcome,
+                trade.reason
+            ]);
+        } catch (error) {
+            console.error('Failed to save paper trade:', error.message);
+        }
+    }
+}
+
+/**
+ * Get paper trades with time filtering
+ * @param {Object} options - Filter options
+ * @param {string} options.period - 'current', 'hour', 'day', 'week', 'all'
+ * @param {string} options.strategy - Strategy name filter (optional)
+ * @param {string} options.crypto - Crypto filter (optional)
+ */
+export async function getPaperTrades(options = {}) {
+    if (!USE_POSTGRES || !pgPool) {
+        return { trades: [], stats: {} };
+    }
+    
+    const { period = 'all', strategy = null, crypto = null } = options;
+    
+    // Calculate time filter
+    let timeFilter = '';
+    const now = new Date();
+    
+    switch (period) {
+        case 'current':
+            // Current 15-min window
+            const currentEpoch = Math.floor(now.getTime() / 1000 / 900) * 900;
+            timeFilter = `AND window_epoch = ${currentEpoch}`;
+            break;
+        case 'hour':
+            timeFilter = `AND exit_time > NOW() - INTERVAL '1 hour'`;
+            break;
+        case 'day':
+            timeFilter = `AND exit_time > NOW() - INTERVAL '1 day'`;
+            break;
+        case 'week':
+            timeFilter = `AND exit_time > NOW() - INTERVAL '1 week'`;
+            break;
+        case 'all':
+        default:
+            timeFilter = '';
+    }
+    
+    // Strategy filter
+    const strategyFilter = strategy ? `AND strategy_name = '${strategy}'` : '';
+    
+    // Crypto filter
+    const cryptoFilter = crypto ? `AND crypto = '${crypto}'` : '';
+    
+    try {
+        // Get individual trades
+        const { rows: trades } = await pgPool.query(`
+            SELECT * FROM paper_trades 
+            WHERE 1=1 ${timeFilter} ${strategyFilter} ${cryptoFilter}
+            ORDER BY exit_time DESC
+            LIMIT 500
+        `);
+        
+        // Get aggregated stats by strategy
+        const { rows: strategyStats } = await pgPool.query(`
+            SELECT 
+                strategy_name,
+                crypto,
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                SUM(pnl) as total_pnl,
+                AVG(pnl) as avg_pnl
+            FROM paper_trades
+            WHERE 1=1 ${timeFilter} ${strategyFilter} ${cryptoFilter}
+            GROUP BY strategy_name, crypto
+            ORDER BY total_pnl DESC
+        `);
+        
+        // Get overall stats
+        const { rows: overallStats } = await pgPool.query(`
+            SELECT 
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(pnl) as total_pnl,
+                COUNT(DISTINCT strategy_name) as strategies_used,
+                COUNT(DISTINCT window_epoch) as windows_traded
+            FROM paper_trades
+            WHERE 1=1 ${timeFilter} ${strategyFilter} ${cryptoFilter}
+        `);
+        
+        return {
+            trades,
+            strategyStats,
+            overall: overallStats[0] || {}
+        };
+    } catch (error) {
+        console.error('Failed to get paper trades:', error.message);
+        return { trades: [], strategyStats: [], overall: {} };
+    }
+}
+
 // Log which mode we're using
 console.log(`🗄️  Database mode: ${USE_POSTGRES ? 'PostgreSQL' : 'SQLite'}`);
 
@@ -393,5 +525,7 @@ export default {
     getState,
     setState,
     saveResearchStats,
-    getResearchStats
+    getResearchStats,
+    savePaperTrade,
+    getPaperTrades
 };

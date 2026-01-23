@@ -12,7 +12,7 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getDatabase } from '../db/connection.js';
+import { getDatabase, getPaperTrades } from '../db/connection.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -192,6 +192,8 @@ async function handleAPI(req, res) {
                 return apiExecutions(req, res);
             case '/api/windows':
                 return apiWindows(req, res);
+            case '/api/paper-trades':
+                return apiPaperTrades(req, res);
             default:
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Not found' }));
@@ -299,6 +301,24 @@ async function apiWindows(req, res) {
         windows: windowAnalysis,
         timestamp: Date.now()
     }));
+}
+
+// Paper trades endpoint with time filtering
+async function apiPaperTrades(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const period = url.searchParams.get('period') || 'all';
+    const strategy = url.searchParams.get('strategy') || null;
+    const crypto = url.searchParams.get('crypto') || null;
+    
+    try {
+        const data = await getPaperTrades({ period, strategy, crypto: crypto || null });
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
 }
 
 // Broadcast to all connected clients
