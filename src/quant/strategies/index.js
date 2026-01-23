@@ -21,6 +21,7 @@ export { RegimeStrategy } from './regime_strategy.js';
 export { MicrostructureStrategy } from './microstructure_strategy.js';
 export { CrossAssetStrategy } from './cross_asset_strategy.js';
 export { ContrarianStrategy, ContrarianSOLStrategy, ContrarianScalpStrategy, ContrarianStrongStrategy, createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
+export { EndgameStrategy, EndgameConservativeStrategy, EndgameAggressiveStrategy, EndgameSafeStrategy, EndgameMomentumStrategy, createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
 
 // Import for factory
 import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift } from './fair_value_strategy.js';
@@ -30,6 +31,7 @@ import { RegimeStrategy } from './regime_strategy.js';
 import { MicrostructureStrategy } from './microstructure_strategy.js';
 import { CrossAssetStrategy } from './cross_asset_strategy.js';
 import { createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
+import { createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
 
 /**
  * Create all quant strategies
@@ -52,6 +54,13 @@ export function createAllQuantStrategies(capital = 100) {
         createContrarianSOL(capital),       // SOL only (63% accuracy in backtest)
         createContrarianScalp(capital),     // Quick scalp, lower threshold
         createContrarianStrong(capital),    // Only big moves
+        
+        // ENDGAME variants (buy near-certain outcomes in final seconds)
+        createEndgameBase(capital),         // 90%+ prob, last 60s
+        createEndgameConservative(capital), // 95%+ prob, last 30s (safer)
+        createEndgameAggressive(capital),   // 85%+ prob, last 90s (riskier)
+        createEndgameSafe(capital),         // 97%+ prob, last 20s (very safe)
+        createEndgameMomentum(capital),     // 90%+ prob with momentum confirmation
         
         // Time Conditional
         new TimeConditionalStrategy({ maxPosition: capital }),
@@ -149,6 +158,13 @@ export const QUANT_STRATEGY_LIST = [
     { name: 'Contrarian_SOL', category: 'contrarian', description: 'SOL-only contrarian (63% accuracy in backtest)' },
     { name: 'Contrarian_Scalp', category: 'contrarian', description: 'Quick scalp contrarian, lower threshold' },
     { name: 'Contrarian_Strong', category: 'contrarian', description: 'Only fade large spot moves' },
+    
+    // Endgame (buy near-certain outcomes in final seconds)
+    { name: 'Endgame', category: 'endgame', description: 'Buy >90% favorites in last 60 seconds' },
+    { name: 'Endgame_Conservative', category: 'endgame', description: 'Buy >95% favorites in last 30 seconds (safer)' },
+    { name: 'Endgame_Aggressive', category: 'endgame', description: 'Buy >85% favorites in last 90 seconds (riskier)' },
+    { name: 'Endgame_Safe', category: 'endgame', description: 'Buy >97% favorites in last 20 seconds (very safe)' },
+    { name: 'Endgame_Momentum', category: 'endgame', description: 'Buy >90% favorites with momentum confirmation' },
     
     // Time Conditional
     { name: 'TimeConditional', category: 'time', description: 'Different behavior by window phase' },

@@ -20,10 +20,11 @@ export class ContrarianStrategy {
     constructor(options = {}) {
         this.name = options.name || 'Contrarian';
         this.options = {
-            // Spot movement thresholds
-            spotThreshold: 0.0003,      // 0.03% minimum spot move to trigger
-            spotAccumThreshold: 0.001,  // 0.1% accumulated spot move to trade
-            lookbackTicks: 10,          // How many ticks to accumulate spot movement
+            // Spot movement thresholds (lowered based on actual market data)
+            // Avg tick move is 0.0002%, so accumulate over more ticks
+            spotThreshold: 0.00005,     // 0.005% minimum spot move to count
+            spotAccumThreshold: 0.0003, // 0.03% accumulated spot move to trade
+            lookbackTicks: 30,          // More ticks to accumulate movement
             
             // Position sizing
             maxPosition: 100,
@@ -191,7 +192,8 @@ export class ContrarianSOLStrategy extends ContrarianStrategy {
         super({
             name: 'Contrarian_SOL',
             enabledCryptos: ['sol'],  // Only trade SOL
-            spotAccumThreshold: 0.0015,  // Higher threshold for stronger signals
+            spotAccumThreshold: 0.0005,  // 0.05% threshold (lowered)
+            lookbackTicks: 20,
             maxHoldingMs: 45000,  // Shorter hold
             profitTarget: 0.08,   // Higher target (SOL jumps are big)
             stopLoss: 0.10,
@@ -207,11 +209,11 @@ export class ContrarianScalpStrategy extends ContrarianStrategy {
     constructor(options = {}) {
         super({
             name: 'Contrarian_Scalp',
-            spotAccumThreshold: 0.0008,  // Lower threshold, more trades
+            spotAccumThreshold: 0.0002,  // 0.02% threshold (lowered for more trades)
             maxHoldingMs: 15000,  // 15 second max hold
             profitTarget: 0.03,   // Quick 3% target
             stopLoss: 0.05,
-            lookbackTicks: 5,     // Shorter lookback
+            lookbackTicks: 15,    // More ticks to accumulate
             ...options
         });
     }
@@ -224,11 +226,11 @@ export class ContrarianStrongStrategy extends ContrarianStrategy {
     constructor(options = {}) {
         super({
             name: 'Contrarian_Strong',
-            spotAccumThreshold: 0.002,  // 0.2% threshold - only big moves
+            spotAccumThreshold: 0.0008,  // 0.08% threshold (lowered but still higher than base)
             maxHoldingMs: 90000,  // Longer hold for bigger moves
             profitTarget: 0.10,   // 10% target
             stopLoss: 0.12,
-            lookbackTicks: 15,    // More accumulation
+            lookbackTicks: 40,    // More accumulation
             ...options
         });
     }
