@@ -224,7 +224,12 @@ export class ResearchEngine {
                 entryTime: Date.now(),
                 size: signal.size || 100,
                 reason: signal.reason,
-                windowEpoch: tick.window_epoch  // Track which window
+                windowEpoch: tick.window_epoch,
+                // Additional fields for analysis
+                entrySpotPrice: tick.spot_price,
+                priceToBeat: tick.price_to_beat,
+                timeRemainingAtEntry: tick.time_remaining_sec,
+                entryMarketProb: tick.up_mid
             };
             perf.trades++;
             cryptoPerf.trades++;
@@ -253,7 +258,15 @@ export class ResearchEngine {
                 exitTime: Date.now(),
                 holdingTimeMs: Date.now() - position.entryTime,
                 reason: signal.reason,
-                windowEpoch: position.windowEpoch
+                windowEpoch: position.windowEpoch,
+                // Analysis fields
+                entrySpotPrice: position.entrySpotPrice,
+                exitSpotPrice: tick.spot_price,
+                priceToBeat: position.priceToBeat,
+                timeRemainingAtEntry: position.timeRemainingAtEntry,
+                timeRemainingAtExit: tick.time_remaining_sec,
+                entryMarketProb: position.entryMarketProb,
+                exitMarketProb: tick.up_mid
             });
             
             // Keep last 100 positions
@@ -322,7 +335,13 @@ export class ResearchEngine {
                 holdingTimeMs: Date.now() - position.entryTime,
                 reason: 'window_expiry',
                 outcome: windowInfo.outcome,
-                windowEpoch: position.windowEpoch
+                windowEpoch: position.windowEpoch,
+                // Analysis fields
+                entrySpotPrice: position.entrySpotPrice,
+                exitSpotPrice: windowInfo.finalPrice,
+                priceToBeat: position.priceToBeat,
+                timeRemainingAtEntry: position.timeRemainingAtEntry,
+                entryMarketProb: position.entryMarketProb
             });
             
             // Keep last 100 positions
