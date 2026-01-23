@@ -684,9 +684,13 @@
         let updateCount = 0;
 
         // Connect to WebSocket
+        // Railway backend URL - falls back to same host for local dev
+        const BACKEND_URL = 'poly-production-f498.up.railway.app';
+        
         function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.host || 'localhost:3333';
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const protocol = isLocal ? 'ws:' : 'wss:';
+            const host = isLocal ? 'localhost:3333' : BACKEND_URL;
             ws = new WebSocket(`${protocol}//${host}/ws`);
 
             ws.onopen = () => {

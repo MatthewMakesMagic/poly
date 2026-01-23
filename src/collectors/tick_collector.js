@@ -12,6 +12,7 @@
 import WebSocket from 'ws';
 import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats } from '../db/connection.js';
 import { getResearchEngine } from '../quant/research_engine.js';
+import { startDashboard, sendTick, sendStrategyComparison, sendMetrics } from '../dashboard/server.js';
 
 // Configuration
 const CONFIG = {
@@ -95,6 +96,15 @@ class TickCollector {
         }
         
         this.isRunning = true;
+        
+        // Start dashboard server for WebSocket connections
+        const dashboardPort = process.env.PORT || process.env.DASHBOARD_PORT || 3333;
+        try {
+            await startDashboard(dashboardPort);
+            console.log(`✅ Dashboard server started on port ${dashboardPort}`);
+        } catch (error) {
+            console.error('⚠️  Dashboard server failed to start:', error.message);
+        }
         
         // Discover current 15-minute markets
         await this.refreshMarkets();
@@ -438,6 +448,47 @@ class TickCollector {
         
         // Log stats periodically
         setInterval(() => this.logStats(), 60000);
+        
+        // Send dashboard metrics periodically
+        setInterval(() => this.sendDashboardMetrics(), 10000);
+    }
+    
+    /**
+     * Send metrics to dashboard
+     */
+    sendDashboardMetrics() {
+        if (!this.researchEngine) return;
+        
+        try {
+            const report = this.researchEngine.getStrategyPerformanceReport();
+            
+            // Send strategy comparison
+            sendStrategyComparison(report);
+            
+            // Calculate aggregate metrics
+            let totalTrades = 0;
+            let totalPnl = 0;
+            let wins = 0;
+            let openCount = 0;
+            
+            for (const strat of report.strategies) {
+                totalTrades += strat.closedTrades || 0;
+                totalPnl += strat.totalPnl || 0;
+                wins += strat.wins || 0;
+                openCount += strat.openPositions?.length || 0;
+            }
+            
+            const winRate = totalTrades > 0 ? wins / totalTrades : 0;
+            
+            sendMetrics({
+                totalTrades,
+                totalPnl,
+                winRate,
+                openPositions: openCount
+            });
+        } catch (error) {
+            // Dashboard might not be connected
+        }
     }
     
     /**
@@ -541,6 +592,13 @@ class TickCollector {
                         console.error('⚠️  Research engine error:', error.message);
                     }
                 }
+            }
+            
+            // Send tick to dashboard
+            try {
+                sendTick(tick);
+            } catch (error) {
+                // Dashboard might not be connected
             }
             
             this.tickBuffer.push(tick);
