@@ -181,15 +181,17 @@ class TickCollector {
                 const market = markets[0];
                 const tokenIds = JSON.parse(market.clobTokenIds || '[]');
                 
-                // Fetch price to beat from market description or calculate
-                let priceTobeat = null;
+                // Price to beat is SET ONCE at window start
+                // We'll set it when we get the first spot price for this window
+                // Do NOT update it after that!
                 
                 return {
                     epoch,
                     slug,
                     upTokenId: tokenIds[0],
                     downTokenId: tokenIds[1],
-                    priceToBeat: priceTobeat,
+                    priceToBeat: null,  // Will be set on first tick
+                    priceToBeatLocked: false,  // Flag to prevent updates
                     endTime: new Date(market.endDate).getTime()
                 };
             }
@@ -481,8 +483,16 @@ class TickCollector {
             // Calculate time remaining
             const timeRemainingSec = Math.max(0, (market.endTime - now) / 1000);
             
-            // Calculate spot delta (if we have price to beat)
-            const priceToBeat = market.priceToBeat || spotPrice; // Use current price if no reference
+            // LOCK IN price_to_beat on first tick of window
+            // This is the strike price - it should NOT change during the window!
+            if (!market.priceToBeatLocked && spotPrice > 0) {
+                market.priceToBeat = spotPrice;
+                market.priceToBeatLocked = true;
+                console.log(`📌 ${crypto} window ${market.epoch}: price_to_beat locked at $${spotPrice.toFixed(2)}`);
+            }
+            
+            // Use locked price_to_beat (should never be null after first tick)
+            const priceToBeat = market.priceToBeat || spotPrice;
             const spotDelta = spotPrice - priceToBeat;
             const spotDeltaPct = priceToBeat > 0 ? (spotDelta / priceToBeat) * 100 : 0;
             
