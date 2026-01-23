@@ -28,9 +28,12 @@ export class MicrostructureStrategy {
             
             maxPosition: 100,
             // Smart exits - hold unless extreme conditions
-            maxDrawdown: 0.30,
-            minTimeRemaining: 180,       // Need 3+ min for micro signals
-            exitTimeRemaining: 5,  // Let binary expire
+            // SCALP STRATEGY - microstructure signals are short-term
+            maxHoldingMs: 30000,         // Exit after 30 seconds max
+            profitTarget: 0.03,          // Exit at 3% profit
+            stopLoss: 0.05,              // Exit at 5% loss
+            minTimeRemaining: 180,       // Need 3+ min for signals
+            exitTimeRemaining: 60,       // Don't hold into final minute
             
             ...options
         };
@@ -101,22 +104,33 @@ export class MicrostructureStrategy {
             askSize
         };
         
-        // Time-based exit
-        if (position && timeRemaining < this.options.exitTimeRemaining) {
-            return this.createSignal('sell', null, 'time_exit', analysis);
-        }
-        
-        // Smart position management
+        // SCALP POSITION MANAGEMENT - microstructure signals are short-term
         if (position) {
             const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            const holdingTime = Date.now() - position.entryTime;
             
-            // Exit on extreme drawdown
-            if (pnlPct <= -this.options.maxDrawdown) {
-                return this.createSignal('sell', null, 'max_drawdown', analysis);
+            // 1. PROFIT TARGET - captured the edge
+            if (pnlPct >= this.options.profitTarget) {
+                return this.createSignal('sell', null, 'profit_target', analysis);
             }
             
-            return this.createSignal('hold', null, 'holding_with_edge', analysis);
+            // 2. STOP LOSS - cut losses
+            if (pnlPct <= -this.options.stopLoss) {
+                return this.createSignal('sell', null, 'stop_loss', analysis);
+            }
+            
+            // 3. MAX HOLDING TIME - microstructure edge decays fast
+            if (holdingTime > this.options.maxHoldingMs) {
+                return this.createSignal('sell', null, 'max_holding_time', analysis);
+            }
+            
+            // 4. TIME EXIT
+            if (timeRemaining < this.options.exitTimeRemaining) {
+                return this.createSignal('sell', null, 'time_exit', analysis);
+            }
+            
+            return this.createSignal('hold', null, 'waiting_for_edge', analysis);
         }
         
         // Entry logic

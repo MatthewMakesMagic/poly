@@ -23,10 +23,15 @@ export class SpotLagStrategy {
             lagThreshold: 0.03,        // Minimum 3% probability lag
             spotChangeThreshold: 0.0003, // Minimum 0.03% spot move
             maxPosition: 100,
-            // Smart exits - hold unless extreme conditions
-            maxDrawdown: 0.30,
-            minTimeRemaining: 120,
-            exitTimeRemaining: 5,  // Let binary expire - exit only at 5s left
+            
+            // SCALP STRATEGY - capture lag and get out fast
+            // Lag resolves in ~3.5 seconds, so don't hold long!
+            maxHoldingMs: 15000,       // Exit after 15 seconds max (lag should resolve by then)
+            profitTarget: 0.03,        // Exit at 3% profit (captured the lag)
+            stopLoss: 0.05,            // Exit at 5% loss (lag didn't materialize)
+            
+            minTimeRemaining: 120,     // Need time for lag to resolve
+            exitTimeRemaining: 60,     // Don't hold into final minute
             confirmationTicks: 2,      // Wait for N ticks of confirmation
             ...options
         };
@@ -94,22 +99,35 @@ export class SpotLagStrategy {
             state.timestamps.shift();
         }
         
-        // Time-based exit
-        if (position && tick.time_remaining_sec < this.options.exitTimeRemaining) {
-            return this.createSignal('sell', null, 'time_exit', {});
-        }
-        
-        // Smart position management - spot lag positions should hold
+        // SCALP POSITION MANAGEMENT
+        // Lag resolves in ~3.5 seconds - get in, capture the move, get out
         if (position) {
             const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            const holdingTime = Date.now() - position.entryTime;
             
-            // Exit only on extreme drawdown
-            if (pnlPct <= -this.options.maxDrawdown) {
-                return this.createSignal('sell', null, 'max_drawdown', {});
+            // 1. PROFIT TARGET - captured the lag, exit with profit
+            if (pnlPct >= this.options.profitTarget) {
+                return this.createSignal('sell', null, 'profit_target', { pnlPct, holdingTime });
             }
             
-            return this.createSignal('hold', null, 'holding_for_lag_resolution', {});
+            // 2. STOP LOSS - lag didn't materialize, cut losses
+            if (pnlPct <= -this.options.stopLoss) {
+                return this.createSignal('sell', null, 'stop_loss', { pnlPct, holdingTime });
+            }
+            
+            // 3. MAX HOLDING TIME - lag should resolve in ~3.5s, exit if held too long
+            if (holdingTime > this.options.maxHoldingMs) {
+                return this.createSignal('sell', null, 'max_holding_time', { pnlPct, holdingTime });
+            }
+            
+            // 4. TIME EXIT - don't hold into final minute
+            if (tick.time_remaining_sec < this.options.exitTimeRemaining) {
+                return this.createSignal('sell', null, 'time_exit', { pnlPct, holdingTime });
+            }
+            
+            // Still waiting for lag to resolve
+            return this.createSignal('hold', null, 'waiting_for_lag', { pnlPct, holdingTime });
         }
         
         // Entry logic
