@@ -39,16 +39,28 @@ export class ResearchEngine {
         // Position tracking for paper trading
         this.positions = {};  // strategyName -> crypto -> position
         
-        // Performance tracking
+        // Performance tracking - now with crypto-level breakdown
         this.strategyPerformance = {};
+        const cryptos = ['btc', 'eth', 'sol', 'xrp'];
         for (const strategy of this.strategies) {
+            const byCrypto = {};
+            for (const crypto of cryptos) {
+                byCrypto[crypto] = {
+                    signals: 0,
+                    trades: 0,
+                    wins: 0,
+                    losses: 0,
+                    totalPnl: 0
+                };
+            }
             this.strategyPerformance[strategy.getName()] = {
                 signals: 0,
                 trades: 0,
                 wins: 0,
                 losses: 0,
                 totalPnl: 0,
-                positions: []
+                positions: [],
+                byCrypto  // NEW: crypto-level breakdown
             };
         }
         
@@ -98,9 +110,14 @@ export class ResearchEngine {
             const position = this.getPosition(strategy.getName(), crypto);
             const signal = strategy.onTick(tick, position, {});
             
-            // Track signals
+            // Track signals (total and by crypto)
             if (signal.action === 'buy' || signal.action === 'sell') {
-                this.strategyPerformance[strategy.getName()].signals++;
+                const perf = this.strategyPerformance[strategy.getName()];
+                perf.signals++;
+                if (!perf.byCrypto[crypto]) {
+                    perf.byCrypto[crypto] = { signals: 0, trades: 0, wins: 0, losses: 0, totalPnl: 0 };
+                }
+                perf.byCrypto[crypto].signals++;
             }
             
             // Paper trading
@@ -192,6 +209,12 @@ export class ResearchEngine {
         const position = this.positions[strategyName][crypto];
         const perf = this.strategyPerformance[strategyName];
         
+        // Ensure crypto tracking exists
+        if (!perf.byCrypto[crypto]) {
+            perf.byCrypto[crypto] = { signals: 0, trades: 0, wins: 0, losses: 0, totalPnl: 0 };
+        }
+        const cryptoPerf = perf.byCrypto[crypto];
+        
         if (signal.action === 'buy' && !position) {
             // Open position
             const entryPrice = signal.side === 'up' ? tick.up_ask : (1 - tick.up_bid);
@@ -200,9 +223,11 @@ export class ResearchEngine {
                 entryPrice,
                 entryTime: Date.now(),
                 size: signal.size || 100,
-                reason: signal.reason
+                reason: signal.reason,
+                windowEpoch: tick.window_epoch  // Track which window
             };
             perf.trades++;
+            cryptoPerf.trades++;
         } else if (signal.action === 'sell' && position) {
             // Close position
             const exitPrice = position.side === 'up' ? tick.up_bid : (1 - tick.up_ask);
@@ -210,10 +235,13 @@ export class ResearchEngine {
             
             if (pnl > 0) {
                 perf.wins++;
+                cryptoPerf.wins++;
             } else {
                 perf.losses++;
+                cryptoPerf.losses++;
             }
             perf.totalPnl += pnl;
+            cryptoPerf.totalPnl += pnl;
             
             perf.positions.push({
                 crypto,
@@ -222,7 +250,8 @@ export class ResearchEngine {
                 exitPrice,
                 pnl,
                 holdingTimeMs: Date.now() - position.entryTime,
-                reason: signal.reason
+                reason: signal.reason,
+                windowEpoch: position.windowEpoch
             });
             
             // Keep last 100 positions
@@ -235,32 +264,69 @@ export class ResearchEngine {
     }
     
     /**
-     * Handle window end
+     * Handle window end - close positions at binary expiry
      */
     onWindowEnd(windowInfo) {
         this.stats.windowsAnalyzed++;
         
-        // Close any open positions for this window
+        // Close any open positions for this crypto at window end
         const crypto = windowInfo.crypto;
+        const windowEpoch = windowInfo.epoch;
+        
         for (const strategyName of Object.keys(this.positions)) {
-            const position = this.positions[strategyName][crypto];
-            if (position) {
-                // Position expires - outcome determines P&L
-                const isCorrect = (position.side === 'up' && windowInfo.outcome === 'up') ||
-                                 (position.side === 'down' && windowInfo.outcome === 'down');
-                const exitPrice = isCorrect ? 1.0 : 0.0;
-                const pnl = (exitPrice - position.entryPrice) * position.size;
-                
-                const perf = this.strategyPerformance[strategyName];
-                if (pnl > 0) {
-                    perf.wins++;
-                } else {
-                    perf.losses++;
-                }
-                perf.totalPnl += pnl;
-                
-                delete this.positions[strategyName][crypto];
+            const position = this.positions[strategyName]?.[crypto];
+            if (!position) continue;
+            
+            // Only close positions from THIS window (or earlier - they shouldn't exist)
+            // This prevents closing positions that were opened for the NEXT window
+            if (position.windowEpoch && position.windowEpoch > windowEpoch) {
+                continue;  // Position is for a future window, don't close
             }
+            
+            // Position expires - outcome determines P&L (binary: $1 or $0)
+            const isCorrect = (position.side === 'up' && windowInfo.outcome === 'up') ||
+                             (position.side === 'down' && windowInfo.outcome === 'down');
+            const exitPrice = isCorrect ? 1.0 : 0.0;
+            const pnl = (exitPrice - position.entryPrice) * position.size;
+            
+            const perf = this.strategyPerformance[strategyName];
+            
+            // Ensure crypto tracking exists
+            if (!perf.byCrypto[crypto]) {
+                perf.byCrypto[crypto] = { signals: 0, trades: 0, wins: 0, losses: 0, totalPnl: 0 };
+            }
+            const cryptoPerf = perf.byCrypto[crypto];
+            
+            // Update stats
+            if (pnl > 0) {
+                perf.wins++;
+                cryptoPerf.wins++;
+            } else {
+                perf.losses++;
+                cryptoPerf.losses++;
+            }
+            perf.totalPnl += pnl;
+            cryptoPerf.totalPnl += pnl;
+            
+            // Log the closed position
+            perf.positions.push({
+                crypto,
+                side: position.side,
+                entryPrice: position.entryPrice,
+                exitPrice,
+                pnl,
+                holdingTimeMs: Date.now() - position.entryTime,
+                reason: 'window_expiry',
+                outcome: windowInfo.outcome,
+                windowEpoch: position.windowEpoch
+            });
+            
+            // Keep last 100 positions
+            if (perf.positions.length > 100) {
+                perf.positions.shift();
+            }
+            
+            delete this.positions[strategyName][crypto];
         }
     }
     
@@ -387,6 +453,24 @@ export class ResearchEngine {
                 }
             }
             
+            // Build crypto-level breakdown
+            const cryptoBreakdown = {};
+            if (perf.byCrypto) {
+                for (const [crypto, cPerf] of Object.entries(perf.byCrypto)) {
+                    const cTotal = cPerf.wins + cPerf.losses;
+                    const cWinRate = cTotal > 0 ? cPerf.wins / cTotal : 0;
+                    cryptoBreakdown[crypto] = {
+                        signals: cPerf.signals,
+                        trades: cPerf.trades,
+                        wins: cPerf.wins,
+                        losses: cPerf.losses,
+                        winRate: cWinRate,
+                        winRatePct: (cWinRate * 100).toFixed(1) + '%',
+                        totalPnl: cPerf.totalPnl
+                    };
+                }
+            }
+            
             report.strategies.push({
                 name,
                 signals: perf.signals,
@@ -401,7 +485,8 @@ export class ResearchEngine {
                 sharpe,
                 isSignificant,
                 openPositions,
-                recentPositions: perf.positions.slice(-5)
+                recentPositions: perf.positions.slice(-5),
+                byCrypto: cryptoBreakdown  // NEW: crypto-level stats
             });
         }
         

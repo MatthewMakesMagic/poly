@@ -84,10 +84,9 @@ export class FairValueStrategy {
         // Calculate fair value and edge
         const analysis = this.fairValueCalc.analyze(tick, vol);
         
-        // Time-based exit
-        if (position && tick.time_remaining_sec < this.options.exitTimeRemaining) {
-            return this.createSignal('sell', null, 'time_exit', analysis);
-        }
+        // BINARY OPTIONS: NO TIME-BASED EXIT
+        // Let positions expire naturally at window end for $1 or $0 payout
+        // Early exits just pay spread twice and lose money
         
         // BINARY OPTIONS POSITION MANAGEMENT
         // Key learning: Fair value is TOO NOISY for exit signals

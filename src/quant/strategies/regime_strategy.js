@@ -83,10 +83,9 @@ export class RegimeStrategy {
             adjustedSize
         };
         
-        // Time-based exit
-        if (position && timeRemaining < this.options.exitTimeRemaining) {
-            return this.createSignal('sell', null, 'time_exit', analysis);
-        }
+        // BINARY OPTIONS: NO TIME-BASED EXIT
+        // Let positions expire naturally at window end for $1 or $0 payout
+        // Early exits just pay spread twice and lose money
         
         // Smart position management for BINARY OPTIONS
         // Key insight: Hold to expiry unless extreme conditions

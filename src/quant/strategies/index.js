@@ -22,6 +22,7 @@ export { MicrostructureStrategy } from './microstructure_strategy.js';
 export { CrossAssetStrategy } from './cross_asset_strategy.js';
 export { ContrarianStrategy, ContrarianSOLStrategy, ContrarianScalpStrategy, ContrarianStrongStrategy, createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 export { EndgameStrategy, EndgameConservativeStrategy, EndgameAggressiveStrategy, EndgameSafeStrategy, EndgameMomentumStrategy, createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
+export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive } from './spot_lag_simple.js';
 
 // Import for factory
 import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift } from './fair_value_strategy.js';
@@ -32,6 +33,7 @@ import { MicrostructureStrategy } from './microstructure_strategy.js';
 import { CrossAssetStrategy } from './cross_asset_strategy.js';
 import { createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 import { createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
+import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive } from './spot_lag_simple.js';
 
 /**
  * Create all quant strategies
@@ -44,10 +46,16 @@ export function createAllQuantStrategies(capital = 100) {
         createFairValueEWMA(capital),
         createFairValueWithDrift(capital),
         
-        // Spot Lag variants (following spot - may be backwards)
-        createSpotLag1s(capital),
-        createSpotLag5s(capital),
-        createSpotLag10s(capital),
+        // Spot Lag - OLD (uses fair value - may be wrong)
+        // createSpotLag1s(capital),
+        // createSpotLag5s(capital),
+        // createSpotLag10s(capital),
+        
+        // Spot Lag - NEW SIMPLE (just detect spot move, check if market lagged)
+        createSpotLagSimple(capital),     // Base: 0.05% spot move, 10 tick lookback
+        createSpotLagFast(capital),       // Fast: 0.03% spot move, 5 tick lookback
+        createSpotLagConfirmed(capital),  // Confirmed: 0.1% spot move, 15 tick lookback
+        createSpotLagAggressive(capital), // Aggressive: 0.02% spot move, more trades
         
         // CONTRARIAN variants (FADE spot - backtest shows edge!)
         createContrarianBase(capital),      // All cryptos, moderate threshold

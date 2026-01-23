@@ -102,27 +102,17 @@ export class ContrarianStrategy {
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
             const holdingTime = Date.now() - position.entryTime;
             
-            // Profit target
-            if (pnlPct >= this.options.profitTarget) {
-                return this.createSignal('sell', null, 'profit_target', { pnlPct, holdingTime });
+            // BINARY OPTIONS: HOLD TO EXPIRY
+            // Early exits pay spread twice and lose money
+            // Let positions expire at window end for $1 or $0 payout
+            // The contrarian thesis (mean reversion) works best at expiry
+            
+            // Only exit on EXTREME drawdown (>40% = something very wrong)
+            if (pnlPct <= -0.40) {
+                return this.createSignal('sell', null, 'extreme_drawdown', { pnlPct, holdingTime });
             }
             
-            // Stop loss
-            if (pnlPct <= -this.options.stopLoss) {
-                return this.createSignal('sell', null, 'stop_loss', { pnlPct, holdingTime });
-            }
-            
-            // Max holding time
-            if (holdingTime > this.options.maxHoldingMs) {
-                return this.createSignal('sell', null, 'max_holding', { pnlPct, holdingTime });
-            }
-            
-            // Time exit
-            if (timeRemaining < this.options.exitTimeRemaining) {
-                return this.createSignal('sell', null, 'time_exit', { pnlPct, holdingTime });
-            }
-            
-            return this.createSignal('hold', null, 'holding', { pnlPct, holdingTime });
+            return this.createSignal('hold', null, 'holding_to_expiry', { pnlPct, holdingTime });
         }
         
         // Entry logic

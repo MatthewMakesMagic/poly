@@ -104,33 +104,19 @@ export class MicrostructureStrategy {
             askSize
         };
         
-        // SCALP POSITION MANAGEMENT - microstructure signals are short-term
+        // BINARY OPTIONS: HOLD TO EXPIRY
+        // Early exits pay spread twice and lose money
+        // Let positions expire at window end for $1 or $0 payout
         if (position) {
             const currentPrice = position.side === 'up' ? marketProb : (1 - marketProb);
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
-            const holdingTime = Date.now() - position.entryTime;
             
-            // 1. PROFIT TARGET - captured the edge
-            if (pnlPct >= this.options.profitTarget) {
-                return this.createSignal('sell', null, 'profit_target', analysis);
+            // Only exit on EXTREME drawdown (>40% = something very wrong)
+            if (pnlPct <= -0.40) {
+                return this.createSignal('sell', null, 'extreme_drawdown', analysis);
             }
             
-            // 2. STOP LOSS - cut losses
-            if (pnlPct <= -this.options.stopLoss) {
-                return this.createSignal('sell', null, 'stop_loss', analysis);
-            }
-            
-            // 3. MAX HOLDING TIME - microstructure edge decays fast
-            if (holdingTime > this.options.maxHoldingMs) {
-                return this.createSignal('sell', null, 'max_holding_time', analysis);
-            }
-            
-            // 4. TIME EXIT
-            if (timeRemaining < this.options.exitTimeRemaining) {
-                return this.createSignal('sell', null, 'time_exit', analysis);
-            }
-            
-            return this.createSignal('hold', null, 'waiting_for_edge', analysis);
+            return this.createSignal('hold', null, 'holding_to_expiry', analysis);
         }
         
         // Entry logic
