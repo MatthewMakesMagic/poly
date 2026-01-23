@@ -764,8 +764,11 @@
                 // Sort by most recent
                 allTrades.sort((a, b) => (b.entryTime || 0) - (a.entryTime || 0));
                 
-                updateStrategyTable();
-                updateTradeLog();
+                // Only update tables if viewing live data (not historical)
+                if (currentTimePeriod === 'live') {
+                    updateStrategyTable();
+                    updateTradeLog();
+                }
                 updateStrategyDropdown();
                 updateOpenPositions();
             }

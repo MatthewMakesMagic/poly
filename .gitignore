@@ -46,3 +46,5 @@ coverage/
 *.pem
 *.key
 credentials.json
+.vercel
+.env*.local
