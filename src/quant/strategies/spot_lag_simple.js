@@ -405,6 +405,228 @@ export class SpotLag300SecStrategy extends SpotLagTimedExitStrategy {
     }
 }
 
+// ================================================================
+// MISPRICING-ONLY STRATEGIES
+// Based on insight: Edge comes from market prob being WRONG vs spot position
+// Not from detecting "lag" in reaction to moves
+// ================================================================
+
+/**
+ * Mispricing-Only Strategy
+ * 
+ * THESIS: Trade ONLY when market probability clearly doesn't match spot position.
+ * 
+ * Entry conditions:
+ * - Spot > strike by X% BUT market prob < Y% (mispriced UP)
+ * - Spot < strike by X% BUT market prob > (100-Y)% (mispriced DOWN)
+ * 
+ * This is different from SpotLag which looks for "movement" - 
+ * this looks for "static mispricing" regardless of recent movement.
+ */
+export class MispricingOnlyStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'MispricingOnly';
+        this.options = {
+            // Spot must be this far from strike (as %)
+            minSpotDivergence: 0.001,  // 0.1% from strike
+            
+            // Market prob must be this wrong
+            // If spot > strike, market prob must be < this to trade UP
+            maxProbForUpBet: 0.45,     // Market says <45% UP when spot is above
+            // If spot < strike, market prob must be > this to trade DOWN  
+            minProbForDownBet: 0.55,   // Market says >55% UP when spot is below
+            
+            // Position sizing
+            maxPosition: 100,
+            
+            // Time constraints
+            minTimeRemaining: 180,  // Need 3+ min for binary to resolve
+            maxTimeRemaining: 840,  // Don't enter in first minute (unstable)
+            
+            // Only exit on extreme loss
+            extremeStopLoss: 0.50,
+            
+            // Enabled cryptos
+            enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
+            
+            ...options
+        };
+        
+        this.stats = {
+            signals: 0,
+            mispricingsDetected: 0,
+            upMispricings: 0,
+            downMispricings: 0
+        };
+    }
+    
+    getName() {
+        return this.name;
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const spotPrice = tick.spot_price;
+        const strike = tick.price_to_beat;
+        const marketProb = tick.up_mid;  // Probability market assigns to UP
+        
+        // Position management - HOLD TO EXPIRY
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            if (pnlPct <= -this.options.extremeStopLoss) {
+                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
+            }
+            
+            return this.createSignal('hold', null, 'holding_to_expiry', { pnlPct });
+        }
+        
+        // Entry timing filter
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_late');
+        }
+        if (timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'too_early');
+        }
+        
+        // Calculate spot position vs strike
+        const spotDivergence = (spotPrice - strike) / strike;
+        const spotAbove = spotDivergence > this.options.minSpotDivergence;
+        const spotBelow = spotDivergence < -this.options.minSpotDivergence;
+        
+        // Check for mispricing
+        // UP mispricing: Spot clearly above strike, but market prob too low
+        if (spotAbove && marketProb < this.options.maxProbForUpBet) {
+            this.stats.mispricingsDetected++;
+            this.stats.upMispricings++;
+            this.stats.signals++;
+            
+            const mispricingMagnitude = (0.5 + spotDivergence * 50) - marketProb; // Rough "should be" vs actual
+            
+            return this.createSignal('buy', 'up', 'mispriced_up', {
+                spotDivergence: (spotDivergence * 100).toFixed(3) + '%',
+                marketProb: (marketProb * 100).toFixed(1) + '%',
+                shouldBe: ((0.5 + spotDivergence * 50) * 100).toFixed(1) + '%',
+                mispricingMagnitude: (mispricingMagnitude * 100).toFixed(1) + '%',
+                confidence: Math.min(1, mispricingMagnitude * 2)
+            });
+        }
+        
+        // DOWN mispricing: Spot clearly below strike, but market prob too high
+        if (spotBelow && marketProb > this.options.minProbForDownBet) {
+            this.stats.mispricingsDetected++;
+            this.stats.downMispricings++;
+            this.stats.signals++;
+            
+            const mispricingMagnitude = marketProb - (0.5 + spotDivergence * 50);
+            
+            return this.createSignal('buy', 'down', 'mispriced_down', {
+                spotDivergence: (spotDivergence * 100).toFixed(3) + '%',
+                marketProb: (marketProb * 100).toFixed(1) + '%',
+                shouldBe: ((0.5 + spotDivergence * 50) * 100).toFixed(1) + '%',
+                mispricingMagnitude: (mispricingMagnitude * 100).toFixed(1) + '%',
+                confidence: Math.min(1, mispricingMagnitude * 2)
+            });
+        }
+        
+        // No mispricing detected
+        if (spotAbove) {
+            return this.createSignal('hold', null, 'spot_above_but_correctly_priced', { marketProb });
+        }
+        if (spotBelow) {
+            return this.createSignal('hold', null, 'spot_below_but_correctly_priced', { marketProb });
+        }
+        
+        return this.createSignal('hold', null, 'spot_at_strike');
+    }
+    
+    createSignal(action, side, reason, analysis = {}) {
+        return {
+            action,
+            side,
+            reason,
+            size: this.options.maxPosition,
+            ...analysis
+        };
+    }
+    
+    onWindowStart(windowInfo) {}
+    onWindowEnd(windowInfo, outcome) {}
+    
+    getStats() {
+        return { name: this.name, ...this.stats };
+    }
+}
+
+/**
+ * Strict Mispricing - Only trade BIG mispricings (>15% prob wrong)
+ */
+export class MispricingStrictStrategy extends MispricingOnlyStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'Mispricing_Strict',
+            minSpotDivergence: 0.001,   // 0.1% from strike
+            maxProbForUpBet: 0.35,      // Market must be < 35% for UP bet
+            minProbForDownBet: 0.65,    // Market must be > 65% for DOWN bet
+            ...options
+        });
+    }
+}
+
+/**
+ * Loose Mispricing - Trade smaller mispricings too
+ */
+export class MispricingLooseStrategy extends MispricingOnlyStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'Mispricing_Loose',
+            minSpotDivergence: 0.0005,  // 0.05% from strike (smaller)
+            maxProbForUpBet: 0.48,      // Market < 48% for UP bet
+            minProbForDownBet: 0.52,    // Market > 52% for DOWN bet
+            ...options
+        });
+    }
+}
+
+/**
+ * Extreme Mispricing - Only massive mispricings (like the XRP 11% example)
+ */
+export class MispricingExtremeStrategy extends MispricingOnlyStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'Mispricing_Extreme',
+            minSpotDivergence: 0.002,   // 0.2% from strike (larger)
+            maxProbForUpBet: 0.25,      // Market must be < 25% for UP bet
+            minProbForDownBet: 0.75,    // Market must be > 75% for DOWN bet
+            ...options
+        });
+    }
+}
+
+// Factory functions for Mispricing strategies
+export function createMispricingOnly(capital = 100) {
+    return new MispricingOnlyStrategy({ maxPosition: capital });
+}
+
+export function createMispricingStrict(capital = 100) {
+    return new MispricingStrictStrategy({ maxPosition: capital });
+}
+
+export function createMispricingLoose(capital = 100) {
+    return new MispricingLooseStrategy({ maxPosition: capital });
+}
+
+export function createMispricingExtreme(capital = 100) {
+    return new MispricingExtremeStrategy({ maxPosition: capital });
+}
+
 // Factory functions
 export function createSpotLagSimple(capital = 100) {
     return new SpotLagSimpleStrategy({ maxPosition: capital });
