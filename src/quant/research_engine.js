@@ -230,7 +230,16 @@ export class ResearchEngine {
                 entrySpotPrice: tick.spot_price,
                 priceToBeat: tick.price_to_beat,
                 timeRemainingAtEntry: tick.time_remaining_sec,
-                entryMarketProb: tick.up_mid
+                entryMarketProb: tick.up_mid,
+                // Market depth at entry
+                entryBidSize: signal.side === 'up' ? tick.up_bid_size : tick.down_bid_size,
+                entryAskSize: signal.side === 'up' ? tick.up_ask_size : tick.down_ask_size,
+                entrySpread: tick.spread,
+                entrySpreadPct: tick.spread_pct,
+                entryBookImbalance: tick.up_bid_size && tick.up_ask_size 
+                    ? (tick.up_bid_size - tick.up_ask_size) / (tick.up_bid_size + tick.up_ask_size) 
+                    : null,
+                signalStrength: signal.confidence || signal.edge || null
             };
             perf.trades++;
             cryptoPerf.trades++;
@@ -267,7 +276,21 @@ export class ResearchEngine {
                 timeRemainingAtEntry: position.timeRemainingAtEntry,
                 timeRemainingAtExit: tick.time_remaining_sec,
                 entryMarketProb: position.entryMarketProb,
-                exitMarketProb: tick.up_mid
+                exitMarketProb: tick.up_mid,
+                // Market depth at entry
+                entryBidSize: position.entryBidSize,
+                entryAskSize: position.entryAskSize,
+                entrySpread: position.entrySpread,
+                entrySpreadPct: position.entrySpreadPct,
+                entryBookImbalance: position.entryBookImbalance,
+                signalStrength: position.signalStrength,
+                // Market depth at exit
+                exitBidSize: position.side === 'up' ? tick.up_bid_size : tick.down_bid_size,
+                exitAskSize: position.side === 'up' ? tick.up_ask_size : tick.down_ask_size,
+                exitSpread: tick.spread,
+                // Spot movement during trade
+                spotMoveDuringTrade: tick.spot_price - position.entrySpotPrice,
+                marketMoveDuringTrade: tick.up_mid - position.entryMarketProb
             };
             
             perf.positions.push(closedPosition);
@@ -347,7 +370,16 @@ export class ResearchEngine {
                 exitSpotPrice: windowInfo.finalPrice,
                 priceToBeat: position.priceToBeat,
                 timeRemainingAtEntry: position.timeRemainingAtEntry,
-                entryMarketProb: position.entryMarketProb
+                entryMarketProb: position.entryMarketProb,
+                // Market depth at entry (captured when position opened)
+                entryBidSize: position.entryBidSize,
+                entryAskSize: position.entryAskSize,
+                entrySpread: position.entrySpread,
+                entrySpreadPct: position.entrySpreadPct,
+                entryBookImbalance: position.entryBookImbalance,
+                signalStrength: position.signalStrength,
+                // Spot movement during trade
+                spotMoveDuringTrade: windowInfo.finalPrice - position.entrySpotPrice
             };
             
             perf.positions.push(closedPosition);

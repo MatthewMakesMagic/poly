@@ -391,8 +391,13 @@ export async function savePaperTrade(trade) {
                     entry_time, exit_time, window_epoch, holding_time_ms,
                     entry_price, exit_price, entry_spot_price, exit_spot_price, price_to_beat,
                     entry_market_prob, exit_market_prob, time_remaining_at_entry,
-                    pnl, outcome, reason
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    pnl, outcome, reason,
+                    entry_bid_size, entry_ask_size, entry_spread, entry_spread_pct,
+                    exit_bid_size, exit_ask_size, exit_spread,
+                    spot_move_during_trade, market_move_during_trade,
+                    signal_strength, entry_book_imbalance
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+                          $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
             `, [
                 trade.strategyName,
                 trade.crypto,
@@ -411,7 +416,19 @@ export async function savePaperTrade(trade) {
                 trade.timeRemainingAtEntry,
                 trade.pnl,
                 trade.outcome,
-                trade.reason
+                trade.reason,
+                // New depth fields
+                trade.entryBidSize,
+                trade.entryAskSize,
+                trade.entrySpread,
+                trade.entrySpreadPct,
+                trade.exitBidSize,
+                trade.exitAskSize,
+                trade.exitSpread,
+                trade.spotMoveDuringTrade,
+                trade.marketMoveDuringTrade,
+                trade.signalStrength,
+                trade.entryBookImbalance
             ]);
         } catch (error) {
             console.error('Failed to save paper trade:', error.message);
