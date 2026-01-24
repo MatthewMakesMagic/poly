@@ -274,7 +274,7 @@ export class DriftAwareFairValueStrategy extends FairValueStrategy {
         
         // Drift calculation settings
         this.driftLookbackMs = options.driftLookbackMs || 3600000; // 1 hour default
-        this.minDriftMagnitude = options.minDriftMagnitude || 0.0001; // 0.01% min drift to trade
+        this.minDriftMagnitude = options.minDriftMagnitude || 0.002; // 0.2% min drift (meaningful for crypto)
         this.requireDriftAlignment = options.requireDriftAlignment !== false; // Default true
         
         // Price history for drift calculation
@@ -467,13 +467,15 @@ export class DriftAwareFairValueStrategy extends FairValueStrategy {
 /**
  * 1-Hour Drift - Short-term momentum
  * Captures recent price action, more responsive but noisier
+ * 
+ * Threshold: 0.3% (meaningful for 1H crypto movement)
  */
 export class FairValueDrift1HStrategy extends DriftAwareFairValueStrategy {
     constructor(options = {}) {
         super({
             name: 'FV_Drift_1H',
             driftLookbackMs: 1 * 60 * 60 * 1000,  // 1 hour
-            minDriftMagnitude: 0.0005, // Need stronger signal for short period
+            minDriftMagnitude: 0.003, // 0.3% - meaningful 1H move for crypto
             ...options
         });
     }
@@ -482,13 +484,15 @@ export class FairValueDrift1HStrategy extends DriftAwareFairValueStrategy {
 /**
  * 4-Hour Drift - Medium-term trend
  * Balances responsiveness with noise reduction
+ * 
+ * Threshold: 0.5% (expect larger moves over 4H)
  */
 export class FairValueDrift4HStrategy extends DriftAwareFairValueStrategy {
     constructor(options = {}) {
         super({
             name: 'FV_Drift_4H',
             driftLookbackMs: 4 * 60 * 60 * 1000,  // 4 hours
-            minDriftMagnitude: 0.0003,
+            minDriftMagnitude: 0.005, // 0.5% - meaningful 4H trend
             ...options
         });
     }
@@ -497,13 +501,15 @@ export class FairValueDrift4HStrategy extends DriftAwareFairValueStrategy {
 /**
  * 24-Hour Drift - Daily trend
  * Captures broader market direction
+ * 
+ * Threshold: 1% (daily moves should be larger)
  */
 export class FairValueDrift24HStrategy extends DriftAwareFairValueStrategy {
     constructor(options = {}) {
         super({
             name: 'FV_Drift_24H',
             driftLookbackMs: 24 * 60 * 60 * 1000,  // 24 hours
-            minDriftMagnitude: 0.0002,
+            minDriftMagnitude: 0.01, // 1% - meaningful daily trend
             ...options
         });
     }
