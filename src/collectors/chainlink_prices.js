@@ -72,6 +72,9 @@ const POLYGON_RPC_URLS = [
     'https://polygon.llamarpc.com'
 ];
 
+// Maximum consecutive errors before disabling Chainlink
+const MAX_CONSECUTIVE_ERRORS = 10;
+
 export class ChainlinkPriceCollector {
     constructor() {
         this.provider = null;
@@ -79,33 +82,53 @@ export class ChainlinkPriceCollector {
         this.prices = {};
         this.lastUpdate = {};
         this.errors = 0;
+        this.consecutiveErrors = 0;
         this.rpcIndex = 0;
+        this.disabled = false;  // Set to true if too many errors
+        this.initialized = false;
     }
     
     /**
      * Initialize provider and contracts
+     * Made non-blocking - returns even if connection fails
      */
     async initialize() {
         console.log('🔗 Initializing Chainlink price feeds...');
         
-        // Try to connect to a working RPC
+        // Try to connect to a working RPC with timeout
         for (let i = 0; i < POLYGON_RPC_URLS.length; i++) {
             try {
                 const url = POLYGON_RPC_URLS[i];
-                this.provider = new ethers.JsonRpcProvider(url);
                 
-                // Test connection
-                await this.provider.getBlockNumber();
+                // Create provider with explicit options to prevent hanging
+                this.provider = new ethers.JsonRpcProvider(url, undefined, {
+                    staticNetwork: true,  // Prevents network detection calls
+                    batchMaxCount: 1      // Simpler batching
+                });
+                
+                // Test connection with timeout
+                const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Connection timeout')), 5000)
+                );
+                
+                await Promise.race([
+                    this.provider.getBlockNumber(),
+                    timeoutPromise
+                ]);
+                
                 console.log(`✅ Connected to Polygon via ${url}`);
                 this.rpcIndex = i;
                 break;
             } catch (error) {
-                console.log(`⚠️  RPC ${POLYGON_RPC_URLS[i]} failed, trying next...`);
+                console.log(`⚠️  RPC ${POLYGON_RPC_URLS[i]} failed: ${error.message}`);
+                this.provider = null;
             }
         }
         
         if (!this.provider) {
-            throw new Error('Failed to connect to any Polygon RPC');
+            console.log('⚠️  Could not connect to any Polygon RPC - Chainlink disabled');
+            this.disabled = true;
+            return this;  // Return gracefully instead of throwing
         }
         
         // Initialize contracts for each feed
@@ -126,9 +149,14 @@ export class ChainlinkPriceCollector {
             }
         }
         
-        // Fetch initial prices
-        await this.fetchAllPrices();
+        // Fetch initial prices (don't fail if this fails)
+        try {
+            await this.fetchAllPrices();
+        } catch (error) {
+            console.log('⚠️  Initial price fetch failed:', error.message);
+        }
         
+        this.initialized = true;
         return this;
     }
     
@@ -136,6 +164,11 @@ export class ChainlinkPriceCollector {
      * Fetch price from a single feed
      */
     async fetchPrice(crypto) {
+        // Don't try if disabled
+        if (this.disabled) {
+            return null;
+        }
+        
         const contract = this.contracts[crypto];
         const feed = CHAINLINK_FEEDS[crypto];
         
@@ -144,8 +177,15 @@ export class ChainlinkPriceCollector {
         }
         
         try {
+            // Add timeout to prevent hanging
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Price fetch timeout')), 5000)
+            );
+            
+            const dataPromise = contract.latestRoundData();
+            
             const [roundId, answer, startedAt, updatedAt, answeredInRound] = 
-                await contract.latestRoundData();
+                await Promise.race([dataPromise, timeoutPromise]);
             
             // Convert from fixed-point to decimal
             const price = Number(answer) / Math.pow(10, feed.decimals);
@@ -163,14 +203,24 @@ export class ChainlinkPriceCollector {
             };
             
             this.lastUpdate[crypto] = Date.now();
+            this.consecutiveErrors = 0;  // Reset on success
             
             return this.prices[crypto];
             
         } catch (error) {
             this.errors++;
+            this.consecutiveErrors++;
             
-            // Try rotating to a different RPC if we get errors
-            if (this.errors % 5 === 0) {
+            // Disable if too many consecutive errors
+            if (this.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                console.log(`⚠️  Chainlink disabled after ${MAX_CONSECUTIVE_ERRORS} consecutive errors`);
+                this.disabled = true;
+                this.stopPolling();
+                return null;
+            }
+            
+            // Try rotating to a different RPC if we get errors (but not on every error)
+            if (this.consecutiveErrors % 3 === 0) {
                 await this.rotateRpc();
             }
             
@@ -182,6 +232,10 @@ export class ChainlinkPriceCollector {
      * Fetch all prices
      */
     async fetchAllPrices() {
+        if (this.disabled) {
+            return {};
+        }
+        
         const results = {};
         
         for (const crypto of Object.keys(CHAINLINK_FEEDS)) {
@@ -262,10 +316,24 @@ export class ChainlinkPriceCollector {
      * Start periodic price fetching
      */
     startPolling(intervalMs = 5000) {
+        if (this.disabled) {
+            console.log('⚠️  Chainlink is disabled, not starting polling');
+            return this;
+        }
+        
         console.log(`🔄 Starting Chainlink polling every ${intervalMs}ms`);
         
         this.pollingInterval = setInterval(async () => {
-            await this.fetchAllPrices();
+            if (this.disabled) {
+                this.stopPolling();
+                return;
+            }
+            try {
+                await this.fetchAllPrices();
+            } catch (error) {
+                // Don't let polling errors crash the process
+                console.error('⚠️  Chainlink polling error:', error.message);
+            }
         }, intervalMs);
         
         return this;
@@ -300,7 +368,12 @@ let instance = null;
 export async function getChainlinkCollector() {
     if (!instance) {
         instance = new ChainlinkPriceCollector();
-        await instance.initialize();
+        try {
+            await instance.initialize();
+        } catch (error) {
+            console.error('⚠️  Chainlink collector initialization failed:', error.message);
+            instance.disabled = true;
+        }
     }
     return instance;
 }
