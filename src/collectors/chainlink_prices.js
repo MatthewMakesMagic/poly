@@ -420,12 +420,18 @@ export class ChainlinkPriceCollector {
 let instance = null;
 
 export async function getChainlinkCollector() {
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🔗 CHAINLINK: getChainlinkCollector() called');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
     if (!instance) {
+        console.log('🔗 CHAINLINK: Creating new instance...');
         instance = new ChainlinkPriceCollector();
         try {
             await instance.initialize();
+            console.log('🔗 CHAINLINK: Initialize completed, disabled =', instance.disabled);
         } catch (error) {
-            console.error('⚠️  Chainlink collector initialization failed:', error.message);
+            console.error('🔗 CHAINLINK: Initialize threw error:', error.message);
             instance.disabled = true;
         }
     }
