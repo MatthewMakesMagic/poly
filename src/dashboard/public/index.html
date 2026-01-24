@@ -583,11 +583,11 @@
                 <!-- Time Period Selector -->
                 <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
                     <span style="font-size: 11px; color: var(--text-dim); margin-right: 4px;">Period:</span>
-                    <div class="time-filter-tab active" data-period="live" style="padding: 4px 10px; background: var(--green-dim); border: 1px solid var(--green); border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 500;">Live</div>
+                    <div class="time-filter-tab active" data-period="live" style="padding: 4px 10px; background: var(--green-dim); border: 1px solid var(--green); border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 500;">🔴 Open Now</div>
                     <div class="time-filter-tab" data-period="hour" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">1 Hour</div>
                     <div class="time-filter-tab" data-period="day" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">24 Hours</div>
                     <div class="time-filter-tab" data-period="week" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">7 Days</div>
-                    <div class="time-filter-tab" data-period="all" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">Lifetime</div>
+                    <div class="time-filter-tab" data-period="all" style="padding: 4px 10px; background: var(--bg-highlight); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 11px;">All Time</div>
                 </div>
                 
                 <!-- Crypto Filter Tabs -->
@@ -812,8 +812,22 @@
             // Calculate total open positions
             let totalOpen = 0;
             
-            // Sort by P&L descending
-            const sorted = [...strategyData].sort((a, b) => {
+            // Filter: For "Open Now" view, only show strategies with open positions
+            let filtered = strategyData;
+            if (currentTimePeriod === 'live') {
+                filtered = strategyData.filter(s => s.openPositions && s.openPositions.length > 0);
+                if (filtered.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--text-dim);">No open positions right now. Switch to "1 Hour" or "All Time" to see closed trades.</td></tr>';
+                    document.getElementById('openPositionsTotal').textContent = '0 positions open.';
+                    return;
+                }
+            }
+            
+            // Sort: by open positions for Live view, by P&L for historical
+            const sorted = [...filtered].sort((a, b) => {
+                if (currentTimePeriod === 'live') {
+                    return (b.openPositions?.length || 0) - (a.openPositions?.length || 0);
+                }
                 const pnlA = currentStrategyCryptoFilter === 'all' ? a.totalPnl : (a.byCrypto?.[currentStrategyCryptoFilter]?.totalPnl || 0);
                 const pnlB = currentStrategyCryptoFilter === 'all' ? b.totalPnl : (b.byCrypto?.[currentStrategyCryptoFilter]?.totalPnl || 0);
                 return pnlB - pnlA;
@@ -1001,15 +1015,36 @@
         
         // Fetch historical trade data
         async function fetchHistoricalData(period) {
+            const tbody = document.getElementById('strategyTableBody');
+            const container = document.getElementById('tradeLogEntries');
+            
+            // Show loading state
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--text-dim);">Loading historical data...</td></tr>';
+            container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading trades...</div>';
+            
             try {
                 const crypto = currentStrategyCryptoFilter === 'all' ? '' : currentStrategyCryptoFilter;
                 const url = `https://${BACKEND_URL}/api/paper-trades?period=${period}&crypto=${crypto}`;
-                const response = await fetch(url);
+                
+                // Add timeout to fetch
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                
+                const response = await fetch(url, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                
                 historicalData = await response.json();
+                
+                if (historicalData.error) {
+                    throw new Error(historicalData.error);
+                }
+                
                 updateStrategyTableWithHistorical();
                 updateTradeLogWithHistorical();
             } catch (error) {
                 console.error('Failed to fetch historical data:', error);
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; padding: 20px; color: var(--red);">Failed to load: ${error.message}. Try refreshing.</td></tr>`;
+                container.innerHTML = `<div style="color: var(--red); text-align: center; padding: 20px;">Failed to load trades: ${error.message}</div>`;
             }
         }
         

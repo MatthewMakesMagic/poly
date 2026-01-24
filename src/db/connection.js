@@ -481,16 +481,19 @@ export async function getPaperTrades(options = {}) {
     const cryptoFilter = crypto ? `AND crypto = '${crypto}'` : '';
     
     try {
+        // Set a query timeout to prevent hanging
+        const queryTimeout = 10000; // 10 seconds
+        
         // Get individual trades
-        const { rows: trades } = await pgPool.query(`
+        const tradesPromise = pgPool.query(`
             SELECT * FROM paper_trades 
             WHERE 1=1 ${timeFilter} ${strategyFilter} ${cryptoFilter}
             ORDER BY exit_time DESC
-            LIMIT 500
+            LIMIT 100
         `);
         
         // Get aggregated stats by strategy
-        const { rows: strategyStats } = await pgPool.query(`
+        const statsPromise = pgPool.query(`
             SELECT 
                 strategy_name,
                 crypto,
@@ -506,7 +509,7 @@ export async function getPaperTrades(options = {}) {
         `);
         
         // Get overall stats
-        const { rows: overallStats } = await pgPool.query(`
+        const overallPromise = pgPool.query(`
             SELECT 
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
@@ -517,14 +520,24 @@ export async function getPaperTrades(options = {}) {
             WHERE 1=1 ${timeFilter} ${strategyFilter} ${cryptoFilter}
         `);
         
+        // Run all queries in parallel with timeout
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Query timeout')), queryTimeout)
+        );
+        
+        const [tradesResult, statsResult, overallResult] = await Promise.race([
+            Promise.all([tradesPromise, statsPromise, overallPromise]),
+            timeoutPromise.then(() => { throw new Error('Query timeout'); })
+        ]);
+        
         return {
-            trades,
-            strategyStats,
-            overall: overallStats[0] || {}
+            trades: tradesResult.rows,
+            strategyStats: statsResult.rows,
+            overall: overallResult.rows[0] || {}
         };
     } catch (error) {
         console.error('Failed to get paper trades:', error.message);
-        return { trades: [], strategyStats: [], overall: {} };
+        return { trades: [], strategyStats: [], overall: {}, error: error.message };
     }
 }
 
