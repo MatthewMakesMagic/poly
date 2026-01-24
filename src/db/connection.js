@@ -33,15 +33,33 @@ function initPostgres() {
     pgPool = new pg.Pool({
         connectionString: process.env.DATABASE_URL,
         ssl: { rejectUnauthorized: false },
-        max: 10,
-        idleTimeoutMillis: 30000
+        max: 5,                     // Reduced from 10 - Supabase free tier has limits
+        min: 1,                     // Keep at least 1 connection alive
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,  // Timeout for new connections
+        allowExitOnIdle: false      // Keep pool alive
     });
     
     pgPool.on('error', (err) => {
-        console.error('PostgreSQL pool error:', err);
+        console.error('PostgreSQL pool error:', err.message);
+        // Don't crash - just log. Pool will try to reconnect.
     });
     
-    console.log('✅ PostgreSQL initialized');
+    pgPool.on('connect', () => {
+        console.log('📡 New PostgreSQL connection established');
+    });
+    
+    console.log('✅ PostgreSQL initialized (max 5 connections)');
+    return pgPool;
+}
+
+/**
+ * Recreate pool if it's dead
+ */
+function ensurePool() {
+    if (!pgPool) {
+        return initPostgres();
+    }
     return pgPool;
 }
 
@@ -117,7 +135,7 @@ export async function closeDatabase() {
  */
 export async function insertTick(tick) {
     if (USE_POSTGRES) {
-        const pool = getDatabase();
+        const pool = ensurePool();
         const query = `
             INSERT INTO ticks (
                 timestamp_ms, crypto, window_epoch, time_remaining_sec,
@@ -174,22 +192,56 @@ export async function insertTick(tick) {
 
 /**
  * Batch insert ticks for better performance
+ * FIXED: Uses single client for all inserts instead of getting new connections
  */
 export async function insertTicksBatch(ticks) {
+    if (!ticks || ticks.length === 0) return;
+    
     if (USE_POSTGRES) {
-        const pool = getDatabase();
-        const client = await pool.connect();
+        const pool = ensurePool();
+        let client;
         try {
+            client = await pool.connect();
             await client.query('BEGIN');
+            
+            // Insert each tick using the SAME client (not calling insertTick which gets new connection)
+            const query = `
+                INSERT INTO ticks (
+                    timestamp_ms, crypto, window_epoch, time_remaining_sec,
+                    up_bid, up_ask, up_bid_size, up_ask_size, up_last_trade, up_mid,
+                    down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
+                    spot_price, price_to_beat, spot_delta, spot_delta_pct,
+                    spread, spread_pct, implied_prob_up,
+                    up_book_depth, down_book_depth,
+                    chainlink_price, chainlink_staleness, chainlink_updated_at,
+                    price_divergence, price_divergence_pct
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+            `;
+            
             for (const tick of ticks) {
-                await insertTick(tick);
+                const values = [
+                    tick.timestamp_ms, tick.crypto, tick.window_epoch, tick.time_remaining_sec,
+                    tick.up_bid, tick.up_ask, tick.up_bid_size, tick.up_ask_size, tick.up_last_trade, tick.up_mid,
+                    tick.down_bid, tick.down_ask, tick.down_bid_size, tick.down_ask_size, tick.down_last_trade,
+                    tick.spot_price, tick.price_to_beat, tick.spot_delta, tick.spot_delta_pct,
+                    tick.spread, tick.spread_pct, tick.implied_prob_up,
+                    tick.up_book_depth, tick.down_book_depth,
+                    tick.chainlink_price, tick.chainlink_staleness, tick.chainlink_updated_at,
+                    tick.price_divergence, tick.price_divergence_pct
+                ];
+                await client.query(query, values);
             }
+            
             await client.query('COMMIT');
         } catch (e) {
-            await client.query('ROLLBACK');
+            if (client) {
+                try { await client.query('ROLLBACK'); } catch (re) { /* ignore */ }
+            }
             throw e;
         } finally {
-            client.release();
+            if (client) {
+                try { client.release(); } catch (re) { /* ignore */ }
+            }
         }
     } else {
         const db = getDatabase();
