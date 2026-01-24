@@ -457,8 +457,13 @@ class TickCollector {
         // Record ticks at regular intervals
         setInterval(() => this.recordTicks(), CONFIG.TICK_INTERVAL_MS);
         
-        // Refresh markets when window changes
-        setInterval(() => this.checkWindowChange(), 10000);
+        // Refresh markets when window changes (catch any unhandled errors)
+        setInterval(() => {
+            this.checkWindowChange().catch(err => {
+                console.error('❌ Unhandled error in checkWindowChange:', err.message);
+                this.stats.errors++;
+            });
+        }, 10000);
         
         // Flush tick buffer periodically
         setInterval(() => this.flushTickBuffer(), 5000);
@@ -658,57 +663,67 @@ class TickCollector {
     
     /**
      * Check if window has changed and refresh markets
+     * CRITICAL: This runs every 10s and MUST NOT crash - wrap everything in try/catch
      */
     async checkWindowChange() {
-        const now = Math.floor(Date.now() / 1000);
-        const currentEpoch = Math.floor(now / 900) * 900;
-        
-        // Check if any market epoch is stale
-        for (const [crypto, market] of Object.entries(this.markets)) {
-            if (market.epoch !== currentEpoch) {
-                console.log(`🔄 Window changed for ${crypto}: ${market.epoch} -> ${currentEpoch}`);
-                
-                // Determine outcome based on spot price vs price to beat
-                const spotPrice = this.spotPrices[crypto];
-                const priceToBeat = market.priceToBeat || spotPrice;
-                const outcome = spotPrice >= priceToBeat ? 'up' : 'down';
-                
-                // Notify research engine of window end
-                if (this.researchEngine) {
+        try {
+            const now = Math.floor(Date.now() / 1000);
+            const currentEpoch = Math.floor(now / 900) * 900;
+            
+            let needsRefresh = false;
+            
+            // Check if any market epoch is stale
+            for (const [crypto, market] of Object.entries(this.markets)) {
+                if (market.epoch !== currentEpoch) {
+                    console.log(`🔄 Window changed for ${crypto}: ${market.epoch} -> ${currentEpoch}`);
+                    needsRefresh = true;
+                    
+                    // Determine outcome based on spot price vs price to beat
+                    const spotPrice = this.spotPrices[crypto];
+                    const priceToBeat = market.priceToBeat || spotPrice;
+                    const outcome = spotPrice >= priceToBeat ? 'up' : 'down';
+                    
+                    // Notify research engine of window end
+                    if (this.researchEngine) {
+                        try {
+                            this.researchEngine.onWindowEnd({
+                                crypto,
+                                epoch: market.epoch,
+                                outcome,
+                                finalPrice: spotPrice,
+                                priceToBeat
+                            });
+                        } catch (error) {
+                            console.error('⚠️  Research engine window end error:', error.message);
+                        }
+                    }
+                    
+                    // Save window summary for old epoch
                     try {
-                        this.researchEngine.onWindowEnd({
-                            crypto,
-                            epoch: market.epoch,
-                            outcome,
-                            finalPrice: spotPrice,
-                            priceToBeat
-                        });
+                        await this.saveWindowSummary(crypto, market.epoch);
                     } catch (error) {
-                        console.error('⚠️  Research engine window end error:', error.message);
+                        console.error(`⚠️  Failed to save window summary for ${crypto}:`, error.message);
                     }
                 }
-                
-                // Save window summary for old epoch
-                await this.saveWindowSummary(crypto, market.epoch);
-                
-                // Refresh markets
-                await this.refreshMarkets();
-                
             }
-        }
-        
-        // Refresh markets once if any changed
-        const hasStaleMarkets = Object.entries(this.markets).some(([crypto, market]) => 
-            market.epoch !== Math.floor(Date.now() / 900000) * 900
-        );
-        
-        if (hasStaleMarkets) {
-            await this.refreshMarkets();
             
-            // Resubscribe
-            if (this.polymarketWs && this.polymarketWs.readyState === WebSocket.OPEN) {
-                this.subscribeToMarkets();
+            // Refresh markets ONCE after processing all window changes (not inside loop!)
+            if (needsRefresh) {
+                try {
+                    await this.refreshMarkets();
+                    
+                    // Resubscribe
+                    if (this.polymarketWs && this.polymarketWs.readyState === WebSocket.OPEN) {
+                        this.subscribeToMarkets();
+                    }
+                } catch (error) {
+                    console.error('⚠️  Failed to refresh markets:', error.message);
+                }
             }
+        } catch (error) {
+            // CRITICAL: Never let this function crash the process
+            console.error('❌ checkWindowChange error (non-fatal):', error.message);
+            this.stats.errors++;
         }
     }
     
