@@ -234,6 +234,177 @@ export class SpotLagAggressiveStrategy extends SpotLagSimpleStrategy {
     }
 }
 
+// ================================================================
+// HOLDING PERIOD VARIANTS - Test different exit timings
+// ================================================================
+
+/**
+ * Base class for time-based exit strategies
+ */
+class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super(options);
+        this.holdingPeriodSec = options.holdingPeriodSec || 30;
+        this.takeProfitPct = options.takeProfitPct || 0.10; // Exit if 10% profit
+        this.entryTimes = {}; // crypto -> entry timestamp
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        // If we have a position, check for timed exit
+        if (position) {
+            const entryTime = this.entryTimes[crypto];
+            const holdingMs = entryTime ? Date.now() - entryTime : 0;
+            const holdingSec = holdingMs / 1000;
+            
+            const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Exit if holding period exceeded
+            if (holdingSec >= this.holdingPeriodSec) {
+                delete this.entryTimes[crypto];
+                return this.createSignal('sell', null, `timed_exit_${this.holdingPeriodSec}s`, { 
+                    holdingSec: holdingSec.toFixed(1), 
+                    pnlPct: (pnlPct * 100).toFixed(2) + '%' 
+                });
+            }
+            
+            // Exit on take-profit
+            if (pnlPct >= this.takeProfitPct) {
+                delete this.entryTimes[crypto];
+                return this.createSignal('sell', null, 'take_profit', { 
+                    holdingSec: holdingSec.toFixed(1),
+                    pnlPct: (pnlPct * 100).toFixed(2) + '%' 
+                });
+            }
+            
+            // Exit on extreme drawdown (keep this safety)
+            if (pnlPct <= -this.options.extremeStopLoss) {
+                delete this.entryTimes[crypto];
+                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
+            }
+            
+            return this.createSignal('hold', null, 'holding_timed', { 
+                holdingSec: holdingSec.toFixed(1), 
+                targetSec: this.holdingPeriodSec 
+            });
+        }
+        
+        // Entry logic - same as parent
+        const signal = super.onTick(tick, position, context);
+        
+        // Track entry time if buying
+        if (signal.action === 'buy') {
+            this.entryTimes[crypto] = Date.now();
+        }
+        
+        return signal;
+    }
+}
+
+/**
+ * 5-second hold - test if market catches up very fast
+ */
+export class SpotLag5SecStrategy extends SpotLagTimedExitStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_5sec',
+            holdingPeriodSec: 5,
+            takeProfitPct: 0.05,  // 5% take profit
+            lookbackTicks: 5,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.3,
+            ...options
+        });
+    }
+}
+
+/**
+ * 10-second hold - test short-term catch-up
+ */
+export class SpotLag10SecStrategy extends SpotLagTimedExitStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_10sec',
+            holdingPeriodSec: 10,
+            takeProfitPct: 0.08,  // 8% take profit
+            lookbackTicks: 5,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.3,
+            ...options
+        });
+    }
+}
+
+/**
+ * 30-second hold - test medium-term catch-up
+ */
+export class SpotLag30SecStrategy extends SpotLagTimedExitStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_30sec',
+            holdingPeriodSec: 30,
+            takeProfitPct: 0.10,  // 10% take profit
+            lookbackTicks: 5,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.4,
+            ...options
+        });
+    }
+}
+
+/**
+ * 60-second hold - test 1-minute catch-up
+ */
+export class SpotLag60SecStrategy extends SpotLagTimedExitStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_60sec',
+            holdingPeriodSec: 60,
+            takeProfitPct: 0.12,  // 12% take profit
+            lookbackTicks: 5,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.4,
+            ...options
+        });
+    }
+}
+
+/**
+ * 2-minute hold
+ */
+export class SpotLag120SecStrategy extends SpotLagTimedExitStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_120sec',
+            holdingPeriodSec: 120,
+            takeProfitPct: 0.15,  // 15% take profit
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.4,
+            ...options
+        });
+    }
+}
+
+/**
+ * 5-minute hold
+ */
+export class SpotLag300SecStrategy extends SpotLagTimedExitStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_300sec',
+            holdingPeriodSec: 300,
+            takeProfitPct: 0.20,  // 20% take profit
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.5,
+            ...options
+        });
+    }
+}
+
 // Factory functions
 export function createSpotLagSimple(capital = 100) {
     return new SpotLagSimpleStrategy({ maxPosition: capital });
@@ -249,6 +420,31 @@ export function createSpotLagConfirmed(capital = 100) {
 
 export function createSpotLagAggressive(capital = 100) {
     return new SpotLagAggressiveStrategy({ maxPosition: capital });
+}
+
+// Timed exit factories
+export function createSpotLag5Sec(capital = 100) {
+    return new SpotLag5SecStrategy({ maxPosition: capital });
+}
+
+export function createSpotLag10Sec(capital = 100) {
+    return new SpotLag10SecStrategy({ maxPosition: capital });
+}
+
+export function createSpotLag30Sec(capital = 100) {
+    return new SpotLag30SecStrategy({ maxPosition: capital });
+}
+
+export function createSpotLag60Sec(capital = 100) {
+    return new SpotLag60SecStrategy({ maxPosition: capital });
+}
+
+export function createSpotLag120Sec(capital = 100) {
+    return new SpotLag120SecStrategy({ maxPosition: capital });
+}
+
+export function createSpotLag300Sec(capital = 100) {
+    return new SpotLag300SecStrategy({ maxPosition: capital });
 }
 
 export default SpotLagSimpleStrategy;
