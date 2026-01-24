@@ -9,6 +9,7 @@
  */
 
 import { ethers } from 'ethers';
+import axios from 'axios';
 
 // Chainlink AggregatorV3Interface ABI (minimal)
 const AGGREGATOR_ABI = [
@@ -91,33 +92,24 @@ export class ChainlinkPriceCollector {
     }
     
     /**
-     * Test if an RPC endpoint is reachable using simple fetch
+     * Test if an RPC endpoint is reachable using axios
      * This avoids ethers.js creating a provider that spams retries
      */
-    async testRpcEndpoint(url, timeoutMs = 3000) {
+    async testRpcEndpoint(url, timeoutMs = 5000) {
         try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), timeoutMs);
-            
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    jsonrpc: '2.0',
-                    method: 'eth_blockNumber',
-                    params: [],
-                    id: 1
-                }),
-                signal: controller.signal
+            const response = await axios.post(url, {
+                jsonrpc: '2.0',
+                method: 'eth_blockNumber',
+                params: [],
+                id: 1
+            }, {
+                timeout: timeoutMs,
+                headers: { 'Content-Type': 'application/json' }
             });
             
-            clearTimeout(timeout);
-            
-            if (!response.ok) return false;
-            
-            const data = await response.json();
-            return data.result !== undefined;
+            return response.data?.result !== undefined;
         } catch (error) {
+            console.log(`     RPC test failed: ${error.message}`);
             return false;
         }
     }
@@ -125,26 +117,28 @@ export class ChainlinkPriceCollector {
     /**
      * Initialize provider and contracts
      * Made non-blocking - returns even if connection fails
-     * Uses fetch to test RPC BEFORE creating ethers provider (avoids retry spam)
+     * Uses axios to test RPC BEFORE creating ethers provider (avoids retry spam)
      */
     async initialize() {
         console.log('🔗 Initializing Chainlink price feeds...');
+        console.log(`   Testing ${POLYGON_RPC_URLS.length} RPC endpoints...`);
         
-        // Test RPCs with simple fetch FIRST (no ethers.js retry spam)
+        // Test RPCs with axios FIRST (no ethers.js retry spam)
         let workingRpcUrl = null;
         
         for (let i = 0; i < POLYGON_RPC_URLS.length; i++) {
             const url = POLYGON_RPC_URLS[i];
-            console.log(`   Testing RPC: ${url}...`);
+            const shortUrl = url.length > 50 ? url.substring(0, 50) + '...' : url;
+            console.log(`   [${i+1}/${POLYGON_RPC_URLS.length}] Testing: ${shortUrl}`);
             
             const isWorking = await this.testRpcEndpoint(url);
             if (isWorking) {
                 workingRpcUrl = url;
                 this.rpcIndex = i;
-                console.log(`   ✓ RPC ${url} is reachable`);
+                console.log(`   ✅ RPC is reachable!`);
                 break;
             } else {
-                console.log(`   ✗ RPC ${url} not reachable`);
+                console.log(`   ❌ RPC not reachable`);
             }
         }
         
