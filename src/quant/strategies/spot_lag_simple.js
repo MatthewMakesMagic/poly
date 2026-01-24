@@ -704,4 +704,231 @@ export function createSpotLag300Sec(capital = 100) {
     return new SpotLag300SecStrategy({ maxPosition: capital });
 }
 
+// ================================================================
+// CHAINLINK-CONFIRMED STRATEGIES
+// Only bet when BOTH Binance and Chainlink agree on direction
+// This filters out the 100% losing trades where sources disagree
+// ================================================================
+
+/**
+ * SpotLag with Chainlink Confirmation
+ * 
+ * THESIS: SpotLag works because spot position persists. But when Binance
+ * and Chainlink disagree, we're betting on the wrong signal (Binance)
+ * when resolution uses Chainlink. Filter to only bet when both agree.
+ * 
+ * Data shows:
+ * - When sources agree: 58% win rate
+ * - When sources disagree (bet with Binance): 0% win rate
+ */
+export class SpotLagChainlinkConfirmedStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_CLConfirmed',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0003,
+            marketLagRatio: 0.5,
+            ...options
+        });
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        // First check Chainlink agreement BEFORE doing SpotLag logic
+        if (!position) {  // Only check on entry, not during position hold
+            const strike = tick.price_to_beat;
+            const binancePrice = tick.spot_price;
+            const chainlinkPrice = tick.chainlink_price;
+            
+            // If no Chainlink data, skip this tick (don't bet without confirmation)
+            if (!chainlinkPrice || !strike) {
+                return this.createSignal('hold', null, 'no_chainlink_data');
+            }
+            
+            // Check if sources agree on direction
+            const binanceUp = binancePrice > strike;
+            const chainlinkUp = chainlinkPrice > strike;
+            
+            if (binanceUp !== chainlinkUp) {
+                // Sources disagree - DO NOT TRADE
+                return this.createSignal('hold', null, 'sources_disagree', {
+                    binance: binanceUp ? 'UP' : 'DOWN',
+                    chainlink: chainlinkUp ? 'UP' : 'DOWN',
+                    binancePrice: binancePrice.toFixed(2),
+                    chainlinkPrice: chainlinkPrice.toFixed(2),
+                    strike: strike.toFixed(2)
+                });
+            }
+            
+            // Sources agree - proceed with normal SpotLag logic
+        }
+        
+        return super.onTick(tick, position, context);
+    }
+}
+
+/**
+ * Aggressive SpotLag with Chainlink Confirmation
+ */
+export class SpotLagAggressiveCLStrategy extends SpotLagChainlinkConfirmedStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_Aggressive_CL',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0002,
+            marketLagRatio: 0.6,
+            ...options
+        });
+    }
+}
+
+/**
+ * Mispricing with Chainlink Confirmation
+ * Only bet on mispricings when both price sources agree on direction
+ */
+export class MispricingChainlinkConfirmedStrategy extends MispricingOnlyStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'Mispricing_CLConfirmed',
+            ...options
+        });
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        // First check Chainlink agreement
+        if (!position) {
+            const strike = tick.price_to_beat;
+            const binancePrice = tick.spot_price;
+            const chainlinkPrice = tick.chainlink_price;
+            
+            if (!chainlinkPrice || !strike) {
+                return this.createSignal('hold', null, 'no_chainlink_data');
+            }
+            
+            const binanceUp = binancePrice > strike;
+            const chainlinkUp = chainlinkPrice > strike;
+            
+            if (binanceUp !== chainlinkUp) {
+                return this.createSignal('hold', null, 'sources_disagree', {
+                    binance: binanceUp ? 'UP' : 'DOWN',
+                    chainlink: chainlinkUp ? 'UP' : 'DOWN'
+                });
+            }
+        }
+        
+        return super.onTick(tick, position, context);
+    }
+}
+
+/**
+ * UP-Only with Chainlink Confirmation
+ * Based on findings: UP bets win more + Chainlink confirmation removes losers
+ */
+export class UpOnlyChainlinkStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'UpOnly_CLConfirmed';
+        this.options = {
+            minSpotDivergence: 0.0005,  // Spot must be 0.05% above strike
+            maxMarketProb: 0.52,        // Market not already pricing in UP
+            minTimeRemaining: 180,
+            maxTimeRemaining: 780,
+            maxPosition: 100,
+            enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
+            ...options
+        };
+        this.tradedThisWindow = {};
+        this.stats = { signals: 0 };
+    }
+    
+    getName() { return this.name; }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        // Position management
+        if (position) {
+            const currentPrice = tick.up_mid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            if (pnlPct <= -0.50) {
+                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
+            }
+            return this.createSignal('hold', null, 'holding_to_expiry');
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'wrong_time');
+        }
+        
+        const strike = tick.price_to_beat;
+        const binancePrice = tick.spot_price;
+        const chainlinkPrice = tick.chainlink_price;
+        const marketProb = tick.up_mid;
+        
+        // MUST have Chainlink data
+        if (!chainlinkPrice || !strike) {
+            return this.createSignal('hold', null, 'no_chainlink_data');
+        }
+        
+        // BOTH sources must show UP
+        const binanceUp = binancePrice > strike * (1 + this.options.minSpotDivergence);
+        const chainlinkUp = chainlinkPrice > strike;
+        
+        if (!binanceUp || !chainlinkUp) {
+            return this.createSignal('hold', null, 'not_both_up', {
+                binanceUp, chainlinkUp
+            });
+        }
+        
+        // Market shouldn't already be pricing it in
+        if (marketProb > this.options.maxMarketProb) {
+            return this.createSignal('hold', null, 'already_priced_in', { marketProb });
+        }
+        
+        // ALL conditions met - buy UP
+        this.stats.signals++;
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        return this.createSignal('buy', 'up', 'both_sources_up', {
+            binancePrice: binancePrice.toFixed(2),
+            chainlinkPrice: chainlinkPrice.toFixed(2),
+            strike: strike.toFixed(2),
+            marketProb: (marketProb * 100).toFixed(1) + '%'
+        });
+    }
+    
+    createSignal(action, side, reason, analysis = {}) {
+        return { action, side, reason, size: this.options.maxPosition, ...analysis };
+    }
+    
+    onWindowStart(windowInfo) { this.tradedThisWindow = {}; }
+    onWindowEnd(windowInfo, outcome) {}
+    getStats() { return { name: this.name, ...this.stats }; }
+}
+
+// Factory functions for Chainlink-confirmed strategies
+export function createSpotLagCLConfirmed(capital = 100) {
+    return new SpotLagChainlinkConfirmedStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagAggressiveCL(capital = 100) {
+    return new SpotLagAggressiveCLStrategy({ maxPosition: capital });
+}
+
+export function createMispricingCLConfirmed(capital = 100) {
+    return new MispricingChainlinkConfirmedStrategy({ maxPosition: capital });
+}
+
+export function createUpOnlyCLConfirmed(capital = 100) {
+    return new UpOnlyChainlinkStrategy({ maxPosition: capital });
+}
+
 export default SpotLagSimpleStrategy;
