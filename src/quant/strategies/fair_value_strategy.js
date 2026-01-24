@@ -245,4 +245,310 @@ export function createFairValueWithDrift(capital = 100) {
     });
 }
 
+// ================================================================
+// DRIFT-AWARE FAIR VALUE STRATEGIES
+// 
+// Key insight: FairValue makes money on UP bets, loses on DOWN bets
+// Hypothesis: Crypto has positive drift that Black-Scholes (drift=0) misses
+// 
+// These variants:
+// 1. Calculate rolling drift over different timeframes
+// 2. Only trade in direction of drift
+// 3. Feed drift into Black-Scholes for better fair value
+// ================================================================
+
+/**
+ * Drift-Aware Fair Value Strategy
+ * 
+ * Calculates rolling drift and:
+ * - Only takes UP bets when drift is positive
+ * - Only takes DOWN bets when drift is negative
+ * - Uses drift in Black-Scholes calculation for more accurate fair value
+ */
+export class DriftAwareFairValueStrategy extends FairValueStrategy {
+    constructor(options = {}) {
+        super({
+            name: options.name || 'FairValue_DriftAware',
+            ...options
+        });
+        
+        // Drift calculation settings
+        this.driftLookbackMs = options.driftLookbackMs || 3600000; // 1 hour default
+        this.minDriftMagnitude = options.minDriftMagnitude || 0.0001; // 0.01% min drift to trade
+        this.requireDriftAlignment = options.requireDriftAlignment !== false; // Default true
+        
+        // Price history for drift calculation
+        this.priceHistory = {}; // crypto -> [{timestamp, price}]
+    }
+    
+    /**
+     * Calculate annualized drift from recent price history
+     */
+    calculateDrift(crypto) {
+        const history = this.priceHistory[crypto];
+        if (!history || history.length < 2) return 0;
+        
+        const now = Date.now();
+        const cutoff = now - this.driftLookbackMs;
+        
+        // Filter to lookback period
+        const relevantHistory = history.filter(h => h.timestamp >= cutoff);
+        if (relevantHistory.length < 2) return 0;
+        
+        // Calculate return over the period
+        const oldestPrice = relevantHistory[0].price;
+        const newestPrice = relevantHistory[relevantHistory.length - 1].price;
+        const periodReturn = (newestPrice - oldestPrice) / oldestPrice;
+        
+        // Annualize: if this is 1 hour of data, multiply by 24*365
+        const periodMs = relevantHistory[relevantHistory.length - 1].timestamp - relevantHistory[0].timestamp;
+        const periodsPerYear = (365 * 24 * 3600 * 1000) / periodMs;
+        const annualizedDrift = periodReturn * periodsPerYear;
+        
+        return annualizedDrift;
+    }
+    
+    /**
+     * Update price history
+     */
+    updatePriceHistory(tick) {
+        const crypto = tick.crypto;
+        if (!this.priceHistory[crypto]) {
+            this.priceHistory[crypto] = [];
+        }
+        
+        this.priceHistory[crypto].push({
+            timestamp: Date.now(),
+            price: tick.spot_price
+        });
+        
+        // Keep only relevant history (2x lookback to be safe)
+        const cutoff = Date.now() - (this.driftLookbackMs * 2);
+        this.priceHistory[crypto] = this.priceHistory[crypto].filter(h => h.timestamp >= cutoff);
+    }
+    
+    /**
+     * Override onTick to add drift awareness
+     */
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        // Update price history
+        this.updatePriceHistory(tick);
+        
+        // Calculate current drift
+        const drift = this.calculateDrift(crypto);
+        const driftDirection = drift > this.minDriftMagnitude ? 'up' : 
+                              drift < -this.minDriftMagnitude ? 'down' : 'neutral';
+        
+        // Update volatility estimator
+        this.volEstimator.update(tick);
+        
+        // Get volatility estimate
+        const vols = this.volEstimator.getVolatilities(crypto);
+        let vol = vols?.spot_realized_30 || 0.8;
+        
+        // Calculate fair value WITH drift (key improvement)
+        // Override the default analysis to include measured drift
+        const spotPrice = tick.spot_price;
+        const priceToBeat = tick.price_to_beat || spotPrice;
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const marketProb = tick.up_mid || 0.5;
+        
+        // Use actual drift in Black-Scholes calculation
+        const fairProb = this.fairValueWithDrift(spotPrice, priceToBeat, timeRemaining, vol, drift);
+        
+        // Calculate edge
+        const edge = fairProb - marketProb;
+        const side = edge > 0 ? 'up' : 'down';
+        
+        const analysis = {
+            fairProb,
+            marketProb,
+            edge,
+            edgePct: edge * 100,
+            side,
+            drift,
+            driftDirection,
+            realizedVol: vol,
+            confidence: Math.min(1, Math.abs(edge) / 0.1)
+        };
+        
+        // Position management - same as parent
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            if (pnlPct <= -this.options.maxDrawdown) {
+                return this.createSignal('sell', null, 'max_drawdown', analysis);
+            }
+            
+            return this.createSignal('hold', null, 'holding_for_expiry', analysis);
+        }
+        
+        // Entry timing check
+        if (tick.time_remaining_sec < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'insufficient_time', analysis);
+        }
+        
+        // DRIFT ALIGNMENT CHECK - the key filter
+        if (this.requireDriftAlignment) {
+            // Only take UP bets when drift is positive
+            if (side === 'up' && driftDirection !== 'up') {
+                return this.createSignal('hold', null, 'drift_not_aligned_up', analysis);
+            }
+            // Only take DOWN bets when drift is negative
+            if (side === 'down' && driftDirection !== 'down') {
+                return this.createSignal('hold', null, 'drift_not_aligned_down', analysis);
+            }
+        }
+        
+        // Check for significant edge
+        const hasEdge = Math.abs(edge) >= this.options.edgeThreshold;
+        
+        if (hasEdge) {
+            this.stats.totalSignals++;
+            this.stats.buySignals++;
+            
+            const isStrong = Math.abs(edge) >= this.options.strongEdgeThreshold;
+            const size = isStrong ? this.options.maxPosition : this.options.maxPosition * 0.7;
+            
+            return this.createSignal('buy', side, 'drift_aligned_edge', analysis, size);
+        }
+        
+        return this.createSignal('hold', null, null, analysis);
+    }
+    
+    /**
+     * Black-Scholes fair value calculation with drift
+     */
+    fairValueWithDrift(spotPrice, priceToBeat, timeRemainingSec, volatility, drift) {
+        if (timeRemainingSec <= 0) {
+            return spotPrice >= priceToBeat ? 1.0 : 0.0;
+        }
+        if (spotPrice <= 0 || priceToBeat <= 0 || volatility <= 0) {
+            return 0.5;
+        }
+        
+        const t = timeRemainingSec / (365 * 24 * 3600);
+        const logRatio = Math.log(spotPrice / priceToBeat);
+        const driftTerm = (drift - 0.5 * volatility * volatility) * t;
+        const denominator = volatility * Math.sqrt(t);
+        
+        const d = (logRatio + driftTerm) / denominator;
+        
+        // Standard normal CDF
+        return this.normalCDF(d);
+    }
+    
+    normalCDF(x) {
+        const a1 =  0.254829592;
+        const a2 = -0.284496736;
+        const a3 =  1.421413741;
+        const a4 = -1.453152027;
+        const a5 =  1.061405429;
+        const p  =  0.3275911;
+
+        const sign = x < 0 ? -1 : 1;
+        x = Math.abs(x);
+
+        const t = 1.0 / (1.0 + p * x);
+        const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+
+        return 0.5 * (1.0 + sign * y);
+    }
+}
+
+// ================================================================
+// DRIFT TIMEFRAME VARIANTS
+// Test which lookback period captures the best drift signal
+// ================================================================
+
+/**
+ * 1-Hour Drift - Short-term momentum
+ * Captures recent price action, more responsive but noisier
+ */
+export class FairValueDrift1HStrategy extends DriftAwareFairValueStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'FV_Drift_1H',
+            driftLookbackMs: 1 * 60 * 60 * 1000,  // 1 hour
+            minDriftMagnitude: 0.0005, // Need stronger signal for short period
+            ...options
+        });
+    }
+}
+
+/**
+ * 4-Hour Drift - Medium-term trend
+ * Balances responsiveness with noise reduction
+ */
+export class FairValueDrift4HStrategy extends DriftAwareFairValueStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'FV_Drift_4H',
+            driftLookbackMs: 4 * 60 * 60 * 1000,  // 4 hours
+            minDriftMagnitude: 0.0003,
+            ...options
+        });
+    }
+}
+
+/**
+ * 24-Hour Drift - Daily trend
+ * Captures broader market direction
+ */
+export class FairValueDrift24HStrategy extends DriftAwareFairValueStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'FV_Drift_24H',
+            driftLookbackMs: 24 * 60 * 60 * 1000,  // 24 hours
+            minDriftMagnitude: 0.0002,
+            ...options
+        });
+    }
+}
+
+/**
+ * UP-Only with 4H Drift
+ * Only takes UP bets, uses 4-hour drift for fair value calculation
+ */
+export class FairValueUpOnly4HStrategy extends DriftAwareFairValueStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'FV_UpOnly_4H',
+            driftLookbackMs: 4 * 60 * 60 * 1000,
+            ...options
+        });
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const signal = super.onTick(tick, position, context);
+        
+        // Only allow UP bets
+        if (signal.action === 'buy' && signal.side === 'down') {
+            return this.createSignal('hold', null, 'up_only_filter', signal);
+        }
+        
+        return signal;
+    }
+}
+
+// Factory functions for drift variants
+export function createFairValueDrift1H(capital = 100) {
+    return new FairValueDrift1HStrategy({ maxPosition: capital });
+}
+
+export function createFairValueDrift4H(capital = 100) {
+    return new FairValueDrift4HStrategy({ maxPosition: capital });
+}
+
+export function createFairValueDrift24H(capital = 100) {
+    return new FairValueDrift24HStrategy({ maxPosition: capital });
+}
+
+export function createFairValueUpOnly4H(capital = 100) {
+    return new FairValueUpOnly4HStrategy({ maxPosition: capital });
+}
+
 export default FairValueStrategy;

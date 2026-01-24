@@ -46,6 +46,9 @@ export class SpotLagSimpleStrategy {
         // State per crypto
         this.state = {};
         
+        // Track if we already traded this window (prevents re-entry after stop-out)
+        this.tradedThisWindow = {}; // crypto -> window_epoch
+        
         this.stats = {
             signals: 0,
             spotMovesDetected: 0,
@@ -92,6 +95,8 @@ export class SpotLagSimpleStrategy {
             state.timestamps.shift();
         }
         
+        const windowEpoch = tick.window_epoch;
+        
         // Position management - HOLD TO EXPIRY
         if (position) {
             const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
@@ -99,11 +104,18 @@ export class SpotLagSimpleStrategy {
             
             // Only exit on extreme drawdown
             if (pnlPct <= -this.options.extremeStopLoss) {
+                // Mark as traded so we don't re-enter this window
+                this.tradedThisWindow[crypto] = windowEpoch;
                 return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
             }
             
             // Otherwise hold to expiry
             return this.createSignal('hold', null, 'holding_to_expiry', { pnlPct });
+        }
+        
+        // BLOCK RE-ENTRY: If we already traded this window (stopped out), don't enter again
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded_this_window');
         }
         
         // Entry logic
@@ -172,7 +184,8 @@ export class SpotLagSimpleStrategy {
     }
     
     onWindowStart(windowInfo) {
-        // Reset state for new window
+        // Reset state for new window - allow trading again
+        this.tradedThisWindow = {};
     }
     
     onWindowEnd(windowInfo, outcome) {
@@ -470,6 +483,9 @@ export class MispricingOnlyStrategy {
             
             ...options
         };
+        
+        // Track if we already traded this window (prevents re-entry after stop-out)
+        this.tradedThisWindow = {}; // crypto -> window_epoch
         
         this.stats = {
             signals: 0,

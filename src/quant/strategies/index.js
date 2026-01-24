@@ -14,7 +14,7 @@
  */
 
 // Strategy classes
-export { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift } from './fair_value_strategy.js';
+export { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift, DriftAwareFairValueStrategy, FairValueDrift1HStrategy, FairValueDrift4HStrategy, FairValueDrift24HStrategy, FairValueUpOnly4HStrategy, createFairValueDrift1H, createFairValueDrift4H, createFairValueDrift24H, createFairValueUpOnly4H } from './fair_value_strategy.js';
 export { SpotLagStrategy, createSpotLag1s, createSpotLag5s, createSpotLag10s } from './spot_lag_strategy.js';
 export { TimeConditionalStrategy } from './time_conditional_strategy.js';
 export { RegimeStrategy } from './regime_strategy.js';
@@ -25,7 +25,7 @@ export { EndgameStrategy, EndgameConservativeStrategy, EndgameAggressiveStrategy
 export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme } from './spot_lag_simple.js';
 
 // Import for factory
-import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift } from './fair_value_strategy.js';
+import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift, createFairValueDrift1H, createFairValueDrift4H, createFairValueDrift24H, createFairValueUpOnly4H } from './fair_value_strategy.js';
 import { SpotLagStrategy, createSpotLag1s, createSpotLag5s, createSpotLag10s } from './spot_lag_strategy.js';
 import { TimeConditionalStrategy } from './time_conditional_strategy.js';
 import { RegimeStrategy } from './regime_strategy.js';
@@ -41,10 +41,16 @@ import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createS
  */
 export function createAllQuantStrategies(capital = 100) {
     return [
-        // Fair Value variants (model may be wrong - keep for comparison)
+        // Fair Value variants - ORIGINAL (assume drift=0)
         createFairValueRealizedVol(capital),
         createFairValueEWMA(capital),
         createFairValueWithDrift(capital),
+        
+        // Fair Value - DRIFT-AWARE variants (measure actual drift, use in Black-Scholes)
+        createFairValueDrift1H(capital),   // 1-hour drift lookback
+        createFairValueDrift4H(capital),   // 4-hour drift lookback
+        createFairValueDrift24H(capital),  // 24-hour drift lookback
+        createFairValueUpOnly4H(capital),  // UP-only with 4H drift (based on UP > DOWN insight)
         
         // Spot Lag - OLD (uses fair value - may be wrong)
         // createSpotLag1s(capital),
