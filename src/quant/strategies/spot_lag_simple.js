@@ -240,6 +240,8 @@ export class SpotLagAggressiveStrategy extends SpotLagSimpleStrategy {
 
 /**
  * Base class for time-based exit strategies
+ * 
+ * KEY: Only ONE trade per window per crypto to avoid re-entry loops
  */
 class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
     constructor(options = {}) {
@@ -247,10 +249,12 @@ class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
         this.holdingPeriodSec = options.holdingPeriodSec || 30;
         this.takeProfitPct = options.takeProfitPct || 0.10; // Exit if 10% profit
         this.entryTimes = {}; // crypto -> entry timestamp
+        this.tradedThisWindow = {}; // crypto -> window_epoch (prevent re-entry after exit)
     }
     
     onTick(tick, position = null, context = {}) {
         const crypto = tick.crypto;
+        const windowEpoch = tick.window_epoch;
         
         // If we have a position, check for timed exit
         if (position) {
@@ -264,6 +268,7 @@ class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
             // Exit if holding period exceeded
             if (holdingSec >= this.holdingPeriodSec) {
                 delete this.entryTimes[crypto];
+                this.tradedThisWindow[crypto] = windowEpoch; // Mark as traded, prevent re-entry
                 return this.createSignal('sell', null, `timed_exit_${this.holdingPeriodSec}s`, { 
                     holdingSec: holdingSec.toFixed(1), 
                     pnlPct: (pnlPct * 100).toFixed(2) + '%' 
@@ -273,6 +278,7 @@ class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
             // Exit on take-profit
             if (pnlPct >= this.takeProfitPct) {
                 delete this.entryTimes[crypto];
+                this.tradedThisWindow[crypto] = windowEpoch;
                 return this.createSignal('sell', null, 'take_profit', { 
                     holdingSec: holdingSec.toFixed(1),
                     pnlPct: (pnlPct * 100).toFixed(2) + '%' 
@@ -282,6 +288,7 @@ class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
             // Exit on extreme drawdown (keep this safety)
             if (pnlPct <= -this.options.extremeStopLoss) {
                 delete this.entryTimes[crypto];
+                this.tradedThisWindow[crypto] = windowEpoch;
                 return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
             }
             
@@ -289,6 +296,11 @@ class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
                 holdingSec: holdingSec.toFixed(1), 
                 targetSec: this.holdingPeriodSec 
             });
+        }
+        
+        // BLOCK RE-ENTRY: If we already traded this window, don't enter again
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded_this_window');
         }
         
         // Entry logic - same as parent
@@ -300,6 +312,13 @@ class SpotLagTimedExitStrategy extends SpotLagSimpleStrategy {
         }
         
         return signal;
+    }
+    
+    // Reset on new window
+    onWindowStart(windowInfo) {
+        super.onWindowStart && super.onWindowStart(windowInfo);
+        // Clear traded flags for new window
+        this.tradedThisWindow = {};
     }
 }
 
