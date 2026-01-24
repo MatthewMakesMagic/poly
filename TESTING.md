@@ -243,12 +243,89 @@ Order flow and spread patterns contain predictive information:
 BTC leads other cryptos (ETH, SOL, XRP). When BTC moves, alts follow with a lag.
 
 ### Strategy
-When BTC shows strong directional move, trade the same direction on alts.
+When BTC show strong directional move, trade the same direction on alts.
 
 ### Key Metrics to Track
 - Lead-lag correlation between BTC and alts
 - Win rate on alt trades triggered by BTC
 - Optimal lag time
+
+---
+
+## Thesis 9: Binance/Chainlink Divergence ⭐ NEW
+
+### Hypothesis
+Polymarket resolves binary options using **Chainlink oracle prices**, NOT Binance prices (which traders see on charts). When Binance and Chainlink disagree on direction relative to strike, traders watching Binance charts will be misled.
+
+### Background Discovery (Jan 2026)
+- User noticed Polymarket displays prices that differ from resolution prices
+- Polymarket uses **Chainlink Data Streams** for resolution
+- Binance consistently shows ~0.01-0.06% HIGHER than Chainlink
+- This divergence can flip direction when price is near strike
+
+### Initial Data (First 15 minutes of collection)
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| BTC Disagreement Rate | **21.9%** | Binance UP but Chainlink DOWN (or vice versa) |
+| ETH Disagreement Rate | 0% | Price far enough from strike, both agree |
+| SOL Disagreement Rate | 0% | Price far enough from strike, both agree |
+| Typical Divergence | 0.01-0.06% | Binance higher than Chainlink |
+| Chainlink Staleness | 17-19s avg | Max observed: 34s |
+
+### Live Example Observed (BTC @ 08:50 UTC, Jan 24 2026)
+
+| Source | Price | vs Strike ($89,515) | Signal |
+|--------|-------|---------------------|--------|
+| Binance | $89,516.00 | +$1.00 | **UP** |
+| Chainlink | $89,513.20 | -$1.81 | **DOWN** |
+
+A trader watching Binance sees "UP winning" but resolution (Chainlink) says "DOWN wins."
+
+### When Disagreements Occur
+Disagreements happen when price is **very close to strike** (within ~0.05%):
+- Small Binance/Chainlink divergence (~$2-3 on BTC) can flip direction
+- BTC showed 21.9% of ticks with disagreement in first sample
+- ETH/SOL were further from strike, so no disagreements yet
+
+### Potential Trading Strategy
+1. **Identify tight windows**: Price within 0.1% of strike
+2. **Know Chainlink lags Binance**: Binance is ~0.02-0.05% ahead
+3. **Fade the visible move**: If Binance shows UP but you calculate Chainlink is DOWN, bet DOWN
+4. **Focus on final minutes**: Divergence increases near expiry (0.031% → 0.044%)
+
+### Data Being Collected (Deployed Jan 24 2026)
+New columns in `ticks` table:
+- `chainlink_price` - Oracle price from Chainlink on Polygon
+- `chainlink_staleness` - Seconds since last Chainlink update
+- `chainlink_updated_at` - Timestamp of Chainlink update
+- `price_divergence` - Absolute difference (Binance - Chainlink)
+- `price_divergence_pct` - Percentage divergence
+
+### Chainlink Contract Addresses (Polygon)
+- BTC/USD: `0xc907E116054Ad103354f2D350FD2514433D57F6f`
+- ETH/USD: `0xF9680D99D6C9589e2a93a78A04A279e509205945`
+- SOL/USD: `0x10C8264C0935b3B9870013e057f330Ff3e9C56dC`
+- XRP: **No direct Chainlink feed on Polygon** (may use different resolution)
+
+### Analysis Script
+```bash
+# Run divergence analysis
+node scripts/analyze_divergence.mjs
+```
+
+### Key Questions to Answer (REVISIT)
+1. **What % of windows have direction disagreements?** Initial: 21.9% for BTC
+2. **Does disagreement predict "surprise" resolutions?** Need resolved windows with Chainlink data
+3. **Is Chainlink or Binance more predictive of outcome?** Expect Chainlink (it's the resolution source)
+4. **How does staleness affect disagreement?** Higher staleness = more divergence?
+5. **What's the optimal entry timing?** Final minute shows higher divergence
+6. **Can we build a real-time alert for disagreements?** Flag when Binance UP but Chainlink DOWN
+
+### Status: ACTIVELY COLLECTING DATA
+- Started: Jan 24, 2026 ~08:50 UTC
+- Need: 24-48 hours for statistically meaningful patterns
+- Revisit: Run `analyze_divergence.mjs` daily
 
 ---
 
@@ -259,6 +336,7 @@ When BTC shows strong directional move, trade the same direction on alts.
 - Bid/ask prices and sizes for UP and DOWN
 - Spot price, price_to_beat, spread
 - Book depth
+- **NEW (Jan 2026)**: Chainlink oracle prices, staleness, price divergence
 
 ### Per-Trade Data (paper_trades table)
 - Entry/exit times, prices, spot prices
@@ -297,6 +375,15 @@ All strategies perform better on UP bets. Crypto's positive drift means DOWN bet
 
 ---
 
+## Theses to Revisit (Scheduled)
+
+| Thesis | When | What to Check |
+|--------|------|---------------|
+| **Thesis 9: Chainlink Divergence** | Jan 25-26, 2026 | Run `analyze_divergence.mjs`, check if disagreements predict outcomes |
+| Thesis 6: XRP Anomaly | After more diverse market conditions | Does 76% UP hold in down/ranging markets? |
+
+---
+
 ## Next Questions to Answer
 
 1. **Which drift timeframe is optimal?** 1H vs 4H vs 24H
@@ -305,6 +392,9 @@ All strategies perform better on UP bets. Crypto's positive drift means DOWN bet
 4. **When do mispricings occur?** Time of day, after news, specific cryptos?
 5. **Can we size positions based on edge magnitude?** Kelly criterion
 6. **Do MMs have patterns?** Refresh cycles, quote changes
+7. **⭐ Does Binance/Chainlink divergence predict surprise resolutions?** (Thesis 9 - REVISIT after 24-48h)
+8. **⭐ Can we build a real-time Chainlink disagreement alert?** Flag trading opportunities
+9. **⭐ How does XRP resolve without a Polygon Chainlink feed?** Different oracle source?
 
 ---
 
@@ -354,5 +444,15 @@ ORDER BY bucket;
 
 ---
 
-*Last updated: January 2026*
+*Last updated: January 24, 2026*
 *Document maintained for sharing with other agents and collaborators.*
+
+---
+
+## Revision Log
+
+| Date | Change |
+|------|--------|
+| Jan 24, 2026 | Added Thesis 9 (Binance/Chainlink Divergence) - Initial findings: 21.9% BTC disagreement rate |
+| Jan 24, 2026 | Added Chainlink data collection (chainlink_price, staleness, divergence columns) |
+| Jan 24, 2026 | Added `scripts/analyze_divergence.mjs` for ongoing analysis |

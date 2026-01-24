@@ -765,12 +765,27 @@ class TickCollector {
     }
     
     /**
-     * Log current stats
+     * Log current stats and save health ping to database
      */
     async logStats() {
         const now = new Date().toISOString();
         console.log(`\n[${now}] 📊 Collector Stats:`);
-        console.log(`   Ticks: ${this.stats.ticksCollected} | Messages: ${this.stats.messagesReceived} | Errors: ${this.stats.errors}`);
+        console.log(`   Ticks: ${this.stats.ticksCollected} | Messages: ${this.stats.messagesReceived} | Errors: ${this.stats.errors} | Reconnects: ${this.stats.reconnects}`);
+        
+        // Save health ping to database for monitoring
+        try {
+            await setState('collector_health', JSON.stringify({
+                timestamp: now,
+                ticks: this.stats.ticksCollected,
+                messages: this.stats.messagesReceived,
+                errors: this.stats.errors,
+                reconnects: this.stats.reconnects,
+                uptime: process.uptime(),
+                memory: process.memoryUsage().heapUsed / 1024 / 1024 // MB
+            }));
+        } catch (e) {
+            // Don't crash if health ping fails
+        }
         
         for (const [crypto, price] of Object.entries(this.spotPrices)) {
             const market = this.markets[crypto];
