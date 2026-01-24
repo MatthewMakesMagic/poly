@@ -89,46 +89,84 @@ export class ChainlinkPriceCollector {
     }
     
     /**
+     * Test if an RPC endpoint is reachable using simple fetch
+     * This avoids ethers.js creating a provider that spams retries
+     */
+    async testRpcEndpoint(url, timeoutMs = 3000) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jsonrpc: '2.0',
+                    method: 'eth_blockNumber',
+                    params: [],
+                    id: 1
+                }),
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeout);
+            
+            if (!response.ok) return false;
+            
+            const data = await response.json();
+            return data.result !== undefined;
+        } catch (error) {
+            return false;
+        }
+    }
+    
+    /**
      * Initialize provider and contracts
      * Made non-blocking - returns even if connection fails
+     * Uses fetch to test RPC BEFORE creating ethers provider (avoids retry spam)
      */
     async initialize() {
         console.log('🔗 Initializing Chainlink price feeds...');
         
-        // Try to connect to a working RPC with timeout
+        // Test RPCs with simple fetch FIRST (no ethers.js retry spam)
+        let workingRpcUrl = null;
+        
         for (let i = 0; i < POLYGON_RPC_URLS.length; i++) {
-            try {
-                const url = POLYGON_RPC_URLS[i];
-                
-                // Create provider with explicit options to prevent hanging
-                this.provider = new ethers.JsonRpcProvider(url, undefined, {
-                    staticNetwork: true,  // Prevents network detection calls
-                    batchMaxCount: 1      // Simpler batching
-                });
-                
-                // Test connection with timeout
-                const timeoutPromise = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Connection timeout')), 5000)
-                );
-                
-                await Promise.race([
-                    this.provider.getBlockNumber(),
-                    timeoutPromise
-                ]);
-                
-                console.log(`✅ Connected to Polygon via ${url}`);
+            const url = POLYGON_RPC_URLS[i];
+            console.log(`   Testing RPC: ${url}...`);
+            
+            const isWorking = await this.testRpcEndpoint(url);
+            if (isWorking) {
+                workingRpcUrl = url;
                 this.rpcIndex = i;
+                console.log(`   ✓ RPC ${url} is reachable`);
                 break;
-            } catch (error) {
-                console.log(`⚠️  RPC ${POLYGON_RPC_URLS[i]} failed: ${error.message}`);
-                this.provider = null;
+            } else {
+                console.log(`   ✗ RPC ${url} not reachable`);
             }
         }
         
-        if (!this.provider) {
-            console.log('⚠️  Could not connect to any Polygon RPC - Chainlink disabled');
+        if (!workingRpcUrl) {
+            console.log('⚠️  No Polygon RPC reachable - Chainlink disabled');
             this.disabled = true;
-            return this;  // Return gracefully instead of throwing
+            return this;
+        }
+        
+        // Now create provider with staticNetwork to prevent any network detection
+        try {
+            // Use Polygon mainnet chain ID (137) explicitly
+            const polygonNetwork = { chainId: 137, name: 'polygon' };
+            
+            this.provider = new ethers.JsonRpcProvider(workingRpcUrl, polygonNetwork, {
+                staticNetwork: polygonNetwork,
+                batchMaxCount: 1
+            });
+            
+            console.log(`✅ Connected to Polygon via ${workingRpcUrl}`);
+        } catch (error) {
+            console.log(`⚠️  Failed to create provider: ${error.message} - Chainlink disabled`);
+            this.disabled = true;
+            return this;
         }
         
         // Initialize contracts for each feed
@@ -287,29 +325,49 @@ export class ChainlinkPriceCollector {
     
     /**
      * Rotate to a different RPC endpoint
+     * Tests with fetch first to avoid ethers.js retry spam
      */
     async rotateRpc() {
-        this.rpcIndex = (this.rpcIndex + 1) % POLYGON_RPC_URLS.length;
-        const url = POLYGON_RPC_URLS[this.rpcIndex];
-        
-        try {
-            this.provider = new ethers.JsonRpcProvider(url);
-            await this.provider.getBlockNumber();
-            console.log(`🔄 Rotated to RPC: ${url}`);
+        // Try each RPC starting from next one
+        for (let i = 0; i < POLYGON_RPC_URLS.length; i++) {
+            this.rpcIndex = (this.rpcIndex + 1) % POLYGON_RPC_URLS.length;
+            const url = POLYGON_RPC_URLS[this.rpcIndex];
             
-            // Reinitialize contracts with new provider
-            for (const [crypto, feed] of Object.entries(CHAINLINK_FEEDS)) {
-                if (feed) {
-                    this.contracts[crypto] = new ethers.Contract(
-                        feed.address,
-                        AGGREGATOR_ABI,
-                        this.provider
-                    );
-                }
+            // Test with fetch first
+            const isWorking = await this.testRpcEndpoint(url);
+            if (!isWorking) {
+                continue;
             }
-        } catch (error) {
-            console.error(`❌ RPC rotation failed:`, error.message);
+            
+            try {
+                const polygonNetwork = { chainId: 137, name: 'polygon' };
+                this.provider = new ethers.JsonRpcProvider(url, polygonNetwork, {
+                    staticNetwork: polygonNetwork,
+                    batchMaxCount: 1
+                });
+                
+                console.log(`🔄 Rotated to RPC: ${url}`);
+                
+                // Reinitialize contracts with new provider
+                for (const [crypto, feed] of Object.entries(CHAINLINK_FEEDS)) {
+                    if (feed) {
+                        this.contracts[crypto] = new ethers.Contract(
+                            feed.address,
+                            AGGREGATOR_ABI,
+                            this.provider
+                        );
+                    }
+                }
+                return;  // Success
+            } catch (error) {
+                console.error(`❌ RPC rotation failed for ${url}:`, error.message);
+            }
         }
+        
+        // All RPCs failed
+        console.log('⚠️  All RPCs failed during rotation - disabling Chainlink');
+        this.disabled = true;
+        this.stopPolling();
     }
     
     /**
