@@ -194,6 +194,10 @@ async function handleAPI(req, res) {
                 return apiWindows(req, res);
             case '/api/paper-trades':
                 return apiPaperTrades(req, res);
+            case '/api/ticks-export':
+                return apiTicksExport(req, res);
+            case '/api/research-export':
+                return apiResearchExport(req, res);
             default:
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Not found' }));
@@ -316,6 +320,255 @@ async function apiPaperTrades(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
     } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Tick data bulk export endpoint
+// GET /api/ticks-export?crypto=xrp&hours=24&format=json
+// GET /api/ticks-export?window_epoch=1706054400&format=csv
+async function apiTicksExport(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const crypto = url.searchParams.get('crypto');
+    const start = url.searchParams.get('start');
+    const end = url.searchParams.get('end');
+    const hours = url.searchParams.get('hours');
+    const windowEpoch = url.searchParams.get('window_epoch');
+    const format = url.searchParams.get('format') || 'json';
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50000'), 500000);
+    
+    try {
+        const db = getDatabase();
+        if (!db || !db.query) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Database not available' }));
+            return;
+        }
+        
+        // Build query
+        let query = `
+            SELECT 
+                id, timestamp_ms, crypto, window_epoch, time_remaining_sec,
+                up_bid, up_ask, up_bid_size, up_ask_size, up_mid,
+                down_bid, down_ask, down_bid_size, down_ask_size,
+                spot_price, price_to_beat, spot_delta, spot_delta_pct,
+                spread, spread_pct, implied_prob_up
+            FROM ticks WHERE 1=1
+        `;
+        const params = [];
+        let paramCount = 0;
+        
+        if (crypto) {
+            paramCount++;
+            query += ` AND crypto = $${paramCount}`;
+            params.push(crypto.toLowerCase());
+        }
+        
+        if (windowEpoch) {
+            paramCount++;
+            query += ` AND window_epoch = $${paramCount}`;
+            params.push(parseInt(windowEpoch));
+        }
+        
+        if (hours) {
+            const hoursMs = parseInt(hours) * 60 * 60 * 1000;
+            paramCount++;
+            query += ` AND timestamp_ms > $${paramCount}`;
+            params.push(Date.now() - hoursMs);
+        } else {
+            if (start) {
+                paramCount++;
+                query += ` AND timestamp_ms >= $${paramCount}`;
+                params.push(parseInt(start));
+            }
+            if (end) {
+                paramCount++;
+                query += ` AND timestamp_ms <= $${paramCount}`;
+                params.push(parseInt(end));
+            }
+        }
+        
+        paramCount++;
+        query += ` ORDER BY timestamp_ms ASC LIMIT $${paramCount}`;
+        params.push(limit);
+        
+        const result = await db.query(query, params);
+        
+        // Get summary
+        const summaryResult = await db.query(`
+            SELECT COUNT(*) as total, 
+                   COUNT(DISTINCT crypto) as cryptos,
+                   COUNT(DISTINCT window_epoch) as windows,
+                   MIN(timestamp_ms) as first_tick,
+                   MAX(timestamp_ms) as last_tick
+            FROM ticks
+        `);
+        const summary = summaryResult.rows[0];
+        
+        if (format === 'csv') {
+            const rows = result.rows;
+            if (rows.length === 0) {
+                res.writeHead(200, { 'Content-Type': 'text/csv' });
+                res.end('');
+                return;
+            }
+            const headers = Object.keys(rows[0]);
+            const csvRows = [headers.join(',')];
+            for (const row of rows) {
+                csvRows.push(headers.map(h => {
+                    const v = row[h];
+                    if (v === null || v === undefined) return '';
+                    if (typeof v === 'string' && v.includes(',')) return `"${v}"`;
+                    return v;
+                }).join(','));
+            }
+            res.writeHead(200, { 
+                'Content-Type': 'text/csv',
+                'Content-Disposition': `attachment; filename=ticks_export_${Date.now()}.csv`
+            });
+            res.end(csvRows.join('\n'));
+            return;
+        }
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            meta: {
+                exported_at: new Date().toISOString(),
+                query_params: { crypto, start, end, hours, window_epoch: windowEpoch, limit },
+                rows_returned: result.rowCount,
+                database_summary: {
+                    total_ticks: parseInt(summary.total),
+                    cryptos_tracked: parseInt(summary.cryptos),
+                    windows_covered: parseInt(summary.windows),
+                    first_tick: summary.first_tick ? new Date(parseInt(summary.first_tick)).toISOString() : null,
+                    last_tick: summary.last_tick ? new Date(parseInt(summary.last_tick)).toISOString() : null
+                }
+            },
+            ticks: result.rows
+        }));
+        
+    } catch (error) {
+        console.error('Tick export error:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Research data export - comprehensive data for external analysis
+// GET /api/research-export
+async function apiResearchExport(req, res) {
+    try {
+        const db = getDatabase();
+        if (!db || !db.query) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Database not available' }));
+            return;
+        }
+        
+        // 1. Trade statistics by strategy and crypto
+        const tradeStats = await db.query(`
+            SELECT 
+                strategy_name,
+                crypto,
+                side,
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                SUM(pnl) as total_pnl,
+                AVG(pnl) as avg_pnl,
+                AVG(entry_price) as avg_entry_price,
+                AVG(holding_time_ms) as avg_holding_time_ms
+            FROM paper_trades
+            WHERE pnl IS NOT NULL
+            GROUP BY strategy_name, crypto, side
+            ORDER BY strategy_name, crypto, side
+        `);
+        
+        // 2. Window outcomes by crypto
+        const windowStats = await db.query(`
+            SELECT 
+                crypto,
+                outcome,
+                COUNT(*) as count
+            FROM windows
+            WHERE outcome IS NOT NULL
+            GROUP BY crypto, outcome
+            ORDER BY crypto, outcome
+        `);
+        
+        // 3. Overall summary
+        const summary = await db.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM ticks) as total_ticks,
+                (SELECT COUNT(DISTINCT window_epoch) FROM ticks) as total_windows,
+                (SELECT COUNT(*) FROM paper_trades) as total_trades,
+                (SELECT SUM(pnl) FROM paper_trades) as total_pnl,
+                (SELECT MIN(timestamp_ms) FROM ticks) as first_tick,
+                (SELECT MAX(timestamp_ms) FROM ticks) as last_tick
+        `);
+        
+        // 4. Sample size assessment
+        const sampleSizes = await db.query(`
+            SELECT 
+                crypto,
+                side,
+                COUNT(*) as n,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+            FROM paper_trades
+            WHERE pnl IS NOT NULL
+            GROUP BY crypto, side
+        `);
+        
+        // Calculate confidence intervals
+        const withCI = sampleSizes.rows.map(row => {
+            const n = parseInt(row.n);
+            const wins = parseInt(row.wins);
+            const p = n > 0 ? wins / n : 0;
+            const z = 1.96;
+            
+            // Wilson score interval
+            const denom = 1 + z * z / n;
+            const center = (p + z * z / (2 * n)) / denom;
+            const margin = (z / denom) * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n));
+            
+            return {
+                ...row,
+                win_rate: p,
+                ci_lower: Math.max(0, center - margin),
+                ci_upper: Math.min(1, center + margin),
+                sufficient_for_edge: n >= 100,
+                sufficient_for_anomaly: n >= 200
+            };
+        });
+        
+        const s = summary.rows[0];
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            exported_at: new Date().toISOString(),
+            summary: {
+                total_ticks: parseInt(s.total_ticks),
+                total_windows: parseInt(s.total_windows),
+                total_trades: parseInt(s.total_trades),
+                total_pnl: parseFloat(s.total_pnl) || 0,
+                data_range: {
+                    first: s.first_tick ? new Date(parseInt(s.first_tick)).toISOString() : null,
+                    last: s.last_tick ? new Date(parseInt(s.last_tick)).toISOString() : null
+                }
+            },
+            trade_statistics: tradeStats.rows,
+            window_outcomes: windowStats.rows,
+            sample_sizes_with_confidence: withCI,
+            api_endpoints: {
+                ticks_export: '/api/ticks-export?crypto=xrp&hours=24&format=json',
+                paper_trades: '/api/paper-trades?period=all',
+                windows: '/api/windows?limit=100'
+            }
+        }));
+        
+    } catch (error) {
+        console.error('Research export error:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
     }

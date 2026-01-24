@@ -40,7 +40,16 @@ CREATE TABLE IF NOT EXISTS ticks (
     
     -- Order book depth (JSON for top 5 levels)
     up_book_depth TEXT,             -- JSON: [{price, size}, ...]
-    down_book_depth TEXT
+    down_book_depth TEXT,
+    
+    -- Chainlink oracle data (what Polymarket uses for ACTUAL resolution)
+    chainlink_price REAL,           -- Chainlink oracle price
+    chainlink_staleness INTEGER,    -- Seconds since last Chainlink update
+    chainlink_updated_at INTEGER,   -- Unix timestamp of Chainlink update
+    
+    -- Price divergence between Binance (display) and Chainlink (resolution)
+    price_divergence REAL,          -- Binance - Chainlink (positive = Binance higher)
+    price_divergence_pct REAL       -- Divergence as percentage
 );
 
 -- Index for fast queries

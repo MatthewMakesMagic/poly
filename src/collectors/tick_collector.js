@@ -13,6 +13,7 @@ import WebSocket from 'ws';
 import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats } from '../db/connection.js';
 import { getResearchEngine } from '../quant/research_engine.js';
 import { startDashboard, sendTick, sendStrategyComparison, sendMetrics } from '../dashboard/server.js';
+import { getChainlinkCollector } from './chainlink_prices.js';
 
 // Configuration
 const CONFIG = {
@@ -69,6 +70,10 @@ class TickCollector {
         // CoinGecko fallback
         this.useCoinGecko = false;
         this.coinGeckoInterval = null;
+        
+        // Chainlink oracle prices (used for actual resolution)
+        this.chainlinkCollector = null;
+        this.chainlinkPrices = {};  // crypto -> { price, staleness, updatedAt }
     }
     
     /**
@@ -112,6 +117,18 @@ class TickCollector {
         // Connect to data sources
         await this.connectBinance();
         await this.connectPolymarket();
+        
+        // Initialize Chainlink oracle price feeds
+        // This gives us the ACTUAL resolution price (vs Binance which is display price)
+        try {
+            this.chainlinkCollector = await getChainlinkCollector();
+            this.chainlinkCollector.startPolling(5000); // Poll every 5 seconds
+            console.log('✅ Chainlink oracle feeds initialized');
+        } catch (error) {
+            console.error('⚠️  Chainlink initialization failed:', error.message);
+            console.log('   Will continue with Binance prices only');
+            this.chainlinkCollector = null;
+        }
         
         // Set up periodic tasks
         this.setupPeriodicTasks();
@@ -534,6 +551,27 @@ class TickCollector {
             // Calculate time remaining
             const timeRemainingSec = Math.max(0, (market.endTime - now) / 1000);
             
+            // Get Chainlink oracle price (this is what Polymarket ACTUALLY uses for resolution)
+            let chainlinkPrice = null;
+            let chainlinkStaleness = null;
+            let chainlinkUpdatedAt = null;
+            let priceDivergence = null;
+            let priceDivergencePct = null;
+            
+            if (this.chainlinkCollector) {
+                const clData = this.chainlinkCollector.getPrice(crypto);
+                if (clData) {
+                    chainlinkPrice = clData.price;
+                    chainlinkStaleness = clData.staleness;
+                    chainlinkUpdatedAt = clData.updatedAt;
+                    
+                    // Calculate divergence: Binance - Chainlink
+                    // Positive = Binance is higher (Binance shows UP but Chainlink may not agree)
+                    priceDivergence = spotPrice - chainlinkPrice;
+                    priceDivergencePct = chainlinkPrice > 0 ? (priceDivergence / chainlinkPrice) * 100 : null;
+                }
+            }
+            
             // LOCK IN price_to_beat on first tick of window
             // This is the strike price - it should NOT change during the window!
             if (!market.priceToBeatLocked && spotPrice > 0) {
@@ -579,7 +617,18 @@ class TickCollector {
                 implied_prob_up: upMid,
                 
                 up_book_depth: JSON.stringify(upBids.slice(0, CONFIG.DEPTH_LEVELS)),
-                down_book_depth: JSON.stringify(downBids.slice(0, CONFIG.DEPTH_LEVELS))
+                down_book_depth: JSON.stringify(downBids.slice(0, CONFIG.DEPTH_LEVELS)),
+                
+                // Chainlink oracle data (what Polymarket ACTUALLY uses for resolution)
+                chainlink_price: chainlinkPrice,
+                chainlink_staleness: chainlinkStaleness,
+                chainlink_updated_at: chainlinkUpdatedAt,
+                
+                // Price divergence: Binance - Chainlink
+                // Key insight: If divergence is positive and significant, Binance shows UP
+                // but Chainlink (resolution) might not agree yet
+                price_divergence: priceDivergence,
+                price_divergence_pct: priceDivergencePct
             };
             
             // Process tick through research engine
@@ -733,7 +782,18 @@ class TickCollector {
                 const bestBid = bids.reduce((max, b) => parseFloat(b.price) > parseFloat(max.price) ? b : max, { price: '0' });
                 const bestAsk = asks.reduce((min, a) => parseFloat(a.price) < parseFloat(min.price) ? a : min, { price: '1' });
                 
-                console.log(`   ${crypto.toUpperCase()}: Spot $${price.toLocaleString()} | Up ${bestBid.price}/${bestAsk.price}`);
+                // Get Chainlink price for comparison
+                let clInfo = '';
+                if (this.chainlinkCollector) {
+                    const clData = this.chainlinkCollector.getPrice(crypto);
+                    if (clData) {
+                        const divergence = price - clData.price;
+                        const divergencePct = (divergence / clData.price) * 100;
+                        clInfo = ` | CL $${clData.price.toLocaleString()} (${divergencePct >= 0 ? '+' : ''}${divergencePct.toFixed(3)}% div, ${clData.staleness}s stale)`;
+                    }
+                }
+                
+                console.log(`   ${crypto.toUpperCase()}: Binance $${price.toLocaleString()} | Up ${bestBid.price}/${bestAsk.price}${clInfo}`);
             }
         }
         

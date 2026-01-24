@@ -125,10 +125,13 @@ export async function insertTick(tick) {
                 down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
                 spot_price, price_to_beat, spot_delta, spot_delta_pct,
                 spread, spread_pct, implied_prob_up,
-                up_book_depth, down_book_depth
+                up_book_depth, down_book_depth,
+                chainlink_price, chainlink_staleness, chainlink_updated_at,
+                price_divergence, price_divergence_pct
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+                $25, $26, $27, $28, $29
             )
         `;
         const values = [
@@ -137,7 +140,9 @@ export async function insertTick(tick) {
             tick.down_bid, tick.down_ask, tick.down_bid_size, tick.down_ask_size, tick.down_last_trade,
             tick.spot_price, tick.price_to_beat, tick.spot_delta, tick.spot_delta_pct,
             tick.spread, tick.spread_pct, tick.implied_prob_up,
-            tick.up_book_depth, tick.down_book_depth
+            tick.up_book_depth, tick.down_book_depth,
+            tick.chainlink_price, tick.chainlink_staleness, tick.chainlink_updated_at,
+            tick.price_divergence, tick.price_divergence_pct
         ];
         return pool.query(query, values);
     } else {
@@ -149,14 +154,18 @@ export async function insertTick(tick) {
                 down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
                 spot_price, price_to_beat, spot_delta, spot_delta_pct,
                 spread, spread_pct, implied_prob_up,
-                up_book_depth, down_book_depth
+                up_book_depth, down_book_depth,
+                chainlink_price, chainlink_staleness, chainlink_updated_at,
+                price_divergence, price_divergence_pct
             ) VALUES (
                 @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
                 @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
                 @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
                 @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
                 @spread, @spread_pct, @implied_prob_up,
-                @up_book_depth, @down_book_depth
+                @up_book_depth, @down_book_depth,
+                @chainlink_price, @chainlink_staleness, @chainlink_updated_at,
+                @price_divergence, @price_divergence_pct
             )
         `);
         return stmt.run(tick);
@@ -191,14 +200,18 @@ export async function insertTicksBatch(ticks) {
                 down_bid, down_ask, down_bid_size, down_ask_size, down_last_trade,
                 spot_price, price_to_beat, spot_delta, spot_delta_pct,
                 spread, spread_pct, implied_prob_up,
-                up_book_depth, down_book_depth
+                up_book_depth, down_book_depth,
+                chainlink_price, chainlink_staleness, chainlink_updated_at,
+                price_divergence, price_divergence_pct
             ) VALUES (
                 @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
                 @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
                 @down_bid, @down_ask, @down_bid_size, @down_ask_size, @down_last_trade,
                 @spot_price, @price_to_beat, @spot_delta, @spot_delta_pct,
                 @spread, @spread_pct, @implied_prob_up,
-                @up_book_depth, @down_book_depth
+                @up_book_depth, @down_book_depth,
+                @chainlink_price, @chainlink_staleness, @chainlink_updated_at,
+                @price_divergence, @price_divergence_pct
             )
         `);
         const insertMany = db.transaction((ticks) => {
