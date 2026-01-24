@@ -64,10 +64,12 @@ const CHAINLINK_FEEDS = {
     xrp: null
 };
 
-// Polygon RPC endpoints (free, public)
+// Polygon RPC endpoints - Alchemy first (most reliable), then public fallbacks
 const POLYGON_RPC_URLS = [
+    // Alchemy - reliable, works from cloud providers
+    'https://polygon-mainnet.g.alchemy.com/v2/8RrvVPKs96c_JP-kNIpZO',
+    // Public fallbacks (often blocked from cloud IPs)
     'https://polygon-rpc.com',
-    'https://rpc-mainnet.matic.quiknode.pro',
     'https://polygon-mainnet.public.blastapi.io',
     'https://polygon.llamarpc.com'
 ];
