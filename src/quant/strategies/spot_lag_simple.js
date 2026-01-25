@@ -1123,6 +1123,201 @@ export function createCLDivergenceSafe(capital = 100) {
     return new ChainlinkDivergenceConservativeStrategy({ maxPosition: capital });
 }
 
+/**
+ * FINAL SECONDS Chainlink Divergence Strategy
+ * 
+ * THE USER'S THESIS:
+ * In the final 10-30 seconds, Chainlink is essentially "frozen" because:
+ * 1. Heartbeat is ~60-120 seconds (won't trigger in 10-30s)
+ * 2. Deviation threshold is ~0.5% (unlikely to trigger in final seconds)
+ * 
+ * If Chainlink shows DOWN but market shows UP at 99¢ (DOWN at 1¢):
+ * - Chainlink WON'T update before expiry
+ * - Resolution uses Chainlink → DOWN wins
+ * - $1 at 1¢ = 100 shares → $100 payout = 100x return
+ * 
+ * This strategy ONLY trades in the final 30 seconds where:
+ * - Chainlink is effectively locked
+ * - Prices are most extreme
+ * - Returns are potentially 10-100x
+ */
+export class ChainlinkFinalSecondsStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'CL_FinalSeconds';
+        this.options = {
+            // ONLY trade in final 30 seconds (Chainlink essentially frozen)
+            minTimeRemaining: 5,    // Need at least 5s to execute
+            maxTimeRemaining: 30,   // Final 30 seconds only
+            
+            // Require significant Chainlink margin from strike
+            minChainlinkMargin: 0.001,  // 0.1% away from strike minimum
+            
+            // Maximum entry price - we want CHEAP entries for max leverage
+            maxEntryPrice: 0.15,    // Only enter if we can get in at 15¢ or less
+            
+            // Chainlink staleness check - if TOO stale, might update soon
+            maxChainlinkStaleness: 50,  // Max 50 seconds stale (won't update in time)
+            minChainlinkStaleness: 5,   // Min 5 seconds (confirms it's not about to update)
+            
+            maxPosition: 100,
+            enabledCryptos: ['btc', 'eth', 'sol'],  // Not XRP (no Chainlink)
+            ...options
+        };
+        this.tradedThisWindow = {};
+        this.stats = { signals: 0, final_second_opportunities: 0 };
+    }
+    
+    getName() { return this.name; }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        // Position management - HOLD TO EXPIRY (these are final seconds, no time to manage)
+        if (position) {
+            return this.createSignal('hold', null, 'holding_to_expiry');
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        
+        // THE KEY: Only trade in final seconds window
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_late', { timeRemaining });
+        }
+        if (timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'too_early', { timeRemaining });
+        }
+        
+        // Get all price data
+        const strike = tick.price_to_beat;
+        const binancePrice = tick.spot_price;
+        const chainlinkPrice = tick.chainlink_price;
+        const chainlinkStaleness = tick.chainlink_staleness || 0;
+        
+        // MUST have Chainlink data
+        if (!chainlinkPrice || !strike || !binancePrice) {
+            return this.createSignal('hold', null, 'missing_data');
+        }
+        
+        // Check Chainlink staleness - we want it "just right"
+        // Too fresh (< 5s) = might be about to update again
+        // Too stale (> 50s) = might be about to heartbeat update
+        if (chainlinkStaleness < this.options.minChainlinkStaleness) {
+            return this.createSignal('hold', null, 'chainlink_too_fresh', { 
+                staleness: chainlinkStaleness 
+            });
+        }
+        if (chainlinkStaleness > this.options.maxChainlinkStaleness) {
+            return this.createSignal('hold', null, 'chainlink_too_stale', { 
+                staleness: chainlinkStaleness 
+            });
+        }
+        
+        // Determine which side each source is on
+        const binanceUp = binancePrice > strike;
+        const chainlinkUp = chainlinkPrice > strike;
+        
+        // Do they disagree?
+        if (binanceUp === chainlinkUp) {
+            return this.createSignal('hold', null, 'sources_agree');
+        }
+        
+        this.stats.final_second_opportunities++;
+        
+        // They disagree! Bet on CHAINLINK's side
+        const betSide = chainlinkUp ? 'up' : 'down';
+        const entryPrice = chainlinkUp ? tick.up_ask : tick.down_ask;
+        
+        // Check entry price - we want CHEAP (this is where the 100x comes from)
+        if (!entryPrice || entryPrice > this.options.maxEntryPrice) {
+            return this.createSignal('hold', null, 'not_cheap_enough', {
+                entryPrice: entryPrice?.toFixed(2) || 'N/A',
+                maxAllowed: this.options.maxEntryPrice
+            });
+        }
+        
+        // Check Chainlink margin from strike
+        const chainlinkMargin = chainlinkUp 
+            ? (chainlinkPrice - strike) / strike
+            : (strike - chainlinkPrice) / strike;
+            
+        if (chainlinkMargin < this.options.minChainlinkMargin) {
+            return this.createSignal('hold', null, 'chainlink_too_close', {
+                margin: (chainlinkMargin * 100).toFixed(3) + '%'
+            });
+        }
+        
+        // Calculate potential return
+        const potentialReturn = ((1 / entryPrice) - 1) * 100;
+        
+        // ALL CONDITIONS MET - This is the "frozen Chainlink" edge!
+        this.stats.signals++;
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        console.log(`\n🎯🎯🎯 [CL_FinalSeconds] FINAL SECONDS OPPORTUNITY ${crypto}:`);
+        console.log(`   ⏱️  Time remaining: ${Math.round(timeRemaining)}s`);
+        console.log(`   📊 Strike: $${strike.toFixed(2)}`);
+        console.log(`   📈 Binance: $${binancePrice.toFixed(2)} → ${binanceUp ? 'UP' : 'DOWN'}`);
+        console.log(`   🔗 Chainlink: $${chainlinkPrice.toFixed(2)} → ${chainlinkUp ? 'UP' : 'DOWN'} (${chainlinkStaleness}s stale)`);
+        console.log(`   💰 Entry price: ${(entryPrice * 100).toFixed(0)}¢`);
+        console.log(`   🚀 Potential return: ${potentialReturn.toFixed(0)}x`);
+        console.log(`   ✅ Betting: ${betSide.toUpperCase()} (Chainlink is FROZEN)\n`);
+        
+        return this.createSignal('buy', betSide, 'chainlink_frozen_divergence', {
+            binancePrice: binancePrice.toFixed(2),
+            binanceSide: binanceUp ? 'UP' : 'DOWN',
+            chainlinkPrice: chainlinkPrice.toFixed(2),
+            chainlinkSide: chainlinkUp ? 'UP' : 'DOWN',
+            chainlinkStaleness: chainlinkStaleness + 's',
+            strike: strike.toFixed(2),
+            chainlinkMargin: (chainlinkMargin * 100).toFixed(2) + '%',
+            entryPrice: (entryPrice * 100).toFixed(0) + '¢',
+            potentialReturn: potentialReturn.toFixed(0) + 'x',
+            timeRemaining: Math.round(timeRemaining) + 's'
+        });
+    }
+    
+    createSignal(action, side, reason, analysis = {}) {
+        return { action, side, reason, size: this.options.maxPosition, ...analysis };
+    }
+    
+    onWindowStart(windowInfo) { this.tradedThisWindow = {}; }
+    onWindowEnd(windowInfo, outcome) {}
+    getStats() { return { name: this.name, ...this.stats }; }
+}
+
+/**
+ * Ultra-aggressive final seconds - trades at 10¢ or less, final 15 seconds
+ */
+export class ChainlinkFinalSecondsUltraStrategy extends ChainlinkFinalSecondsStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'CL_FinalSeconds_Ultra',
+            minTimeRemaining: 3,     // Down to 3 seconds!
+            maxTimeRemaining: 15,    // Final 15 seconds only
+            maxEntryPrice: 0.10,     // Only 10¢ or less (10x+ potential)
+            minChainlinkMargin: 0.0005,  // Tighter margin OK
+            ...options
+        });
+    }
+}
+
+export function createCLFinalSeconds(capital = 100) {
+    return new ChainlinkFinalSecondsStrategy({ maxPosition: capital });
+}
+
+export function createCLFinalSecondsUltra(capital = 100) {
+    return new ChainlinkFinalSecondsUltraStrategy({ maxPosition: capital });
+}
+
 // Factory functions for Chainlink-confirmed strategies
 export function createSpotLagCLConfirmed(capital = 100) {
     return new SpotLagChainlinkConfirmedStrategy({ maxPosition: capital });

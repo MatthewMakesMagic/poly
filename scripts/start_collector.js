@@ -36,11 +36,15 @@ async function runMigrations() {
             'SpotLag_Trailing',
             'SpotLag_TrailTight',
             'SpotLag_TrailWide',
-            // Chainlink divergence strategies (NEW!)
+            // Chainlink divergence strategies
             // Bet on Chainlink's side when it disagrees with Binance
             'CL_Divergence',
             'CL_Divergence_Aggro',
-            'CL_Divergence_Safe'
+            'CL_Divergence_Safe',
+            // CHAINLINK FINAL SECONDS - the "frozen Chainlink" edge
+            // In final 10-30s, Chainlink is locked. If it disagrees with market at cheap prices = 10-100x
+            'CL_FinalSeconds',
+            'CL_FinalSeconds_Ultra'
         ];
         
         for (const strat of newStrategies) {
