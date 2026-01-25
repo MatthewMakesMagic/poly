@@ -2242,31 +2242,35 @@ export class SpotLag_CorrectSideOnlyStrategy extends SpotLagSimpleStrategy {
             return this.createSignal('hold', null, 'spot_not_moving');
         }
         
-        // Determine bet from lag
-        const lagSide = spotMove > 0 ? 'up' : 'down';
+        // Determine where spot IS (not where it's moving)
         const spotSide = spotAboveStrike ? 'up' : 'down';
         
-        // CORRECT SIDE GATE: Lag must agree with spot's current side
+        // Also check momentum confirms the position
+        const lagSide = spotMove > 0 ? 'up' : 'down';
+        
+        // CORRECT SIDE GATE: Momentum must confirm spot's current side
+        // (spot above strike AND moving up, OR spot below strike AND moving down)
         if (lagSide !== spotSide) {
             return this.createSignal('hold', null, 'lag_disagrees_with_spot', {
                 spotSide,
                 lagSide,
-                reason: 'Only enter when lag confirms spot position'
+                reason: 'Only enter when momentum confirms spot position'
             });
         }
         
-        const entryPrice = lagSide === 'up' ? tick.up_ask : tick.down_ask;
+        // BET ON WHERE SPOT IS, not where it's moving
+        const entryPrice = spotSide === 'up' ? tick.up_ask : tick.down_ask;
         
         this.tradedThisWindow[crypto] = windowEpoch;
         
-        return this.createSignal('buy', lagSide, 'correct_side_confirmed', {
+        return this.createSignal('buy', spotSide, 'correct_side_confirmed', {
             entryPrice: entryPrice.toFixed(2),
             timeRemaining: timeRemaining.toFixed(0) + 's',
             spotMargin: (spotMargin * 100).toFixed(3) + '%',
             spotMove: (spotMove * 100).toFixed(3) + '%',
             spotPrice: spotPrice.toFixed(2),
             strike: strike.toFixed(2),
-            side: spotSide
+            spotAboveStrike: spotAboveStrike
         });
     }
 }
