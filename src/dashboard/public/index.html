@@ -1039,6 +1039,122 @@
         checkLiveStatus();
         setInterval(checkLiveStatus, 10000);
         
+        // ═══════════════════════════════════════════════════════════════════════════
+        // LIVE STRATEGY TOGGLE FUNCTIONS
+        // ═══════════════════════════════════════════════════════════════════════════
+        
+        let liveStrategiesData = [];
+        
+        // Fetch and render live strategies
+        async function refreshLiveStrategies() {
+            const container = document.getElementById('strategyToggleList');
+            container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading strategies...</div>';
+            
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const baseUrl = isLocal ? 'http://localhost:3333' : `https://${BACKEND_URL}`;
+            
+            try {
+                const response = await fetch(`${baseUrl}/api/live/strategies`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    container.innerHTML = `<div style="color: var(--red); text-align: center; padding: 20px;">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                liveStrategiesData = data.strategies || [];
+                renderLiveStrategies(data);
+                
+            } catch (error) {
+                console.error('Failed to load strategies:', error);
+                container.innerHTML = `<div style="color: var(--red); text-align: center; padding: 20px;">Failed to load: ${error.message}</div>`;
+            }
+        }
+        
+        // Render strategy toggle cards
+        function renderLiveStrategies(data) {
+            const container = document.getElementById('strategyToggleList');
+            const strategies = data.strategies || [];
+            
+            if (strategies.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-dim); text-align: center; padding: 20px;">No strategies found</div>';
+                return;
+            }
+            
+            // Count enabled
+            const enabledCount = strategies.filter(s => s.live_enabled).length;
+            document.getElementById('liveStrategyCount').textContent = `${enabledCount} strategies enabled`;
+            
+            // Render cards
+            let html = '';
+            for (const strat of strategies) {
+                const pnlColor = strat.total_pnl > 0 ? 'var(--green)' : strat.total_pnl < 0 ? 'var(--red)' : 'var(--text)';
+                const pnlStr = `${strat.total_pnl >= 0 ? '+' : ''}$${strat.total_pnl.toFixed(0)}`;
+                const winRateColor = strat.win_rate >= 60 ? 'var(--green)' : strat.win_rate >= 40 ? 'var(--yellow)' : 'var(--red)';
+                const isEnabled = strat.live_enabled;
+                const borderColor = isEnabled ? 'var(--green)' : 'var(--border)';
+                const bgColor = isEnabled ? 'var(--green-dim)' : 'var(--bg-highlight)';
+                
+                html += `
+                    <div class="strategy-toggle-card" data-strategy="${strat.strategy_name}" 
+                         style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 8px; padding: 12px; cursor: pointer; transition: all 0.2s;"
+                         onclick="toggleLiveStrategy('${strat.strategy_name}', ${!isEnabled})">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; font-size: 13px;">${strat.strategy_name}</span>
+                            <div style="width: 40px; height: 22px; border-radius: 11px; background: ${isEnabled ? 'var(--green)' : 'var(--bg)'}; position: relative; transition: background 0.2s;">
+                                <div style="width: 18px; height: 18px; border-radius: 50%; background: white; position: absolute; top: 2px; ${isEnabled ? 'right: 2px;' : 'left: 2px;'} transition: all 0.2s;"></div>
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px;">
+                            <span style="color: var(--text-dim);">${strat.total_trades} trades</span>
+                            <span style="color: ${winRateColor};">${strat.win_rate}% win</span>
+                            <span style="color: ${pnlColor}; font-weight: 600;">${pnlStr}</span>
+                        </div>
+                        ${isEnabled ? '<div style="font-size: 10px; color: var(--green); margin-top: 6px; text-align: center;">🟢 LIVE - $1 trades active</div>' : ''}
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        // Toggle a strategy's live status
+        async function toggleLiveStrategy(strategyName, enabled) {
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const baseUrl = isLocal ? 'http://localhost:3333' : `https://${BACKEND_URL}`;
+            
+            // Confirm if enabling
+            if (enabled) {
+                if (!confirm(`Enable LIVE trading for ${strategyName}?\n\nThis will execute REAL $1 trades when this strategy signals.`)) {
+                    return;
+                }
+            }
+            
+            try {
+                const response = await fetch(`${baseUrl}/api/live/strategies/toggle`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy: strategyName, enabled })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log(result.message);
+                    // Refresh the list
+                    refreshLiveStrategies();
+                } else {
+                    alert(result.error || 'Failed to toggle strategy');
+                }
+            } catch (error) {
+                console.error('Failed to toggle strategy:', error);
+                alert('Failed to toggle strategy: ' + error.message);
+            }
+        }
+        
+        // Load strategies on page load
+        refreshLiveStrategies();
+        
         // Strategy comparison data
         let strategyData = [];
         let allTrades = [];
