@@ -267,10 +267,11 @@ export class LiveTrader extends EventEmitter {
         // Add 3 cent buffer to cross the spread
         const ENTRY_BUFFER = 0.03;
         const rawPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
-        const entryPrice = Math.min(rawPrice + ENTRY_BUFFER, 0.99);
+        // Round to 2 decimal places to avoid floating point precision issues
+        const entryPrice = Math.round(Math.min(rawPrice + ENTRY_BUFFER, 0.99) * 100) / 100;
         
         // DEBUG: Log actual prices from tick vs what we're using
-        this.logger.log(`[LiveTrader] DEBUG PRICES: ${crypto} | up_bid=${tick.up_bid?.toFixed(3)} up_ask=${tick.up_ask?.toFixed(3)} | using=${entryPrice.toFixed(3)}`);
+        this.logger.log(`[LiveTrader] DEBUG PRICES: ${crypto} | up_bid=${tick.up_bid?.toFixed(3)} up_ask=${tick.up_ask?.toFixed(3)} | using=${entryPrice.toFixed(2)}`);
         
         // Calculate actual position size (ensure minimum 5 shares for Polymarket)
         const actualSize = this.calculateMinimumSize(entryPrice, this.options.positionSize);
@@ -356,7 +357,8 @@ export class LiveTrader extends EventEmitter {
             // RETRY ONCE at slightly worse price (+2 cents)
             const RETRY_SLIPPAGE = 0.02;
             const MAX_SLIPPAGE = 0.02;  // Don't retry if we'd exceed 2c worse
-            const retryPrice = Math.min(entryPrice + RETRY_SLIPPAGE, 0.99);
+            // Round to 2 decimal places to avoid floating point precision issues
+            const retryPrice = Math.round(Math.min(entryPrice + RETRY_SLIPPAGE, 0.99) * 100) / 100;
             
             if (retryPrice - entryPrice <= MAX_SLIPPAGE) {
                 this.logger.log(`[LiveTrader] 🔄 RETRYING at ${retryPrice.toFixed(3)} (+${((retryPrice - entryPrice) * 100).toFixed(1)}c)`);
@@ -440,7 +442,8 @@ export class LiveTrader extends EventEmitter {
         // Subtract 3 cent buffer to ensure sell fills
         const EXIT_BUFFER = 0.03;
         const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
-        const price = Math.max(rawPrice - EXIT_BUFFER, 0.01);
+        // Round to 2 decimal places to avoid floating point precision issues
+        const price = Math.round(Math.max(rawPrice - EXIT_BUFFER, 0.01) * 100) / 100;
         
         this.logger.log(`[LiveTrader] 📉 EXECUTING LIVE EXIT: ${strategyName} | ${crypto} | ${position.tokenSide} | @ ${price.toFixed(3)}`);
         
