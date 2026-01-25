@@ -36,16 +36,24 @@ async function runMigrations() {
             'SpotLag_Trailing',
             'SpotLag_TrailTight',
             'SpotLag_TrailWide',
-            // Chainlink divergence strategies
-            // Bet on Chainlink's side when it disagrees with Binance
-            'CL_Divergence',
-            'CL_Divergence_Aggro',
-            'CL_Divergence_Safe',
-            // CHAINLINK FINAL SECONDS - the "frozen Chainlink" edge
+            // CHAINLINK FINAL SECONDS ONLY - the "frozen Chainlink" edge
             // In final 10-30s, Chainlink is locked. If it disagrees with market at cheap prices = 10-100x
+            // DISABLED earlier CL_Divergence strategies because Chainlink can still update (60s heartbeat)
             'CL_FinalSeconds',
             'CL_FinalSeconds_Ultra'
         ];
+        
+        // DISABLE strategies that trade too early (Chainlink can update before expiry)
+        const toDisable = [
+            'CL_Divergence',        // 60-600s remaining = Chainlink updates ~10x
+            'CL_Divergence_Aggro',  // 60-780s remaining = even worse
+            'CL_Divergence_Safe'    // 30-300s remaining = still risky
+        ];
+        
+        for (const strat of toDisable) {
+            await setLiveStrategyEnabled(strat, false);
+            console.log(`❌ Disabled ${strat} (Chainlink can update before expiry)`);
+        }
         
         for (const strat of newStrategies) {
             await setLiveStrategyEnabled(strat, true);
