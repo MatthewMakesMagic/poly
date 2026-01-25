@@ -267,6 +267,9 @@ export class LiveTrader extends EventEmitter {
         const rawPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
         const entryPrice = Math.min(rawPrice + ENTRY_BUFFER, 0.99);
         
+        // DEBUG: Log actual prices from tick vs what we're using
+        this.logger.log(`[LiveTrader] DEBUG PRICES: ${crypto} | up_bid=${tick.up_bid?.toFixed(3)} up_ask=${tick.up_ask?.toFixed(3)} | using=${entryPrice.toFixed(3)}`);
+        
         // Calculate actual position size (ensure minimum 5 shares for Polymarket)
         const actualSize = this.calculateMinimumSize(entryPrice, this.options.positionSize);
         
