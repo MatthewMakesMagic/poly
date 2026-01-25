@@ -428,7 +428,7 @@ class TickCollector {
             const data = JSON.parse(rawData.toString());
             this.stats.messagesReceived++;
             
-            // Handle order book snapshot (array format)
+            // Handle order book snapshot (array format) - initial data on subscribe
             if (Array.isArray(data)) {
                 for (const book of data) {
                     if (book.asset_id && book.bids && book.asks) {
@@ -438,15 +438,42 @@ class TickCollector {
                             lastTradePrice: book.last_trade_price,
                             timestamp: Date.now()
                         };
+                        
+                        // Log initial snapshot
+                        const bids = book.bids || [];
+                        const asks = book.asks || [];
+                        const bestBid = bids.length > 0 ? bids.reduce((max, b) => parseFloat(b.price) > parseFloat(max.price) ? b : max, { price: '0' }).price : '0';
+                        const bestAsk = asks.length > 0 ? asks.reduce((min, a) => parseFloat(a.price) < parseFloat(min.price) ? a : min, { price: '1' }).price : '1';
+                        console.log(`📚 Book snapshot: ${book.asset_id.slice(0,8)}... bid=${bestBid} ask=${bestAsk}`);
                     }
                 }
             }
             
-            // Handle price change events
+            // Handle price change events - THIS IS THE MAIN DATA SOURCE!
+            // Each price_change contains best_bid/best_ask for a token
             if (data.event_type === 'price_change' && data.price_changes) {
                 for (const change of data.price_changes) {
-                    // Update the specific level in our order book
-                    // This is a simplification - full implementation would update specific levels
+                    const tokenId = change.asset_id;
+                    if (!tokenId) continue;
+                    
+                    // Update the order book with new best bid/ask
+                    if (!this.orderBooks[tokenId]) {
+                        this.orderBooks[tokenId] = { bids: [], asks: [], timestamp: Date.now() };
+                    }
+                    
+                    const book = this.orderBooks[tokenId];
+                    
+                    // Replace bids/asks with single best level from price_change
+                    if (change.best_bid !== undefined) {
+                        book.bids = [{ price: change.best_bid, size: change.best_bid_size || '100' }];
+                    }
+                    if (change.best_ask !== undefined) {
+                        book.asks = [{ price: change.best_ask, size: change.best_ask_size || '100' }];
+                    }
+                    if (change.price) {
+                        book.lastTradePrice = change.price;
+                    }
+                    book.timestamp = Date.now();
                 }
             }
             
