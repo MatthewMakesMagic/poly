@@ -231,28 +231,46 @@ export class SDKClient {
         
         this.logger.log(`[SDKClient] BUY ${shares} shares @ $${price.toFixed(4)} = $${actualCost.toFixed(2)}`);
         
-        const order = await this.client.createAndPostOrder({
-            tokenID: tokenId,
-            price: price,
-            side: 'BUY',
-            size: shares
-        }, {
-            tickSize: '0.01',
-            negRisk: false
-        }, orderType);
-        
-        this.logger.log(`[SDKClient] Order ${order.orderID}: ${order.status}`);
-        
-        return {
-            orderId: order.orderID,
-            status: order.status,
-            shares: shares,
-            price: price,
-            cost: actualCost,
-            filled: order.status === 'matched',
-            tx: order.transactionsHashes?.[0] || null,
-            raw: order
-        };
+        try {
+            const order = await this.client.createAndPostOrder({
+                tokenID: tokenId,
+                price: price,
+                side: 'BUY',
+                size: shares
+            }, {
+                tickSize: '0.01',
+                negRisk: false
+            }, orderType);
+            
+            this.logger.log(`[SDKClient] Order ${order?.orderID}: ${order?.status}`);
+            
+            // Check if order actually filled (FOK orders return null/undefined if killed)
+            const filled = order && (order.status === 'matched' || order.status === 'live');
+            
+            return {
+                orderId: order?.orderID,
+                status: order?.status || 'killed',
+                shares: filled ? shares : 0,
+                price: price,
+                cost: filled ? actualCost : 0,
+                filled: filled,
+                tx: order?.transactionsHashes?.[0] || null,
+                raw: order
+            };
+        } catch (error) {
+            // FOK orders that can't fill throw an error
+            this.logger.warn(`[SDKClient] BUY failed: ${error.message}`);
+            return {
+                orderId: null,
+                status: 'killed',
+                shares: 0,
+                price: price,
+                cost: 0,
+                filled: false,
+                error: error.message,
+                raw: null
+            };
+        }
     }
     
     /**
@@ -281,28 +299,44 @@ export class SDKClient {
         
         this.logger.log(`[SDKClient] SELL ${actualShares} shares @ $${price.toFixed(4)} = $${expectedValue.toFixed(2)}`);
         
-        const order = await this.client.createAndPostOrder({
-            tokenID: tokenId,
-            price: price,
-            side: 'SELL',
-            size: actualShares
-        }, {
-            tickSize: '0.01',
-            negRisk: false
-        }, orderType);
-        
-        this.logger.log(`[SDKClient] Order ${order.orderID}: ${order.status}`);
-        
-        return {
-            orderId: order.orderID,
-            status: order.status,
-            shares: actualShares,
-            price: price,
-            value: expectedValue,
-            filled: order.status === 'matched',
-            tx: order.transactionsHashes?.[0] || null,
-            raw: order
-        };
+        try {
+            const order = await this.client.createAndPostOrder({
+                tokenID: tokenId,
+                price: price,
+                side: 'SELL',
+                size: actualShares
+            }, {
+                tickSize: '0.01',
+                negRisk: false
+            }, orderType);
+            
+            this.logger.log(`[SDKClient] Order ${order?.orderID}: ${order?.status}`);
+            
+            const filled = order && (order.status === 'matched' || order.status === 'live');
+            
+            return {
+                orderId: order?.orderID,
+                status: order?.status || 'killed',
+                shares: filled ? actualShares : 0,
+                price: price,
+                value: filled ? expectedValue : 0,
+                filled: filled,
+                tx: order?.transactionsHashes?.[0] || null,
+                raw: order
+            };
+        } catch (error) {
+            this.logger.warn(`[SDKClient] SELL failed: ${error.message}`);
+            return {
+                orderId: null,
+                status: 'killed',
+                shares: 0,
+                price: price,
+                value: 0,
+                filled: false,
+                error: error.message,
+                raw: null
+            };
+        }
     }
     
     /**
