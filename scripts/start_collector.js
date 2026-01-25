@@ -7,6 +7,18 @@
  * Made crash-resistant: Will try to recover from errors instead of exiting.
  */
 
+import dotenv from 'dotenv';
+dotenv.config();
+
+// Initialize global proxy agent for all HTTP/HTTPS requests (bypasses Cloudflare blocks)
+if (process.env.PROXY_URL) {
+    const { bootstrap } = await import('global-agent');
+    bootstrap();
+    process.env.GLOBAL_AGENT_HTTP_PROXY = process.env.PROXY_URL;
+    process.env.GLOBAL_AGENT_HTTPS_PROXY = process.env.PROXY_URL;
+    console.log(`🔒 Proxy enabled: ${process.env.PROXY_URL.replace(/:[^:@]+@/, ':***@')}`);
+}
+
 import { TickCollector } from '../src/collectors/tick_collector.js';
 
 console.log('🚀 Starting Polymarket Tick Collector...\n');
