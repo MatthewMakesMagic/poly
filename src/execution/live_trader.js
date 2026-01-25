@@ -339,6 +339,64 @@ export class LiveTrader extends EventEmitter {
             this.stats.ordersRejected++;
             this.logger.error(`[LiveTrader] Entry order failed: ${error.message}`);
             
+            // RETRY ONCE at slightly worse price (+2 cents)
+            const RETRY_SLIPPAGE = 0.02;
+            const MAX_SLIPPAGE = 0.02;  // Don't retry if we'd exceed 2c worse
+            const retryPrice = Math.min(entryPrice + RETRY_SLIPPAGE, 0.99);
+            
+            if (retryPrice - entryPrice <= MAX_SLIPPAGE) {
+                this.logger.log(`[LiveTrader] 🔄 RETRYING at ${retryPrice.toFixed(3)} (+${((retryPrice - entryPrice) * 100).toFixed(1)}c)`);
+                
+                try {
+                    const retryResponse = await this.client.placeOrder({
+                        tokenId,
+                        price: retryPrice,
+                        size: actualSize,
+                        side: Side.BUY,
+                        orderType: OrderType.FOK
+                    });
+                    
+                    if (retryResponse.status === 'filled' || retryResponse.status === 'live') {
+                        this.stats.ordersFilled++;
+                        
+                        const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
+                        this.livePositions[positionKey] = {
+                            strategyName,
+                            crypto,
+                            windowEpoch,
+                            tokenSide,
+                            tokenId,
+                            entryPrice: retryPrice,
+                            entryTime: Date.now(),
+                            size: actualSize,
+                            spotAtEntry: tick.spot_price,
+                            orderId: retryResponse.orderId,
+                            wasRetry: true
+                        };
+                        
+                        this.riskManager.recordTradeOpen({ crypto, windowEpoch, size: actualSize });
+                        
+                        this.logger.log(`[LiveTrader] ✅ RETRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${retryPrice.toFixed(3)}`);
+                        
+                        this.emit('trade_entry', {
+                            strategyName,
+                            crypto,
+                            side: signal.side,
+                            price: retryPrice,
+                            size: actualSize,
+                            wasRetry: true
+                        });
+                        
+                        await this.saveTrade('entry', strategyName, signal, tick, retryPrice);
+                        return retryResponse;
+                    }
+                } catch (retryError) {
+                    this.logger.error(`[LiveTrader] Retry also failed: ${retryError.message}`);
+                }
+            } else {
+                this.logger.warn(`[LiveTrader] Skipping retry - would exceed 2c slippage`);
+            }
+            
             // Log the missed opportunity for analysis
             this.emit('trade_missed', {
                 strategyName,

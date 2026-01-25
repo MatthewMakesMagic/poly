@@ -16,6 +16,7 @@ import { SpotLagAnalyzer } from './spot_lag_analyzer.js';
 import { RegimeDetector } from './regime_detector.js';
 import { createAllQuantStrategies } from './strategies/index.js';
 import { savePaperTrade } from '../db/connection.js';
+import { getLiveTrader } from '../execution/live_trader.js';
 
 /**
  * Main Research Engine
@@ -78,6 +79,35 @@ export class ResearchEngine {
             windowsAnalyzed: 0,
             startTime: Date.now()
         };
+        
+        // Current markets (for live trading - need tokenIds)
+        this.currentMarkets = {};
+        
+        // Initialize live trader (if enabled)
+        this.initLiveTrader();
+    }
+    
+    /**
+     * Initialize the live trader
+     */
+    async initLiveTrader() {
+        try {
+            const liveTrader = getLiveTrader();
+            const initialized = await liveTrader.initialize();
+            if (initialized) {
+                console.log('[ResearchEngine] Live trader initialized and ready');
+            }
+        } catch (error) {
+            // Live trading not configured - that's fine
+            console.log('[ResearchEngine] Live trading not enabled:', error.message);
+        }
+    }
+    
+    /**
+     * Set current markets (called by tick collector when markets refresh)
+     */
+    setMarkets(markets) {
+        this.currentMarkets = markets;
     }
     
     /**
@@ -121,9 +151,23 @@ export class ResearchEngine {
                 perf.byCrypto[crypto].signals++;
             }
             
-            // Paper trading
+            // Paper trading (always runs for all strategies)
             if (this.options.enablePaperTrading) {
                 this.executePaperTrade(strategy.getName(), crypto, signal, tick);
+            }
+            
+            // LIVE TRADING - execute if strategy is enabled
+            if (signal.action === 'buy' || signal.action === 'sell') {
+                try {
+                    const liveTrader = getLiveTrader();
+                    // Get market info for this crypto (need tokenIds)
+                    const market = this.currentMarkets?.[crypto];
+                    if (market && liveTrader.isRunning) {
+                        liveTrader.processSignal(strategy.getName(), signal, tick, market);
+                    }
+                } catch (e) {
+                    // Live trader not initialized or error - continue with paper trading
+                }
             }
             
             strategySignals.push({

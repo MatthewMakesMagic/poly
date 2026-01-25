@@ -192,6 +192,11 @@ class TickCollector {
         }
         
         console.log(`📊 Markets refreshed for epoch ${currentEpoch}`);
+        
+        // Update research engine with new markets (needed for live trading tokenIds)
+        if (this.researchEngine) {
+            this.researchEngine.setMarkets(this.markets);
+        }
     }
     
     /**
