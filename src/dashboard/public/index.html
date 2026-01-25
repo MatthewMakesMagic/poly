@@ -380,6 +380,100 @@
         </div>
     </div>
 
+    <!-- Live Trading Control Panel -->
+    <div class="card" id="liveControlPanel" style="background: linear-gradient(135deg, var(--bg-card), #1a1a25); border: 2px solid var(--blue); margin-bottom: 20px; display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+            <!-- Status Section -->
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <div>
+                    <div style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Live Trading</div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div id="liveStatusDot" style="width: 12px; height: 12px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite;"></div>
+                        <span id="liveStatusText" style="font-size: 18px; font-weight: 600;">RUNNING</span>
+                    </div>
+                </div>
+                <div style="height: 40px; width: 1px; background: var(--border);"></div>
+                <div>
+                    <div style="font-size: 11px; color: var(--text-dim);">Strategy</div>
+                    <div id="liveStrategyName" style="font-weight: 500;">SpotLag_Aggressive</div>
+                </div>
+                <div>
+                    <div style="font-size: 11px; color: var(--text-dim);">Uptime</div>
+                    <div id="liveUptime" class="mono" style="font-weight: 500;">0:00:00</div>
+                </div>
+            </div>
+            
+            <!-- Stats Section -->
+            <div style="display: flex; gap: 24px;">
+                <div style="text-align: center;">
+                    <div style="font-size: 11px; color: var(--text-dim);">Positions</div>
+                    <div id="livePositionCount" class="mono" style="font-size: 20px; font-weight: 600; color: var(--blue);">0</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 11px; color: var(--text-dim);">Trades</div>
+                    <div id="liveTradeCount" class="mono" style="font-size: 20px; font-weight: 600;">0</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 11px; color: var(--text-dim);">Net P&L</div>
+                    <div id="liveNetPnl" class="mono" style="font-size: 20px; font-weight: 600; color: var(--green);">$0.00</div>
+                </div>
+            </div>
+            
+            <!-- Control Buttons -->
+            <div style="display: flex; gap: 8px;">
+                <button id="livePauseBtn" onclick="toggleLivePause()" style="padding: 10px 20px; background: var(--yellow-dim); border: 1px solid var(--yellow); color: var(--yellow); border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px;">
+                    ⏸️ Pause
+                </button>
+                <button id="liveKillBtn" onclick="triggerKillSwitch()" style="padding: 10px 20px; background: var(--red-dim); border: 2px solid var(--red); color: var(--red); border-radius: 6px; cursor: pointer; font-weight: 700; font-size: 13px;">
+                    🛑 KILL SWITCH
+                </button>
+            </div>
+        </div>
+        
+        <!-- Live Positions Row -->
+        <div id="livePositionsRow" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); display: none;">
+            <div style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Open Positions</div>
+            <div id="livePositionsList" style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <!-- Positions will be inserted here -->
+            </div>
+        </div>
+        
+        <!-- Risk Status -->
+        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 24px; flex-wrap: wrap;">
+            <div>
+                <span style="font-size: 11px; color: var(--text-dim);">Risk Status:</span>
+                <span id="liveRiskStatus" style="font-size: 12px; font-weight: 500; color: var(--green);"> ✅ Trading Allowed</span>
+            </div>
+            <div>
+                <span style="font-size: 11px; color: var(--text-dim);">Daily Loss:</span>
+                <span id="liveDailyLoss" class="mono" style="font-size: 12px;">$0.00 / $20.00</span>
+            </div>
+            <div>
+                <span style="font-size: 11px; color: var(--text-dim);">Exposure:</span>
+                <span id="liveExposure" class="mono" style="font-size: 12px;">$0 / $20</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Strategy Live Toggle Panel -->
+    <div class="card" id="strategyTogglePanel" style="margin-bottom: 20px;">
+        <div class="card-header">
+            <div class="card-title">🎯 LIVE STRATEGY CONTROL</div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span id="liveStrategyCount" style="font-size: 12px; color: var(--text-dim);">0 strategies enabled</span>
+                <button onclick="refreshLiveStrategies()" style="padding: 6px 12px; background: var(--bg-highlight); border: 1px solid var(--border); color: var(--text); border-radius: 4px; cursor: pointer; font-size: 11px;">🔄 Refresh</button>
+            </div>
+        </div>
+        <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 16px;">
+            Toggle strategies ON to execute <strong>$1 LIVE trades</strong>. Paper trading continues for ALL strategies regardless of these settings.
+        </p>
+        
+        <!-- Strategy Toggle List -->
+        <div id="strategyToggleList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;">
+            <div style="color: var(--text-dim); text-align: center; padding: 20px;">Loading strategies...</div>
+        </div>
+    </div>
+
     <div class="market-tabs" id="marketTabs">
         <div class="market-tab active" data-crypto="BTC">₿ Bitcoin</div>
         <div class="market-tab inactive" data-crypto="ETH">Ξ Ethereum</div>
@@ -735,8 +829,215 @@
                 handleMetrics(data.payload);
             } else if (data.type === 'trade_execution') {
                 handleTradeExecution(data.payload);
+            } else if (data.type === 'live_status') {
+                handleLiveStatus(data.payload);
+            } else if (data.type === 'live_trade') {
+                handleLiveTradeEvent(data.payload);
             }
         }
+        
+        // ═══════════════════════════════════════════════════════════════════════════
+        // LIVE TRADING HANDLERS
+        // ═══════════════════════════════════════════════════════════════════════════
+        
+        let liveEngineConnected = false;
+        let liveEnginePaused = false;
+        
+        function handleLiveStatus(status) {
+            const panel = document.getElementById('liveControlPanel');
+            
+            if (!status.connected && !status.state) {
+                // No live engine running
+                panel.style.display = 'none';
+                liveEngineConnected = false;
+                return;
+            }
+            
+            // Show the panel
+            panel.style.display = 'block';
+            liveEngineConnected = true;
+            
+            // Update status indicator
+            const statusDot = document.getElementById('liveStatusDot');
+            const statusText = document.getElementById('liveStatusText');
+            const pauseBtn = document.getElementById('livePauseBtn');
+            
+            if (status.state === 'RUNNING') {
+                statusDot.style.background = 'var(--green)';
+                statusText.textContent = 'RUNNING';
+                statusText.style.color = 'var(--green)';
+                pauseBtn.innerHTML = '⏸️ Pause';
+                pauseBtn.style.borderColor = 'var(--yellow)';
+                pauseBtn.style.color = 'var(--yellow)';
+                liveEnginePaused = false;
+            } else if (status.state === 'PAUSED') {
+                statusDot.style.background = 'var(--yellow)';
+                statusText.textContent = 'PAUSED';
+                statusText.style.color = 'var(--yellow)';
+                pauseBtn.innerHTML = '▶️ Resume';
+                pauseBtn.style.borderColor = 'var(--green)';
+                pauseBtn.style.color = 'var(--green)';
+                liveEnginePaused = true;
+            } else if (status.state === 'STOPPED' || status.killSwitch) {
+                statusDot.style.background = 'var(--red)';
+                statusText.textContent = status.killSwitch ? 'KILLED' : 'STOPPED';
+                statusText.style.color = 'var(--red)';
+            } else {
+                statusDot.style.background = 'var(--blue)';
+                statusText.textContent = status.state || 'UNKNOWN';
+                statusText.style.color = 'var(--blue)';
+            }
+            
+            // Update stats
+            if (status.sessionStats) {
+                document.getElementById('liveTradeCount').textContent = status.sessionStats.tradesExecuted || 0;
+                const netPnl = status.sessionStats.netPnL || 0;
+                const pnlEl = document.getElementById('liveNetPnl');
+                pnlEl.textContent = `${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`;
+                pnlEl.style.color = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
+            }
+            
+            // Update positions
+            const positions = status.positions || [];
+            document.getElementById('livePositionCount').textContent = positions.length;
+            
+            const positionsRow = document.getElementById('livePositionsRow');
+            const positionsList = document.getElementById('livePositionsList');
+            
+            if (positions.length > 0) {
+                positionsRow.style.display = 'block';
+                let posHtml = '';
+                for (const pos of positions) {
+                    const sideColor = pos.tokenSide === 'UP' ? 'var(--green)' : 'var(--red)';
+                    const cryptoEmoji = { btc: '₿', eth: 'Ξ', sol: '◎', xrp: '✕' }[pos.crypto] || '•';
+                    posHtml += `
+                        <div style="background: var(--bg-highlight); padding: 10px 14px; border-radius: 6px; border-left: 3px solid ${sideColor};">
+                            <div style="font-weight: 600; font-size: 13px;">${cryptoEmoji} ${(pos.crypto || '').toUpperCase()}</div>
+                            <div style="font-size: 11px; color: ${sideColor};">${pos.tokenSide} @ ${(pos.entryPrice || 0).toFixed(3)}</div>
+                            <div style="font-size: 10px; color: var(--text-dim);">$${pos.size}</div>
+                        </div>
+                    `;
+                }
+                positionsList.innerHTML = posHtml;
+            } else {
+                positionsRow.style.display = 'none';
+            }
+            
+            // Update uptime
+            if (status.uptime) {
+                const secs = Math.floor(status.uptime / 1000);
+                const hours = Math.floor(secs / 3600);
+                const mins = Math.floor((secs % 3600) / 60);
+                const s = secs % 60;
+                document.getElementById('liveUptime').textContent = 
+                    `${hours}:${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            }
+            
+            // Update risk status
+            if (status.riskStatus) {
+                const riskEl = document.getElementById('liveRiskStatus');
+                if (status.riskStatus.tradingAllowed) {
+                    riskEl.innerHTML = ' ✅ Trading Allowed';
+                    riskEl.style.color = 'var(--green)';
+                } else {
+                    riskEl.innerHTML = ' ❌ Trading Blocked';
+                    riskEl.style.color = 'var(--red)';
+                }
+                
+                // Daily loss
+                const dailyPnl = status.riskStatus.dailyPnL || 0;
+                const maxLoss = 20; // Default
+                document.getElementById('liveDailyLoss').textContent = 
+                    `$${Math.abs(dailyPnl).toFixed(2)} / $${maxLoss.toFixed(2)}`;
+                
+                // Exposure
+                const exposure = status.riskStatus.totalExposure || 0;
+                document.getElementById('liveExposure').textContent = 
+                    `$${exposure.toFixed(0)} / $20`;
+            }
+        }
+        
+        function handleLiveTradeEvent(event) {
+            console.log('🔔 Live trade event:', event.type, event);
+            
+            // Could show toast notifications here
+            if (event.type === 'order_filled') {
+                // Flash the P&L or show a notification
+            }
+        }
+        
+        // Toggle pause/resume
+        async function toggleLivePause() {
+            if (!liveEngineConnected) return;
+            
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const baseUrl = isLocal ? 'http://localhost:3333' : `https://${BACKEND_URL}`;
+            
+            try {
+                const endpoint = liveEnginePaused ? '/api/live/resume' : '/api/live/pause';
+                const response = await fetch(`${baseUrl}${endpoint}`, { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log(liveEnginePaused ? 'Resumed trading' : 'Paused trading');
+                } else {
+                    alert(result.message || 'Failed to toggle pause state');
+                }
+            } catch (error) {
+                console.error('Failed to toggle pause:', error);
+                alert('Failed to communicate with server');
+            }
+        }
+        
+        // Trigger kill switch
+        async function triggerKillSwitch() {
+            if (!liveEngineConnected) return;
+            
+            // Confirm before killing
+            if (!confirm('⚠️ KILL SWITCH\\n\\nThis will immediately stop all trading and cancel open orders.\\n\\nAre you sure?')) {
+                return;
+            }
+            
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const baseUrl = isLocal ? 'http://localhost:3333' : `https://${BACKEND_URL}`;
+            
+            try {
+                const response = await fetch(`${baseUrl}/api/live/kill`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: 'Manual kill via dashboard' })
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('🛑 Trading stopped. Engine killed.');
+                } else {
+                    alert(result.error || 'Failed to trigger kill switch');
+                }
+            } catch (error) {
+                console.error('Failed to trigger kill switch:', error);
+                alert('Failed to communicate with server - check manually!');
+            }
+        }
+        
+        // Check live status on load
+        async function checkLiveStatus() {
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const baseUrl = isLocal ? 'http://localhost:3333' : `https://${BACKEND_URL}`;
+            
+            try {
+                const response = await fetch(`${baseUrl}/api/live/status`);
+                const status = await response.json();
+                handleLiveStatus(status);
+            } catch (error) {
+                // Live engine not running
+                document.getElementById('liveControlPanel').style.display = 'none';
+            }
+        }
+        
+        // Check live status periodically and on page load
+        checkLiveStatus();
+        setInterval(checkLiveStatus, 10000);
         
         // Strategy comparison data
         let strategyData = [];

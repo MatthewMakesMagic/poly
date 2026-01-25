@@ -606,6 +606,174 @@ export async function getPaperTrades(options = {}) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIVE TRADING FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get list of strategies enabled for live trading
+ */
+export async function getLiveEnabledStrategies() {
+    if (!USE_POSTGRES || !pgPool) {
+        // Return from memory/state if no database
+        const state = await getState('live_strategies');
+        return state ? JSON.parse(state) : [];
+    }
+    
+    try {
+        // First ensure the table exists
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS live_strategies (
+                strategy_name TEXT PRIMARY KEY,
+                enabled BOOLEAN DEFAULT false,
+                enabled_at TIMESTAMP,
+                disabled_at TIMESTAMP,
+                total_trades INTEGER DEFAULT 0,
+                total_pnl REAL DEFAULT 0
+            )
+        `);
+        
+        const result = await pgPool.query(`
+            SELECT strategy_name FROM live_strategies WHERE enabled = true
+        `);
+        return result.rows.map(r => r.strategy_name);
+    } catch (error) {
+        console.error('Failed to get live enabled strategies:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Enable or disable a strategy for live trading
+ */
+export async function setLiveStrategyEnabled(strategyName, enabled) {
+    if (!USE_POSTGRES || !pgPool) {
+        // Store in state if no database
+        const strategies = await getLiveEnabledStrategies();
+        if (enabled && !strategies.includes(strategyName)) {
+            strategies.push(strategyName);
+        } else if (!enabled) {
+            const idx = strategies.indexOf(strategyName);
+            if (idx >= 0) strategies.splice(idx, 1);
+        }
+        await setState('live_strategies', JSON.stringify(strategies));
+        return true;
+    }
+    
+    try {
+        await pgPool.query(`
+            INSERT INTO live_strategies (strategy_name, enabled, enabled_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (strategy_name) 
+            DO UPDATE SET 
+                enabled = $2,
+                enabled_at = CASE WHEN $2 THEN NOW() ELSE live_strategies.enabled_at END,
+                disabled_at = CASE WHEN NOT $2 THEN NOW() ELSE live_strategies.disabled_at END
+        `, [strategyName, enabled]);
+        return true;
+    } catch (error) {
+        console.error('Failed to set strategy enabled:', error.message);
+        return false;
+    }
+}
+
+/**
+ * Save a live trade to database
+ */
+export async function saveLiveTrade(trade) {
+    if (!USE_POSTGRES || !pgPool) {
+        console.log('[LiveTrade]', trade);
+        return;
+    }
+    
+    try {
+        // Ensure table exists
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS live_trades (
+                id SERIAL PRIMARY KEY,
+                type TEXT,
+                strategy_name TEXT,
+                crypto TEXT,
+                side TEXT,
+                window_epoch INTEGER,
+                price REAL,
+                size REAL,
+                spot_price REAL,
+                time_remaining REAL,
+                reason TEXT,
+                entry_price REAL,
+                pnl REAL,
+                timestamp TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        
+        await pgPool.query(`
+            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, timestamp)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        `, [
+            trade.type, trade.strategy_name, trade.crypto, trade.side,
+            trade.window_epoch, trade.price, trade.size, trade.spot_price,
+            trade.time_remaining, trade.reason, trade.entry_price, trade.pnl,
+            trade.timestamp
+        ]);
+        
+        // Update strategy stats
+        if (trade.pnl !== null && trade.pnl !== undefined) {
+            await pgPool.query(`
+                UPDATE live_strategies 
+                SET total_trades = total_trades + 1, total_pnl = total_pnl + $2
+                WHERE strategy_name = $1
+            `, [trade.strategy_name, trade.pnl]);
+        }
+    } catch (error) {
+        console.error('Failed to save live trade:', error.message);
+    }
+}
+
+/**
+ * Get live trades history
+ */
+export async function getLiveTrades(options = {}) {
+    if (!USE_POSTGRES || !pgPool) {
+        return { trades: [], stats: [] };
+    }
+    
+    try {
+        const { hours = 24, strategy = null } = options;
+        
+        let whereClause = `timestamp > NOW() - INTERVAL '${hours} hours'`;
+        if (strategy) {
+            whereClause += ` AND strategy_name = '${strategy}'`;
+        }
+        
+        const trades = await pgPool.query(`
+            SELECT * FROM live_trades 
+            WHERE ${whereClause}
+            ORDER BY timestamp DESC
+            LIMIT 100
+        `);
+        
+        const stats = await pgPool.query(`
+            SELECT 
+                strategy_name,
+                COUNT(*) as trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(pnl) as total_pnl
+            FROM live_trades 
+            WHERE ${whereClause} AND type = 'exit'
+            GROUP BY strategy_name
+        `);
+        
+        return {
+            trades: trades.rows,
+            stats: stats.rows
+        };
+    } catch (error) {
+        console.error('Failed to get live trades:', error.message);
+        return { trades: [], stats: [], error: error.message };
+    }
+}
+
 // Log which mode we're using
 console.log(`🗄️  Database mode: ${USE_POSTGRES ? 'PostgreSQL' : 'SQLite'}`);
 
@@ -622,5 +790,10 @@ export default {
     saveResearchStats,
     getResearchStats,
     savePaperTrade,
-    getPaperTrades
+    getPaperTrades,
+    // Live trading
+    getLiveEnabledStrategies,
+    setLiveStrategyEnabled,
+    saveLiveTrade,
+    getLiveTrades
 };

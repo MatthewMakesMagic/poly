@@ -1,0 +1,263 @@
+{
+  "startTime": "2026-01-25T06:39:42.719Z",
+  "config": {
+    "cryptos": [
+      "xrp",
+      "sol",
+      "eth"
+    ],
+    "dollarsPerTrade": 1,
+    "cycles": 2,
+    "side": "up",
+    "sellBeforeExpiry": true,
+    "sellBuffer": 60,
+    "logFile": "./data/multi_cycle_test_1769323182719.json"
+  },
+  "cycles": [
+    {
+      "cycleNum": 1,
+      "epoch": 1769322600,
+      "startTime": "2026-01-25T06:39:44.008Z",
+      "trades": [
+        {
+          "crypto": "xrp",
+          "epoch": 1769322600,
+          "entry": {
+            "time": "2026-01-25T06:39:48.419Z",
+            "orderId": "0x2a032a9f9e21c55c4daea53ab122c8b2dc34a2c8b1daad64172150f87f32c6fa",
+            "status": "matched",
+            "shares": 2,
+            "price": 0.5,
+            "cost": 1,
+            "tx": "0x7a33871ad18e9f0e59c7f48a0b6d065d419441785ceca47272d2743fd65e5c4a",
+            "filled": true
+          },
+          "exit": {
+            "time": "2026-01-25T06:44:05.523Z",
+            "orderId": "0x7c3c57dca35fce028a235db4baeed9b1b9be483bd9a870d3ab89c600195b326d",
+            "status": "matched",
+            "shares": 1,
+            "price": 0.98,
+            "value": 0.98,
+            "tx": "0xdb94d17285317f13e29003ed7be04b7b395b374613b1e12ea5406dc8e28a8102",
+            "filled": true
+          },
+          "spotAtEntry": 1.8965,
+          "spotAtExit": 1.8986,
+          "pnl": -0.020000000000000018,
+          "marketAtEntry": {
+            "bid": 0.45,
+            "ask": 0.49,
+            "spread": 0.03999999999999998,
+            "bidDepth": 341.25880000000006,
+            "askDepth": 3546.6746000000007
+          },
+          "marketAtExit": {
+            "bid": 0.98,
+            "ask": 0.99,
+            "spread": 0.010000000000000009
+          }
+        },
+        {
+          "crypto": "sol",
+          "epoch": 1769322600,
+          "entry": {
+            "time": "2026-01-25T06:39:52.756Z",
+            "status": 400,
+            "shares": 4,
+            "price": 0.27,
+            "cost": 1.08,
+            "filled": false
+          },
+          "exit": null,
+          "spotAtEntry": 126.56,
+          "spotAtExit": null,
+          "pnl": null,
+          "marketAtEntry": {
+            "bid": 0.24,
+            "ask": 0.26,
+            "spread": 0.020000000000000018,
+            "bidDepth": 215.26529999999994,
+            "askDepth": 4554.888799999999
+          }
+        },
+        {
+          "crypto": "eth",
+          "epoch": 1769322600,
+          "entry": {
+            "time": "2026-01-25T06:39:56.716Z",
+            "orderId": "0x7a3a798de753122b15c73d80ac42cac63238cd25943dc3dce2f04b59d8ec88c3",
+            "status": "matched",
+            "shares": 8,
+            "price": 0.14,
+            "cost": 1.12,
+            "tx": "0x06dc205ead2db8439b63712cce5b6bead7000ac4fb525423096752a4b37b992f",
+            "filled": true
+          },
+          "exit": {
+            "time": "2026-01-25T06:44:10.686Z",
+            "orderId": "0xeccb1740ddc132f38a89cf45b1b7636a811a934680872ea45e3bb81559eebf34",
+            "status": "matched",
+            "shares": 7,
+            "price": 0.99,
+            "value": 6.93,
+            "tx": "0xca50b3579dfac8d7997432d21feafe6863b0d8f91b95e26a64f1631eef757bd3",
+            "filled": true
+          },
+          "spotAtEntry": 2937.24,
+          "spotAtExit": 2943.74,
+          "pnl": 5.81,
+          "marketAtEntry": {
+            "bid": 0.12,
+            "ask": 0.13,
+            "spread": 0.010000000000000009,
+            "bidDepth": 146.13780000000003,
+            "askDepth": 5720.5935
+          },
+          "marketAtExit": {
+            "bid": 0.99,
+            "ask": 0.998,
+            "spread": 0.008000000000000007
+          }
+        }
+      ],
+      "endTime": "2026-01-25T06:44:11.689Z",
+      "summary": {
+        "tradesAttempted": 3,
+        "tradesFilled": 2,
+        "tradesClosed": 2,
+        "totalPnL": 5.789999999999999
+      }
+    },
+    {
+      "cycleNum": 2,
+      "epoch": 1769323500,
+      "startTime": "2026-01-25T06:45:05.738Z",
+      "trades": [
+        {
+          "crypto": "xrp",
+          "epoch": 1769323500,
+          "entry": {
+            "time": "2026-01-25T06:45:10.242Z",
+            "orderId": "0x42d01301c564a9e9e0844a5a8227b82873affbddb0c09261b495e3d330a321c9",
+            "status": "matched",
+            "shares": 2,
+            "price": 0.52,
+            "cost": 1.04,
+            "tx": "0xd501bcb9016d47052edf0d74f02cf3539fadebbec47d8b0e3f685a62a241cdab",
+            "filled": true
+          },
+          "exit": {
+            "time": "2026-01-25T06:59:07.268Z",
+            "orderId": "0x4d180bbbd9b8f3695c4da561a4790cee6619566938a0c34db9c372c9897959a2",
+            "status": "matched",
+            "shares": 1,
+            "price": 0.05,
+            "value": 0.05,
+            "tx": "0xf155b98cb2b129118d41fdb4711506592f236940687b3da4dc01e572f2c0902e",
+            "filled": true
+          },
+          "spotAtEntry": 1.8989,
+          "spotAtExit": 1.8981,
+          "pnl": -0.99,
+          "marketAtEntry": {
+            "bid": 0.49,
+            "ask": 0.51,
+            "spread": 0.020000000000000018,
+            "bidDepth": 660.5993,
+            "askDepth": 8623.266000000001
+          },
+          "marketAtExit": {
+            "bid": 0.05,
+            "ask": 0.07,
+            "spread": 0.020000000000000004
+          }
+        },
+        {
+          "crypto": "sol",
+          "epoch": 1769323500,
+          "entry": {
+            "time": "2026-01-25T06:45:14.642Z",
+            "orderId": "0xd723fcc8b7202bfc2dbf6f4095923b4f37739a312f512c2996edc4eb74b8883a",
+            "status": "matched",
+            "shares": 2,
+            "price": 0.53,
+            "cost": 1.06,
+            "tx": "0x406c60995dd2dd2e661ccb7f73e19fd90dfea22c12129eae6addc64f792e8cc7",
+            "filled": true
+          },
+          "exit": {
+            "time": "2026-01-25T06:59:11.557Z",
+            "status": 400,
+            "shares": 1,
+            "price": 0.14,
+            "value": 0.14,
+            "filled": false
+          },
+          "spotAtEntry": 126.74,
+          "spotAtExit": 126.71,
+          "pnl": -0.92,
+          "marketAtEntry": {
+            "bid": 0.51,
+            "ask": 0.52,
+            "spread": 0.010000000000000009,
+            "bidDepth": 1220.781,
+            "askDepth": 8563.786399999995
+          },
+          "marketAtExit": {
+            "bid": 0.14,
+            "ask": 0.17,
+            "spread": 0.03
+          }
+        },
+        {
+          "crypto": "eth",
+          "epoch": 1769323500,
+          "entry": {
+            "time": "2026-01-25T06:45:18.627Z",
+            "orderId": "0x81d07a53ebbdab043575cffd8afb6f6e1317396cdb234dc33bcec9164ca5abb4",
+            "status": "matched",
+            "shares": 3,
+            "price": 0.46,
+            "cost": 1.3800000000000001,
+            "tx": "0x299bedffbeb5f7cbfd22915c77c56cc13deb3ea8c343ade626fc30a54d00a9b2",
+            "filled": true
+          },
+          "exit": {
+            "time": "2026-01-25T06:59:15.437Z",
+            "orderId": "0x956d81e5a96906d2af16c3ab4c68fef19e6c222e7cf80606cfcc9d04caa3f354",
+            "status": "matched",
+            "shares": 2,
+            "price": 0.01,
+            "value": 0.02,
+            "tx": "0x7a21f35a7d4d9b177a6a6310ae7c11bd4d3b07f7d0a90ffc613d4663e98694e0",
+            "filled": true
+          },
+          "spotAtEntry": 2946.6,
+          "spotAtExit": 2944.23,
+          "pnl": -1.36,
+          "marketAtEntry": {
+            "bid": 0.44,
+            "ask": 0.45,
+            "spread": 0.010000000000000009,
+            "bidDepth": 1727.6761999999999,
+            "askDepth": 14833.358800000005
+          },
+          "marketAtExit": {
+            "bid": 0.01,
+            "ask": 0.02,
+            "spread": 0.01
+          }
+        }
+      ],
+      "endTime": "2026-01-25T06:59:16.438Z",
+      "summary": {
+        "tradesAttempted": 3,
+        "tradesFilled": 3,
+        "tradesClosed": 2,
+        "totalPnL": -2.35
+      }
+    }
+  ],
+  "endTime": "2026-01-25T06:59:16.449Z"
+}

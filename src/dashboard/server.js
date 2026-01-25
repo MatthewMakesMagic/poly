@@ -12,7 +12,8 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getDatabase, getPaperTrades } from '../db/connection.js';
+import { getDatabase, getPaperTrades, getLiveEnabledStrategies, setLiveStrategyEnabled, getLiveTrades } from '../db/connection.js';
+import { getLiveTrader } from '../execution/live_trader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -165,12 +166,43 @@ async function sendInitialState(ws) {
 let strategyRunnerRef = null;
 let executionTrackerRef = null;
 
+// Live trading engine reference
+let liveEngineRef = null;
+
 export function setStrategyRunner(runner) {
     strategyRunnerRef = runner;
 }
 
 export function setExecutionTracker(tracker) {
     executionTrackerRef = tracker;
+}
+
+// Set live engine reference (called from run_live_trading.mjs)
+export function setLiveEngine(engine) {
+    liveEngineRef = engine;
+    console.log('[Dashboard] Live engine connected');
+}
+
+// Broadcast live trading status
+export function broadcastLiveStatus(status) {
+    broadcast({
+        type: 'live_status',
+        payload: {
+            ...status,
+            timestamp: Date.now()
+        }
+    });
+}
+
+// Broadcast live trade event
+export function broadcastLiveTrade(tradeEvent) {
+    broadcast({
+        type: 'live_trade',
+        payload: {
+            ...tradeEvent,
+            timestamp: Date.now()
+        }
+    });
 }
 
 // Handle API requests
@@ -198,6 +230,25 @@ async function handleAPI(req, res) {
                 return apiTicksExport(req, res);
             case '/api/research-export':
                 return apiResearchExport(req, res);
+            
+            // Live trading endpoints
+            case '/api/live/status':
+                return apiLiveStatus(req, res);
+            case '/api/live/kill':
+                return apiLiveKill(req, res);
+            case '/api/live/pause':
+                return apiLivePause(req, res);
+            case '/api/live/resume':
+                return apiLiveResume(req, res);
+            case '/api/live/positions':
+                return apiLivePositions(req, res);
+            case '/api/live/strategies':
+                return apiLiveStrategies(req, res);
+            case '/api/live/strategies/toggle':
+                return apiLiveStrategyToggle(req, res);
+            case '/api/live/trades':
+                return apiLiveTrades(req, res);
+            
             default:
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Not found' }));
@@ -574,6 +625,267 @@ async function apiResearchExport(req, res) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LIVE TRADING API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get live trading status
+async function apiLiveStatus(req, res) {
+    if (!liveEngineRef) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            connected: false, 
+            message: 'Live engine not running' 
+        }));
+        return;
+    }
+    
+    const status = liveEngineRef.getStatus();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+        connected: true,
+        ...status,
+        timestamp: Date.now()
+    }));
+}
+
+// Kill switch - STOP ALL TRADING IMMEDIATELY
+async function apiLiveKill(req, res) {
+    if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+    
+    if (!liveEngineRef) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Live engine not running' }));
+        return;
+    }
+    
+    // Parse reason from body
+    let reason = 'Manual kill via dashboard';
+    if (req.headers['content-type']?.includes('application/json')) {
+        try {
+            const body = await getRequestBody(req);
+            const data = JSON.parse(body);
+            reason = data.reason || reason;
+        } catch (e) {
+            // Use default reason
+        }
+    }
+    
+    console.log('🛑 KILL SWITCH ACTIVATED via dashboard:', reason);
+    
+    try {
+        await liveEngineRef.stop(reason);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            success: true, 
+            message: 'Trading stopped',
+            reason 
+        }));
+        
+        // Broadcast to all clients
+        broadcastLiveStatus({ 
+            state: 'STOPPED', 
+            killSwitch: true, 
+            killReason: reason 
+        });
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Pause trading (keep data feeds running)
+async function apiLivePause(req, res) {
+    if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+    
+    if (!liveEngineRef) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Live engine not running' }));
+        return;
+    }
+    
+    liveEngineRef.pause('Manual pause via dashboard');
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+        success: true, 
+        message: 'Trading paused' 
+    }));
+}
+
+// Resume trading
+async function apiLiveResume(req, res) {
+    if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+    
+    if (!liveEngineRef) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Live engine not running' }));
+        return;
+    }
+    
+    const resumed = liveEngineRef.resume();
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+        success: resumed, 
+        message: resumed ? 'Trading resumed' : 'Could not resume (check risk manager)' 
+    }));
+}
+
+// Get current positions
+async function apiLivePositions(req, res) {
+    const liveTrader = getLiveTrader();
+    const status = liveTrader.getStatus();
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+        positions: status.livePositions || [],
+        timestamp: Date.now()
+    }));
+}
+
+// Get all strategies with their live trading status
+async function apiLiveStrategies(req, res) {
+    try {
+        const liveTrader = getLiveTrader();
+        const enabledStrategies = await getLiveEnabledStrategies();
+        const liveTraderStatus = liveTrader.getStatus();
+        
+        // Get all known strategies from paper trades
+        const db = getDatabase();
+        let allStrategies = [];
+        
+        if (db) {
+            try {
+                const result = await db.query(`
+                    SELECT 
+                        strategy_name,
+                        COUNT(*) as total_trades,
+                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                        SUM(pnl) as total_pnl,
+                        ROUND(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0) * 100, 1) as win_rate
+                    FROM paper_trades
+                    WHERE exit_time > NOW() - INTERVAL '7 days'
+                    GROUP BY strategy_name
+                    ORDER BY total_pnl DESC
+                `);
+                allStrategies = result.rows;
+            } catch (e) {
+                console.error('Failed to get strategies:', e.message);
+            }
+        }
+        
+        // Mark which ones are enabled for live
+        const strategies = allStrategies.map(s => ({
+            ...s,
+            live_enabled: enabledStrategies.includes(s.strategy_name),
+            total_trades: parseInt(s.total_trades) || 0,
+            wins: parseInt(s.wins) || 0,
+            total_pnl: parseFloat(s.total_pnl) || 0,
+            win_rate: parseFloat(s.win_rate) || 0
+        }));
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            strategies,
+            liveEnabled: liveTraderStatus.enabled,
+            killSwitchActive: liveTraderStatus.killSwitchActive,
+            positionSize: liveTraderStatus.positionSize,
+            stats: liveTraderStatus.stats,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Toggle a strategy's live trading status
+async function apiLiveStrategyToggle(req, res) {
+    if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+    
+    try {
+        const body = await getRequestBody(req);
+        const data = JSON.parse(body);
+        
+        const { strategy, enabled } = data;
+        
+        if (!strategy) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Strategy name required' }));
+            return;
+        }
+        
+        const liveTrader = getLiveTrader();
+        
+        if (enabled) {
+            await liveTrader.enableStrategy(strategy);
+        } else {
+            await liveTrader.disableStrategy(strategy);
+        }
+        
+        // Broadcast update to all clients
+        broadcastLiveStatus(liveTrader.getStatus());
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: true,
+            strategy,
+            enabled,
+            message: enabled ? `${strategy} enabled for live trading` : `${strategy} disabled for live trading`
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get live trades history
+async function apiLiveTrades(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+        const strategy = url.searchParams.get('strategy');
+        
+        const result = await getLiveTrades({ hours, strategy });
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Helper to get request body
+function getRequestBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => resolve(body));
+        req.on('error', reject);
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+
 // Broadcast to all connected clients
 let broadcastCount = 0;
 export function broadcast(message) {
@@ -677,5 +989,9 @@ export default {
     sendMetrics,
     sendStrategyComparison,
     sendTradeExecution,
-    sendWindowEvent
+    sendWindowEvent,
+    // Live trading exports
+    setLiveEngine,
+    broadcastLiveStatus,
+    broadcastLiveTrade
 };
