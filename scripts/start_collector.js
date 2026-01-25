@@ -20,8 +20,35 @@ if (process.env.PROXY_URL) {
 }
 
 import { TickCollector } from '../src/collectors/tick_collector.js';
+import { initDatabase, setLiveStrategyEnabled } from '../src/db/connection.js';
 
 console.log('🚀 Starting Polymarket Tick Collector...\n');
+
+// Run startup migrations
+async function runMigrations() {
+    try {
+        // Initialize database connection first
+        await initDatabase();
+        
+        // Enable new trailing stop strategies (one-time migration)
+        const newStrategies = [
+            'SpotLag_Trailing',
+            'SpotLag_TrailTight',
+            'SpotLag_TrailWide'
+        ];
+        
+        for (const strat of newStrategies) {
+            await setLiveStrategyEnabled(strat, true);
+            console.log(`✅ Enabled ${strat} for live trading`);
+        }
+    } catch (error) {
+        console.error('⚠️ Migration warning:', error.message);
+        // Don't fail startup, just log warning
+    }
+}
+
+// Run migrations before starting collector
+await runMigrations();
 
 let collector = null;
 let restartCount = 0;
