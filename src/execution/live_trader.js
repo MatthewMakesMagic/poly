@@ -217,17 +217,43 @@ export class LiveTrader extends EventEmitter {
     }
     
     /**
+     * Calculate minimum viable position size
+     * Polymarket requires minimum 5 shares per order
+     */
+    calculateMinimumSize(price, requestedSize) {
+        const MIN_SHARES = 5;
+        const minSizeForShares = MIN_SHARES * price;
+        
+        // Use the larger of: requested size OR minimum for 5 shares
+        const actualSize = Math.max(requestedSize, minSizeForShares);
+        
+        if (actualSize > requestedSize) {
+            this.logger.log(`[LiveTrader] Adjusted size: $${requestedSize} → $${actualSize.toFixed(2)} (need ${MIN_SHARES} shares at $${price.toFixed(2)})`);
+        }
+        
+        return actualSize;
+    }
+    
+    /**
      * Execute entry trade
      */
     async executeEntry(strategyName, signal, tick, market) {
         const crypto = tick.crypto;
         const windowEpoch = tick.window_epoch;
         
+        // Determine token side and price first
+        const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
+        const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
+        const entryPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
+        
+        // Calculate actual position size (ensure minimum 5 shares for Polymarket)
+        const actualSize = this.calculateMinimumSize(entryPrice, this.options.positionSize);
+        
         // Validate with risk manager
         const validation = this.riskManager.validateTrade({
             crypto,
             windowEpoch,
-            size: this.options.positionSize,
+            size: actualSize,
             side: signal.side
         }, {
             timeRemaining: tick.time_remaining_sec,
@@ -242,12 +268,7 @@ export class LiveTrader extends EventEmitter {
             return null;
         }
         
-        // Determine token and price
-        const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
-        const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
-        const price = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
-        
-        this.logger.log(`[LiveTrader] 📈 EXECUTING LIVE ENTRY: ${strategyName} | ${crypto} | ${tokenSide} | $${this.options.positionSize} @ ${price.toFixed(3)}`);
+        this.logger.log(`[LiveTrader] 📈 EXECUTING LIVE ENTRY: ${strategyName} | ${crypto} | ${tokenSide} | $${actualSize.toFixed(2)} @ ${entryPrice.toFixed(3)}`);
         
         try {
             this.stats.ordersPlaced++;
@@ -255,8 +276,8 @@ export class LiveTrader extends EventEmitter {
             // Place order
             const response = await this.client.placeOrder({
                 tokenId,
-                price,
-                size: this.options.positionSize,
+                price: entryPrice,
+                size: actualSize,
                 side: Side.BUY,
                 orderType: OrderType.FOK // Fill or kill
             });
@@ -272,9 +293,9 @@ export class LiveTrader extends EventEmitter {
                     windowEpoch,
                     tokenSide,
                     tokenId,
-                    entryPrice: price,
+                    entryPrice: entryPrice,
                     entryTime: Date.now(),
-                    size: this.options.positionSize,
+                    size: actualSize,
                     spotAtEntry: tick.spot_price,
                     orderId: response.orderId
                 };
@@ -283,21 +304,21 @@ export class LiveTrader extends EventEmitter {
                 this.riskManager.recordTradeOpen({
                     crypto,
                     windowEpoch,
-                    size: this.options.positionSize
+                    size: actualSize
                 });
                 
-                this.logger.log(`[LiveTrader] ✅ ENTRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${price.toFixed(3)}`);
+                this.logger.log(`[LiveTrader] ✅ ENTRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${entryPrice.toFixed(3)}`);
                 
                 this.emit('trade_entry', {
                     strategyName,
                     crypto,
                     side: signal.side,
-                    price,
-                    size: this.options.positionSize
+                    price: entryPrice,
+                    size: actualSize
                 });
                 
                 // Save to database
-                await this.saveTrade('entry', strategyName, signal, tick, price);
+                await this.saveTrade('entry', strategyName, signal, tick, entryPrice);
                 
                 return response;
             } else {
