@@ -262,8 +262,8 @@ export class LiveTrader extends EventEmitter {
         const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
         const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
         
-        // Add 1 cent buffer to cross the spread and ensure fill
-        const ENTRY_BUFFER = 0.01;
+        // Add 3 cent buffer to cross the spread and ensure fill on thin books
+        const ENTRY_BUFFER = 0.03;
         const rawPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
         const entryPrice = Math.min(rawPrice + ENTRY_BUFFER, 0.99);
         
@@ -294,7 +294,7 @@ export class LiveTrader extends EventEmitter {
         try {
             this.stats.ordersPlaced++;
             
-            // Place order using SDK client
+            // Place order using SDK client (FOK with price buffer for fill)
             const response = await this.client.buy(tokenId, actualSize, entryPrice, 'FOK');
             
             if (response.filled || response.shares > 0) {
@@ -432,8 +432,8 @@ export class LiveTrader extends EventEmitter {
         
         const tokenId = position.tokenId;
         
-        // Subtract 1 cent buffer to ensure sell fills
-        const EXIT_BUFFER = 0.01;
+        // Subtract 3 cent buffer to ensure sell fills on thin books
+        const EXIT_BUFFER = 0.03;
         const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
         const price = Math.max(rawPrice - EXIT_BUFFER, 0.01);
         
