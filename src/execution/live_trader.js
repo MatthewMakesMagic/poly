@@ -260,6 +260,14 @@ export class LiveTrader extends EventEmitter {
         const crypto = tick.crypto;
         const windowEpoch = tick.window_epoch;
         
+        // STALENESS CHECK: Don't trade with data older than 5 seconds
+        const MAX_TICK_AGE_MS = 5000;
+        const tickAge = Date.now() - (tick.timestamp_ms || Date.now());
+        if (tickAge > MAX_TICK_AGE_MS) {
+            this.logger.warn(`[LiveTrader] SKIPPING: ${crypto} tick is ${(tickAge/1000).toFixed(1)}s stale (max ${MAX_TICK_AGE_MS/1000}s)`);
+            return null;
+        }
+        
         // Determine token side and price first
         const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
         const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
