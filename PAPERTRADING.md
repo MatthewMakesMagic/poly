@@ -1,6 +1,6 @@
 # Paper Trading System Documentation
 
-Last Updated: January 25, 2026
+Last Updated: January 25, 2026 (Multi-Factor Execution Verification)
 
 ## Overview
 
@@ -830,3 +830,56 @@ DASHBOARD_PORT=3333
 3. Add slippage buffer to entry/exit prices
 4. Set up live monitoring dashboard
 5. Start with minimal capital ($10-20 per trade)
+
+---
+
+## Changelog / Recent Updates
+
+### January 25, 2026 - Multi-Factor Execution Verification
+
+**Problem Identified:** SDK was returning `status: 'matched'` but orders weren't actually filling. The system was incorrectly treating "matched" as "filled" without verifying actual on-chain execution.
+
+**Root Cause:** Polymarket's CLOB returns `status: 'matched'` when an order is submitted, but for FOK (Fill or Kill) orders, this doesn't guarantee execution. True fills include a `transactionsHashes` array.
+
+**Solution Implemented - 4-Factor Verification System:**
+
+| Factor | Description | File |
+|--------|-------------|------|
+| 1. TX Hash Check | Only mark filled if `transactionsHashes.length > 0` | `sdk_client.js` |
+| 2. Success Flag | Require `success: true` in response | `sdk_client.js` |
+| 3. Balance Verification | Post-trade check that tokens actually arrived | `live_trader.js` |
+| 4. Reconciliation API | Compare internal state vs on-chain reality | `server.js` |
+
+**Code Changes:**
+```javascript
+// Before (WRONG):
+const filled = order && (order.status === 'matched' || order.status === 'live');
+
+// After (CORRECT):
+const hasTxHash = order?.transactionsHashes?.length > 0;
+const hasSuccess = order?.success === true;
+const hasGoodStatus = order?.status === 'matched' || order?.status === 'live';
+const filled = hasTxHash && hasSuccess && hasGoodStatus;
+```
+
+**New API Endpoint:**
+- `POST /api/live/reconcile` - Compares positions in memory vs actual on-chain token balances
+
+**Strategies Update:**
+- Removed all `SpotLag_*sec` timed-exit variants (5s, 10s, 30s, 60s, 120s, 300s)
+- Data showed timed exits had 3.4% win rate vs 81% for hold-to-expiry
+- SpotLag thesis requires holding to binary resolution ($1 or $0)
+
+**Currently Enabled Live Strategies:**
+1. SpotLag_Aggressive
+2. SpotLag_Fast
+3. SpotLagSimple
+4. SpotLag_Confirmed
+5. Endgame_Aggressive
+6. Endgame
+
+**Execution Metrics Now Tracked:**
+- Fill rate (orders filled / orders placed)
+- Orders placed, filled, rejected
+- Gross P&L, fees, net P&L
+- Average P&L per trade

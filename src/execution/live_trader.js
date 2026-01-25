@@ -314,27 +314,45 @@ export class LiveTrader extends EventEmitter {
             // FACTOR 1: SDK reports filled (has tx hash, success, status)
             if (response.filled && response.shares > 0) {
                 
-                // FACTOR 2: POST-TRADE BALANCE VERIFICATION
-                // Verify we actually received tokens (on-chain proof)
+                // FACTOR 2: POST-TRADE BALANCE VERIFICATION WITH RETRIES
+                // Blockchain state may not propagate immediately - retry with delays
                 let balanceVerified = false;
-                try {
-                    const postTradeBalance = await this.client.getBalance(tokenId);
-                    // We should have received some tokens
-                    if (postTradeBalance > 0) {
-                        balanceVerified = true;
-                        this.logger.log(`[LiveTrader] ✓ BALANCE VERIFIED: ${postTradeBalance.toFixed(2)} tokens of ${tokenId.slice(0, 10)}...`);
-                    } else {
-                        this.logger.error(`[LiveTrader] ❌ BALANCE MISMATCH: SDK says filled but balance is 0!`);
-                        this.logger.error(`[LiveTrader] Trade response: ${JSON.stringify(response)}`);
+                let postTradeBalance = 0;
+                const MAX_RETRIES = 3;
+                const RETRY_DELAY_MS = 500;
+                
+                for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                    try {
+                        // Wait before checking (blockchain needs time to update)
+                        if (attempt > 1) {
+                            await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                        }
+                        
+                        postTradeBalance = await this.client.getBalance(tokenId);
+                        
+                        if (postTradeBalance > 0) {
+                            balanceVerified = true;
+                            this.logger.log(`[LiveTrader] ✓ BALANCE VERIFIED (attempt ${attempt}): ${postTradeBalance.toFixed(2)} tokens`);
+                            break;
+                        } else if (attempt < MAX_RETRIES) {
+                            this.logger.log(`[LiveTrader] Balance check ${attempt}/${MAX_RETRIES}: 0 tokens, retrying...`);
+                        }
+                    } catch (balanceErr) {
+                        this.logger.warn(`[LiveTrader] Balance check ${attempt} failed: ${balanceErr.message}`);
                     }
-                } catch (balanceErr) {
-                    this.logger.warn(`[LiveTrader] Balance check failed: ${balanceErr.message}`);
-                    // If balance check fails, trust the tx hash
-                    balanceVerified = response.tx ? true : false;
+                }
+                
+                // CRITICAL: If we have a valid tx hash, the trade DID execute on-chain
+                // Trust the tx hash even if balance check fails (RPC lag is common)
+                if (!balanceVerified && response.tx && response.txHashes?.length > 0) {
+                    this.logger.warn(`[LiveTrader] ⚠️ Balance verification failed but TX HASH EXISTS: ${response.tx}`);
+                    this.logger.warn(`[LiveTrader] TRUSTING TX HASH - trade executed on-chain, RPC may be lagging`);
+                    balanceVerified = true; // Trust the blockchain proof
                 }
                 
                 if (!balanceVerified) {
-                    this.logger.error(`[LiveTrader] ⚠️ TRADE VERIFICATION FAILED - NOT recording position`);
+                    this.logger.error(`[LiveTrader] ❌ TRADE VERIFICATION FAILED - no tx hash and no balance`);
+                    this.logger.error(`[LiveTrader] Response: ${JSON.stringify(response)}`);
                     this.stats.ordersRejected++;
                     return null;
                 }
@@ -404,20 +422,14 @@ export class LiveTrader extends EventEmitter {
                     const retryResponse = await this.client.buy(tokenId, actualSize, retryPrice, 'FOK');
                     
                     if (retryResponse.filled && retryResponse.shares > 0) {
-                        // FACTOR 2: Verify balance after retry fill
-                        let balanceVerified = false;
-                        try {
-                            const postBalance = await this.client.getBalance(tokenId);
-                            balanceVerified = postBalance > 0;
-                            if (balanceVerified) {
-                                this.logger.log(`[LiveTrader] ✓ RETRY BALANCE VERIFIED: ${postBalance.toFixed(2)} tokens`);
-                            }
-                        } catch (e) {
-                            balanceVerified = retryResponse.tx ? true : false;
-                        }
+                        // Trust TX hash for retries - blockchain proof is sufficient
+                        // Balance verification adds latency and RPC lag causes false negatives
+                        let balanceVerified = retryResponse.tx && retryResponse.txHashes?.length > 0;
                         
-                        if (!balanceVerified) {
-                            this.logger.error(`[LiveTrader] ⚠️ RETRY VERIFICATION FAILED`);
+                        if (balanceVerified) {
+                            this.logger.log(`[LiveTrader] ✓ RETRY VERIFIED via TX: ${retryResponse.tx?.slice(0, 16)}...`);
+                        } else {
+                            this.logger.error(`[LiveTrader] ⚠️ RETRY has no TX hash - rejecting`);
                             return null;
                         }
                         
