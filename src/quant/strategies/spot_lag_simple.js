@@ -1104,4 +1104,172 @@ export function createSpotLagTP6(capital = 100) {
     return new SpotLag_TakeProfit6Strategy({ maxPosition: capital });
 }
 
+// ================================================================
+// VOLATILITY-ADAPTIVE TAKE-PROFIT STRATEGY
+// ================================================================
+// Based on backtest analysis:
+// - HIGH VOL (>8% range): 100% hit rate on 15% TP → use 12% TP
+// - MED VOL (4-8% range): 84% hit rate on 15% TP → use 6% TP  
+// - LOW VOL (<4% range): Only 51% hit 3% TP → hold to expiry
+// ================================================================
+
+export class SpotLag_VolatilityAdaptiveStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_VolAdapt',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0002,  // Aggressive entry
+            marketLagRatio: 0.6,
+            
+            // Volatility thresholds (market price range over lookback)
+            highVolThreshold: 0.08,    // >8% = high volatility
+            medVolThreshold: 0.04,     // 4-8% = medium volatility
+            
+            // Dynamic take-profit levels based on volatility regime
+            highVolTakeProfit: 0.12,   // 12% TP in high vol (conservative from 15%)
+            medVolTakeProfit: 0.06,    // 6% TP in medium vol
+            lowVolTakeProfit: null,    // No TP in low vol - hold to expiry
+            
+            ...options
+        });
+        
+        // Track volatility per crypto for logging
+        this.volatilityState = {};
+    }
+    
+    calculateVolatility(crypto) {
+        const state = this.state[crypto];
+        if (!state || state.marketHistory.length < 5) {
+            return { volatility: 0, regime: 'unknown' };
+        }
+        
+        // Calculate range over recent market prices
+        const prices = state.marketHistory.slice(-20);
+        const max = Math.max(...prices);
+        const min = Math.min(...prices);
+        const volatility = max - min;
+        
+        // Determine regime
+        let regime;
+        if (volatility >= this.options.highVolThreshold) {
+            regime = 'HIGH';
+        } else if (volatility >= this.options.medVolThreshold) {
+            regime = 'MEDIUM';
+        } else {
+            regime = 'LOW';
+        }
+        
+        return { volatility, regime, max, min };
+    }
+    
+    getTakeProfitThreshold(regime) {
+        switch (regime) {
+            case 'HIGH':
+                return this.options.highVolTakeProfit;
+            case 'MEDIUM':
+                return this.options.medVolTakeProfit;
+            case 'LOW':
+            default:
+                return this.options.lowVolTakeProfit; // null = no TP
+        }
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        const state = this.initCrypto(crypto);
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+        
+        // Update history
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 20; // Extra for volatility calc
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        // Calculate current volatility
+        const volInfo = this.calculateVolatility(crypto);
+        this.volatilityState[crypto] = volInfo;
+        
+        // POSITION MANAGEMENT WITH VOLATILITY-ADAPTIVE TAKE-PROFIT
+        if (position) {
+            const currentPrice = position.side === 'up' 
+                ? tick.up_bid 
+                : tick.down_bid;
+            
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Get dynamic take-profit threshold based on volatility
+            const tpThreshold = this.getTakeProfitThreshold(volInfo.regime);
+            
+            // 1. TAKE-PROFIT (only if threshold is set for this regime)
+            if (tpThreshold !== null && pnlPct >= tpThreshold) {
+                this.tradedThisWindow[crypto] = windowEpoch;
+                return this.createSignal('sell', null, 'take_profit_vol_adaptive', { 
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    entryPrice: position.entryPrice.toFixed(2),
+                    exitPrice: currentPrice.toFixed(2),
+                    volRegime: volInfo.regime,
+                    volatility: (volInfo.volatility * 100).toFixed(1) + '%',
+                    threshold: (tpThreshold * 100) + '%'
+                });
+            }
+            
+            // 2. EXTREME STOP-LOSS (safety net)
+            if (pnlPct <= -this.options.extremeStopLoss) {
+                this.tradedThisWindow[crypto] = windowEpoch;
+                return this.createSignal('sell', null, 'extreme_stop', { 
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    volRegime: volInfo.regime
+                });
+            }
+            
+            // 3. HOLD - waiting for TP or expiry
+            const holdReason = tpThreshold !== null 
+                ? `holding_vol_${volInfo.regime}_tp${(tpThreshold*100).toFixed(0)}pct`
+                : `holding_vol_${volInfo.regime}_no_tp`;
+            
+            return this.createSignal('hold', null, holdReason, {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                volRegime: volInfo.regime,
+                volatility: (volInfo.volatility * 100).toFixed(1) + '%'
+            });
+        }
+        
+        // BLOCK RE-ENTRY if already traded this window
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded_this_window');
+        }
+        
+        // ENTRY LOGIC - same as parent but log volatility
+        const signal = super.onTick(tick, position, context);
+        
+        // Enhance entry signal with volatility info
+        if (signal.action === 'buy') {
+            signal.metadata = {
+                ...signal.metadata,
+                volRegime: volInfo.regime,
+                volatility: (volInfo.volatility * 100).toFixed(1) + '%',
+                dynamicTP: this.getTakeProfitThreshold(volInfo.regime)
+            };
+        }
+        
+        return signal;
+    }
+}
+
+export function createSpotLagVolAdapt(capital = 100) {
+    return new SpotLag_VolatilityAdaptiveStrategy({ maxPosition: capital });
+}
+
 export default SpotLagSimpleStrategy;
