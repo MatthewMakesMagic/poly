@@ -13,9 +13,13 @@
  */
 
 import EventEmitter from 'events';
-import { PolymarketClient, Side, OrderType, createClientFromEnv } from './polymarket_client.js';
+import { SDKClient } from './sdk_client.js';
 import { RiskManager } from './risk_manager.js';
 import { saveLiveTrade, getLiveEnabledStrategies, setLiveStrategyEnabled } from '../db/connection.js';
+
+// Order sides and types for SDK
+const Side = { BUY: 'BUY', SELL: 'SELL' };
+const OrderType = { FOK: 'FOK', GTC: 'GTC', GTD: 'GTD' };
 
 // Configuration
 const CONFIG = {
@@ -86,16 +90,16 @@ export class LiveTrader extends EventEmitter {
         }
         
         try {
-            // Initialize Polymarket client
-            this.client = createClientFromEnv();
+            // Initialize Polymarket SDK client (official SDK with proper auth)
+            this.client = new SDKClient({ logger: this.logger });
+            await this.client.initialize();
             
-            // Verify API connection by fetching open orders (simpler than /auth/api-key which doesn't exist)
+            // Verify API connection
             try {
-                const orders = await this.client.getOpenOrders();
-                this.logger.log(`[LiveTrader] API verified - ${orders?.length || 0} open orders found`);
+                const balance = await this.client.getBalance();
+                this.logger.log(`[LiveTrader] API verified - Balance: ${balance?.availableUSDC || 'unknown'} USDC`);
             } catch (verifyError) {
-                this.logger.warn(`[LiveTrader] API verification skipped: ${verifyError.message}`);
-                // Continue anyway - we'll find out if auth fails when placing orders
+                this.logger.warn(`[LiveTrader] Balance check skipped: ${verifyError.message}`);
             }
             
             // Load enabled strategies from database
@@ -286,16 +290,10 @@ export class LiveTrader extends EventEmitter {
         try {
             this.stats.ordersPlaced++;
             
-            // Place order
-            const response = await this.client.placeOrder({
-                tokenId,
-                price: entryPrice,
-                size: actualSize,
-                side: Side.BUY,
-                orderType: OrderType.FOK // Fill or kill
-            });
+            // Place order using SDK client
+            const response = await this.client.buy(tokenId, actualSize, entryPrice, 'FOK');
             
-            if (response.status === 'filled' || response.status === 'live') {
+            if (response.filled || response.shares > 0) {
                 this.stats.ordersFilled++;
                 
                 // Record position
@@ -306,9 +304,10 @@ export class LiveTrader extends EventEmitter {
                     windowEpoch,
                     tokenSide,
                     tokenId,
-                    entryPrice: entryPrice,
+                    entryPrice: response.avgPrice || entryPrice,
                     entryTime: Date.now(),
-                    size: actualSize,
+                    size: response.value || actualSize,
+                    shares: response.shares,
                     spotAtEntry: tick.spot_price,
                     orderId: response.orderId
                 };
@@ -320,23 +319,24 @@ export class LiveTrader extends EventEmitter {
                     size: actualSize
                 });
                 
-                this.logger.log(`[LiveTrader] ✅ ENTRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${entryPrice.toFixed(3)}`);
+                this.logger.log(`[LiveTrader] ✅ ENTRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${(response.avgPrice || entryPrice).toFixed(3)} (${response.shares} shares)`);
                 
                 this.emit('trade_entry', {
                     strategyName,
                     crypto,
                     side: signal.side,
-                    price: entryPrice,
-                    size: actualSize
+                    price: response.avgPrice || entryPrice,
+                    size: response.value || actualSize,
+                    shares: response.shares
                 });
                 
                 // Save to database
-                await this.saveTrade('entry', strategyName, signal, tick, entryPrice);
+                await this.saveTrade('entry', strategyName, signal, tick, response.avgPrice || entryPrice);
                 
                 return response;
             } else {
                 this.stats.ordersRejected++;
-                this.logger.warn(`[LiveTrader] Order not filled: ${response.status}`);
+                this.logger.warn(`[LiveTrader] Order not filled: ${JSON.stringify(response)}`);
                 return null;
             }
             
@@ -353,15 +353,9 @@ export class LiveTrader extends EventEmitter {
                 this.logger.log(`[LiveTrader] 🔄 RETRYING at ${retryPrice.toFixed(3)} (+${((retryPrice - entryPrice) * 100).toFixed(1)}c)`);
                 
                 try {
-                    const retryResponse = await this.client.placeOrder({
-                        tokenId,
-                        price: retryPrice,
-                        size: actualSize,
-                        side: Side.BUY,
-                        orderType: OrderType.FOK
-                    });
+                    const retryResponse = await this.client.buy(tokenId, actualSize, retryPrice, 'FOK');
                     
-                    if (retryResponse.status === 'filled' || retryResponse.status === 'live') {
+                    if (retryResponse.filled || retryResponse.shares > 0) {
                         this.stats.ordersFilled++;
                         
                         const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
@@ -371,9 +365,10 @@ export class LiveTrader extends EventEmitter {
                             windowEpoch,
                             tokenSide,
                             tokenId,
-                            entryPrice: retryPrice,
+                            entryPrice: retryResponse.avgPrice || retryPrice,
                             entryTime: Date.now(),
-                            size: actualSize,
+                            size: retryResponse.value || actualSize,
+                            shares: retryResponse.shares,
                             spotAtEntry: tick.spot_price,
                             orderId: retryResponse.orderId,
                             wasRetry: true
@@ -381,18 +376,19 @@ export class LiveTrader extends EventEmitter {
                         
                         this.riskManager.recordTradeOpen({ crypto, windowEpoch, size: actualSize });
                         
-                        this.logger.log(`[LiveTrader] ✅ RETRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${retryPrice.toFixed(3)}`);
+                        this.logger.log(`[LiveTrader] ✅ RETRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${(retryResponse.avgPrice || retryPrice).toFixed(3)}`);
                         
                         this.emit('trade_entry', {
                             strategyName,
                             crypto,
                             side: signal.side,
-                            price: retryPrice,
-                            size: actualSize,
+                            price: retryResponse.avgPrice || retryPrice,
+                            size: retryResponse.value || actualSize,
+                            shares: retryResponse.shares,
                             wasRetry: true
                         });
                         
-                        await this.saveTrade('entry', strategyName, signal, tick, retryPrice);
+                        await this.saveTrade('entry', strategyName, signal, tick, retryResponse.avgPrice || retryPrice);
                         return retryResponse;
                     }
                 } catch (retryError) {
@@ -438,22 +434,19 @@ export class LiveTrader extends EventEmitter {
         try {
             this.stats.ordersPlaced++;
             
-            // Place sell order
-            const response = await this.client.placeOrder({
-                tokenId,
-                price,
-                size: position.size,
-                side: Side.SELL,
-                orderType: OrderType.FOK
-            });
+            // Place sell order using SDK client
+            const sharesToSell = position.shares || Math.ceil(position.size / position.entryPrice);
+            const response = await this.client.sell(tokenId, sharesToSell, price, 'FOK');
             
-            if (response.status === 'filled' || response.status === 'live') {
+            if (response.filled || response.shares > 0) {
                 this.stats.ordersFilled++;
                 this.stats.tradesExecuted++;
                 
                 // Calculate P&L
-                const pnl = (price - position.entryPrice) * position.size;
-                const fee = position.size * 0.001; // Estimate 0.1% fee
+                const exitValue = response.value || (sharesToSell * price);
+                const entryValue = position.size;
+                const pnl = exitValue - entryValue;
+                const fee = exitValue * 0.001; // Estimate 0.1% fee
                 const netPnl = pnl - fee;
                 
                 this.stats.grossPnL += pnl;
@@ -471,25 +464,26 @@ export class LiveTrader extends EventEmitter {
                 delete this.livePositions[positionKey];
                 
                 const pnlStr = `${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`;
-                this.logger.log(`[LiveTrader] ✅ EXIT FILLED: ${strategyName} | ${crypto} @ ${price.toFixed(3)} | P&L: ${pnlStr}`);
+                this.logger.log(`[LiveTrader] ✅ EXIT FILLED: ${strategyName} | ${crypto} @ ${(response.avgPrice || price).toFixed(3)} | P&L: ${pnlStr}`);
                 
                 this.emit('trade_exit', {
                     strategyName,
                     crypto,
                     side: position.tokenSide.toLowerCase(),
                     entryPrice: position.entryPrice,
-                    exitPrice: price,
+                    exitPrice: response.avgPrice || price,
                     pnl: netPnl,
-                    size: position.size
+                    size: position.size,
+                    shares: response.shares
                 });
                 
                 // Save to database
-                await this.saveTrade('exit', strategyName, signal, tick, price, position, netPnl);
+                await this.saveTrade('exit', strategyName, signal, tick, response.avgPrice || price, position, netPnl);
                 
                 return response;
             } else {
                 this.stats.ordersRejected++;
-                this.logger.warn(`[LiveTrader] Exit order not filled: ${response.status}`);
+                this.logger.warn(`[LiveTrader] Exit order not filled: ${JSON.stringify(response)}`);
                 return null;
             }
             
