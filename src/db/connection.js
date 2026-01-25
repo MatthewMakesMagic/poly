@@ -687,7 +687,7 @@ export async function saveLiveTrade(trade) {
     }
     
     try {
-        // Ensure table exists
+        // Ensure table exists with all columns (including outcome for window expiry tracking)
         await pgPool.query(`
             CREATE TABLE IF NOT EXISTS live_trades (
                 id SERIAL PRIMARY KEY,
@@ -703,18 +703,24 @@ export async function saveLiveTrade(trade) {
                 reason TEXT,
                 entry_price REAL,
                 pnl REAL,
+                outcome TEXT,
                 timestamp TIMESTAMP DEFAULT NOW()
             )
         `);
         
+        // Add outcome column if it doesn't exist (for existing tables)
         await pgPool.query(`
-            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, timestamp)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS outcome TEXT
+        `).catch(() => {}); // Ignore error if column exists or syntax not supported
+        
+        await pgPool.query(`
+            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, timestamp)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         `, [
             trade.type, trade.strategy_name, trade.crypto, trade.side,
             trade.window_epoch, trade.price, trade.size, trade.spot_price,
             trade.time_remaining, trade.reason, trade.entry_price, trade.pnl,
-            trade.timestamp
+            trade.outcome || null, trade.timestamp
         ]);
         
         // Update strategy stats

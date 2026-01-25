@@ -148,21 +148,31 @@ export class ChainlinkPriceCollector {
             return this;
         }
         
-        // Now create provider with staticNetwork to prevent any network detection
+        // Now create provider with ethers v6 compatible Network object
         try {
-            // Use Polygon mainnet chain ID (137) explicitly
-            const polygonNetwork = { chainId: 137, name: 'polygon' };
+            // Create a proper Network object for ethers v6
+            // This prevents network auto-detection which can cause issues
+            const polygonNetwork = ethers.Network.from(137);
             
+            // In ethers v6, pass network as second param, options as third
+            // staticNetwork: true tells ethers to not verify the network
             this.provider = new ethers.JsonRpcProvider(workingRpcUrl, polygonNetwork, {
-                staticNetwork: polygonNetwork,
+                staticNetwork: true,
                 batchMaxCount: 1
             });
             
             console.log(`✅ Connected to Polygon via ${workingRpcUrl}`);
         } catch (error) {
-            console.log(`⚠️  Failed to create provider: ${error.message} - Chainlink disabled`);
-            this.disabled = true;
-            return this;
+            // Fallback: try simpler initialization if Network.from() fails
+            try {
+                console.log(`⚠️  Network.from() failed, trying fallback...`);
+                this.provider = new ethers.JsonRpcProvider(workingRpcUrl, 137);
+                console.log(`✅ Connected to Polygon via fallback method`);
+            } catch (fallbackError) {
+                console.log(`⚠️  Failed to create provider: ${error.message} - Chainlink disabled`);
+                this.disabled = true;
+                return this;
+            }
         }
         
         // Initialize contracts for each feed
@@ -336,9 +346,10 @@ export class ChainlinkPriceCollector {
             }
             
             try {
-                const polygonNetwork = { chainId: 137, name: 'polygon' };
+                // Create provider with ethers v6 compatible Network object
+                const polygonNetwork = ethers.Network.from(137);
                 this.provider = new ethers.JsonRpcProvider(url, polygonNetwork, {
-                    staticNetwork: polygonNetwork,
+                    staticNetwork: true,
                     batchMaxCount: 1
                 });
                 

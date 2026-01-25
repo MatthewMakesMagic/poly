@@ -605,6 +605,7 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Handle window end - close any open positions
+     * CRITICAL: This must save to database so we track live P&L properly
      */
     async onWindowEnd(windowInfo) {
         const { crypto, epoch, outcome } = windowInfo;
@@ -612,8 +613,9 @@ export class LiveTrader extends EventEmitter {
         // Find positions for this window
         for (const [key, position] of Object.entries(this.livePositions)) {
             if (position.crypto === crypto && position.windowEpoch === epoch) {
-                // Position expired at window end
-                const finalPrice = outcome === position.tokenSide.toLowerCase() ? 1.0 : 0.0;
+                // Position expired at window end - binary resolution
+                const won = outcome === position.tokenSide.toLowerCase();
+                const finalPrice = won ? 1.0 : 0.0;
                 const pnl = (finalPrice - position.entryPrice) * position.size;
                 const fee = position.size * 0.001;
                 const netPnl = pnl - fee;
@@ -629,10 +631,31 @@ export class LiveTrader extends EventEmitter {
                     size: position.size
                 }, netPnl);
                 
-                delete this.livePositions[key];
-                
                 const pnlStr = `${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`;
-                this.logger.log(`[LiveTrader] 🏁 WINDOW END: ${position.strategyName} | ${crypto} | Outcome: ${outcome} | P&L: ${pnlStr}`);
+                this.logger.log(`[LiveTrader] 🏁 WINDOW END: ${position.strategyName} | ${crypto} | Bet: ${position.tokenSide} | Outcome: ${outcome.toUpperCase()} | ${won ? 'WIN' : 'LOSS'} | P&L: ${pnlStr}`);
+                
+                // CRITICAL: Save exit to database for tracking
+                try {
+                    await saveLiveTrade({
+                        type: 'exit',
+                        strategy_name: position.strategyName,
+                        crypto,
+                        side: position.tokenSide.toLowerCase(),
+                        window_epoch: epoch,
+                        price: finalPrice,
+                        size: position.size,
+                        spot_price: null, // Window already ended
+                        time_remaining: 0,
+                        reason: 'window_expiry',
+                        entry_price: position.entryPrice,
+                        pnl: netPnl,
+                        outcome: outcome,
+                        timestamp: new Date().toISOString()
+                    });
+                    this.logger.log(`[LiveTrader] ✅ Saved window expiry exit to database`);
+                } catch (error) {
+                    this.logger.error(`[LiveTrader] ❌ Failed to save window expiry exit: ${error.message}`);
+                }
                 
                 this.emit('trade_exit', {
                     strategyName: position.strategyName,
@@ -642,8 +665,12 @@ export class LiveTrader extends EventEmitter {
                     exitPrice: finalPrice,
                     pnl: netPnl,
                     size: position.size,
-                    reason: 'window_expiry'
+                    reason: 'window_expiry',
+                    outcome: outcome,
+                    won: won
                 });
+                
+                delete this.livePositions[key];
             }
         }
     }

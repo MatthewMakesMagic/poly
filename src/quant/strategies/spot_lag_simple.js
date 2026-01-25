@@ -34,8 +34,10 @@ export class SpotLagSimpleStrategy {
             // Time constraints
             minTimeRemaining: 120,  // Don't enter with < 2 min left
             
-            // Only exit on extreme loss (let binary resolve)
-            extremeStopLoss: 0.40,
+            // DISABLED: Stop loss was killing winning trades that would resolve profitably
+            // Data showed 87.8% win rate at expiry vs 0% win rate on stopped trades
+            // Set to 0.99 to effectively disable (only stop if position is nearly worthless)
+            extremeStopLoss: 0.99,
             
             // Enabled cryptos
             enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
@@ -475,8 +477,9 @@ export class MispricingOnlyStrategy {
             minTimeRemaining: 180,  // Need 3+ min for binary to resolve
             maxTimeRemaining: 840,  // Don't enter in first minute (unstable)
             
-            // Only exit on extreme loss
-            extremeStopLoss: 0.50,
+            // DISABLED: Stop loss was killing winning trades that would resolve profitably
+            // Set to 0.99 to effectively disable (hold to expiry)
+            extremeStopLoss: 0.99,
             
             // Enabled cryptos
             enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
@@ -848,14 +851,15 @@ export class UpOnlyChainlinkStrategy {
             return this.createSignal('hold', null, 'crypto_disabled');
         }
         
-        // Position management
+        // Position management - HOLD TO EXPIRY (stop loss disabled)
         if (position) {
             const currentPrice = tick.up_mid;
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
-            if (pnlPct <= -0.50) {
-                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
-            }
-            return this.createSignal('hold', null, 'holding_to_expiry');
+            // DISABLED: Stop loss was killing winning trades
+            // if (pnlPct <= -0.50) {
+            //     return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
+            // }
+            return this.createSignal('hold', null, 'holding_to_expiry', { pnlPct });
         }
         
         const windowEpoch = tick.window_epoch;
