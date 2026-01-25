@@ -715,7 +715,7 @@ class TickCollector {
                     const priceToBeat = market.priceToBeat || spotPrice;
                     const outcome = spotPrice >= priceToBeat ? 'up' : 'down';
                     
-                    // Notify research engine of window end
+                    // Notify research engine of window end (paper trading)
                     if (this.researchEngine) {
                         try {
                             this.researchEngine.onWindowEnd({
@@ -728,6 +728,21 @@ class TickCollector {
                         } catch (error) {
                             console.error('⚠️  Research engine window end error:', error.message);
                         }
+                    }
+                    
+                    // Notify live trader of window end (CRITICAL: closes positions and resets openOrderCount)
+                    try {
+                        const { getLiveTrader } = await import('../execution/live_trader.js');
+                        const liveTrader = getLiveTrader();
+                        if (liveTrader && liveTrader.isRunning) {
+                            await liveTrader.onWindowEnd({
+                                crypto,
+                                epoch: market.epoch,
+                                outcome
+                            });
+                        }
+                    } catch (error) {
+                        console.error('⚠️  Live trader window end error:', error.message);
                     }
                     
                     // Save window summary for old epoch

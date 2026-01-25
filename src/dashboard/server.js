@@ -248,6 +248,10 @@ async function handleAPI(req, res) {
                 return apiLiveStrategyToggle(req, res);
             case '/api/live/trades':
                 return apiLiveTrades(req, res);
+            case '/api/live/reset-orders':
+                return apiLiveResetOrders(req, res);
+            case '/api/live/reconcile':
+                return apiLiveReconcile(req, res);
             
             default:
                 res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -868,6 +872,72 @@ async function apiLiveTrades(req, res) {
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Force reset open order count (emergency endpoint)
+async function apiLiveResetOrders(req, res) {
+    if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+    
+    try {
+        const liveTrader = getLiveTrader();
+        
+        // Access the risk manager and force reset
+        const oldCount = liveTrader.riskManager.state.openOrderCount;
+        const cleanedStale = liveTrader.riskManager.cleanupStalePositions();
+        const newCount = liveTrader.riskManager.state.openOrderCount;
+        
+        console.log(`[Dashboard] Reset orders: ${oldCount} -> ${newCount} (cleaned ${cleanedStale} stale)`);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            success: true, 
+            message: `Reset order count from ${oldCount} to ${newCount}`,
+            oldCount,
+            newCount,
+            stalePositionsCleaned: cleanedStale
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+async function apiLiveReconcile(req, res) {
+    if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+    }
+    
+    try {
+        const liveTrader = getLiveTrader();
+        
+        if (!liveTrader.isRunning) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Live trader not running' }));
+            return;
+        }
+        
+        // Run reconciliation
+        const result = await liveTrader.reconcilePositions();
+        
+        // Also get execution metrics
+        const metrics = liveTrader.getExecutionMetrics();
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            success: true,
+            reconciliation: result,
+            executionMetrics: metrics
+        }));
     } catch (error) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));

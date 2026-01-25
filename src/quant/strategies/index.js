@@ -63,13 +63,15 @@ export function createAllQuantStrategies(capital = 100) {
         createSpotLagConfirmed(capital),  // Confirmed: hold to expiry
         createSpotLagAggressive(capital), // Aggressive: hold to expiry
         
-        // Spot Lag - TIMED EXIT variants (test different holding periods)
-        createSpotLag5Sec(capital),       // 5 second hold - does market catch up fast?
-        createSpotLag10Sec(capital),      // 10 second hold
-        createSpotLag30Sec(capital),      // 30 second hold
-        createSpotLag60Sec(capital),      // 60 second hold
-        createSpotLag120Sec(capital),     // 2 minute hold
-        createSpotLag300Sec(capital),     // 5 minute hold
+        // Spot Lag - TIMED EXIT variants - DISABLED (data shows they destroy alpha)
+        // These exit early before binary resolution, losing 96%+ of the time
+        // SpotLag thesis requires holding to expiry for $1/$0 payout
+        // createSpotLag5Sec(capital),       // DISABLED: 1.6% win rate
+        // createSpotLag10Sec(capital),      // DISABLED: 3.3% win rate
+        // createSpotLag30Sec(capital),      // DISABLED: 3.3% win rate
+        // createSpotLag60Sec(capital),      // DISABLED: 6.8% win rate
+        // createSpotLag120Sec(capital),     // DISABLED: 7.0% win rate
+        // createSpotLag300Sec(capital),     // Keep commented - 26% win rate but still negative
         
         // MISPRICING-ONLY strategies (based on our learning: edge is from mispricing, not lag)
         createMispricingOnly(capital),    // Base: spot 0.1% off, market >10% wrong

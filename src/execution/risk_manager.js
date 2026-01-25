@@ -124,6 +124,10 @@ export class RiskManager extends EventEmitter {
         // Set up periodic tasks
         this.setupPeriodicTasks();
         
+        // Clean up any stale positions from previous runs immediately
+        // This prevents order count from being stuck after restart
+        setTimeout(() => this.cleanupStalePositions(), 5000);
+        
         this.logger.log('[RiskManager] Initialized with params:', this.params);
     }
     
@@ -163,6 +167,10 @@ export class RiskManager extends EventEmitter {
         
         // Clean up old loss records every minute
         setInterval(() => this.cleanupOldRecords(), 60000);
+        
+        // Clean up stale positions every 60 seconds (safety mechanism)
+        // This prevents order count from getting stuck if window end notifications are missed
+        setInterval(() => this.cleanupStalePositions(), 60000);
     }
     
     /**
@@ -543,6 +551,56 @@ export class RiskManager extends EventEmitter {
     resetConsecutiveLosses() {
         this.state.consecutiveLosses = 0;
         this.logger.log('[RiskManager] Consecutive losses counter reset');
+    }
+    
+    /**
+     * Clean up stale positions from expired windows
+     * Called periodically to prevent order count from getting stuck
+     */
+    cleanupStalePositions() {
+        const now = Math.floor(Date.now() / 1000);
+        const currentWindowEpoch = Math.floor(now / 900) * 900;
+        
+        let staleCount = 0;
+        const staleKeys = [];
+        
+        for (const [windowKey, position] of this.state.openPositions.entries()) {
+            // Parse epoch from windowKey (format: crypto_epoch)
+            const parts = windowKey.split('_');
+            const epoch = parseInt(parts[parts.length - 1]);
+            
+            // If window epoch is older than current window, it's stale
+            if (epoch < currentWindowEpoch) {
+                staleKeys.push(windowKey);
+                staleCount++;
+                this.state.totalExposure = Math.max(0, this.state.totalExposure - position.size);
+            }
+        }
+        
+        // Remove stale positions
+        for (const key of staleKeys) {
+            this.state.openPositions.delete(key);
+        }
+        
+        // Reset open order count to match actual open positions
+        if (staleCount > 0) {
+            this.state.openOrderCount = this.state.openPositions.size;
+            this.logger.log(`[RiskManager] Cleaned up ${staleCount} stale positions. Open orders now: ${this.state.openOrderCount}`);
+        }
+        
+        return staleCount;
+    }
+    
+    /**
+     * Force reset open order count (emergency use only)
+     */
+    forceResetOrderCount() {
+        const oldCount = this.state.openOrderCount;
+        this.state.openOrderCount = 0;
+        this.state.openPositions.clear();
+        this.state.totalExposure = 0;
+        this.logger.log(`[RiskManager] Force reset: openOrderCount ${oldCount} -> 0, cleared all positions`);
+        return oldCount;
     }
     
     // ═══════════════════════════════════════════════════════════════════════════

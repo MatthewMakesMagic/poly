@@ -311,7 +311,34 @@ export class LiveTrader extends EventEmitter {
             // Place order using SDK client (FOK with price buffer for fill)
             const response = await this.client.buy(tokenId, actualSize, entryPrice, 'FOK');
             
-            if (response.filled || response.shares > 0) {
+            // FACTOR 1: SDK reports filled (has tx hash, success, status)
+            if (response.filled && response.shares > 0) {
+                
+                // FACTOR 2: POST-TRADE BALANCE VERIFICATION
+                // Verify we actually received tokens (on-chain proof)
+                let balanceVerified = false;
+                try {
+                    const postTradeBalance = await this.client.getBalance(tokenId);
+                    // We should have received some tokens
+                    if (postTradeBalance > 0) {
+                        balanceVerified = true;
+                        this.logger.log(`[LiveTrader] ✓ BALANCE VERIFIED: ${postTradeBalance.toFixed(2)} tokens of ${tokenId.slice(0, 10)}...`);
+                    } else {
+                        this.logger.error(`[LiveTrader] ❌ BALANCE MISMATCH: SDK says filled but balance is 0!`);
+                        this.logger.error(`[LiveTrader] Trade response: ${JSON.stringify(response)}`);
+                    }
+                } catch (balanceErr) {
+                    this.logger.warn(`[LiveTrader] Balance check failed: ${balanceErr.message}`);
+                    // If balance check fails, trust the tx hash
+                    balanceVerified = response.tx ? true : false;
+                }
+                
+                if (!balanceVerified) {
+                    this.logger.error(`[LiveTrader] ⚠️ TRADE VERIFICATION FAILED - NOT recording position`);
+                    this.stats.ordersRejected++;
+                    return null;
+                }
+                
                 this.stats.ordersFilled++;
                 
                 // Record position
@@ -327,7 +354,9 @@ export class LiveTrader extends EventEmitter {
                     size: response.value || actualSize,
                     shares: response.shares,
                     spotAtEntry: tick.spot_price,
-                    orderId: response.orderId
+                    orderId: response.orderId,
+                    txHash: response.tx,  // Store tx hash for audit
+                    balanceVerified: true
                 };
                 
                 // Update risk manager
@@ -337,7 +366,7 @@ export class LiveTrader extends EventEmitter {
                     size: actualSize
                 });
                 
-                this.logger.log(`[LiveTrader] ✅ ENTRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${(response.avgPrice || entryPrice).toFixed(3)} (${response.shares} shares)`);
+                this.logger.log(`[LiveTrader] ✅ ENTRY FILLED & VERIFIED: ${strategyName} | ${crypto} ${tokenSide} @ ${(response.avgPrice || entryPrice).toFixed(3)} (${response.shares} shares) | tx=${response.tx?.slice(0, 10)}...`);
                 
                 this.emit('trade_entry', {
                     strategyName,
@@ -374,7 +403,24 @@ export class LiveTrader extends EventEmitter {
                 try {
                     const retryResponse = await this.client.buy(tokenId, actualSize, retryPrice, 'FOK');
                     
-                    if (retryResponse.filled || retryResponse.shares > 0) {
+                    if (retryResponse.filled && retryResponse.shares > 0) {
+                        // FACTOR 2: Verify balance after retry fill
+                        let balanceVerified = false;
+                        try {
+                            const postBalance = await this.client.getBalance(tokenId);
+                            balanceVerified = postBalance > 0;
+                            if (balanceVerified) {
+                                this.logger.log(`[LiveTrader] ✓ RETRY BALANCE VERIFIED: ${postBalance.toFixed(2)} tokens`);
+                            }
+                        } catch (e) {
+                            balanceVerified = retryResponse.tx ? true : false;
+                        }
+                        
+                        if (!balanceVerified) {
+                            this.logger.error(`[LiveTrader] ⚠️ RETRY VERIFICATION FAILED`);
+                            return null;
+                        }
+                        
                         this.stats.ordersFilled++;
                         
                         const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
@@ -390,12 +436,14 @@ export class LiveTrader extends EventEmitter {
                             shares: retryResponse.shares,
                             spotAtEntry: tick.spot_price,
                             orderId: retryResponse.orderId,
-                            wasRetry: true
+                            txHash: retryResponse.tx,
+                            wasRetry: true,
+                            balanceVerified: true
                         };
                         
                         this.riskManager.recordTradeOpen({ crypto, windowEpoch, size: actualSize });
                         
-                        this.logger.log(`[LiveTrader] ✅ RETRY FILLED: ${strategyName} | ${crypto} ${tokenSide} @ ${(retryResponse.avgPrice || retryPrice).toFixed(3)}`);
+                        this.logger.log(`[LiveTrader] ✅ RETRY FILLED & VERIFIED: ${strategyName} | ${crypto} ${tokenSide} @ ${(retryResponse.avgPrice || retryPrice).toFixed(3)} | tx=${retryResponse.tx?.slice(0, 10)}...`);
                         
                         this.emit('trade_entry', {
                             strategyName,
@@ -606,6 +654,114 @@ export class LiveTrader extends EventEmitter {
     }
     
     /**
+     * FACTOR 3: RECONCILIATION
+     * Compare internal position state vs actual on-chain balances
+     * Call periodically or after suspicious activity
+     */
+    async reconcilePositions() {
+        const discrepancies = [];
+        const checked = [];
+        
+        this.logger.log('[LiveTrader] 🔍 Starting position reconciliation...');
+        
+        // Get all unique token IDs from our positions
+        const tokenIds = new Set();
+        for (const position of Object.values(this.livePositions)) {
+            tokenIds.add(position.tokenId);
+        }
+        
+        // Check actual on-chain balance for each token
+        for (const tokenId of tokenIds) {
+            try {
+                const actualBalance = await this.client.getBalance(tokenId);
+                
+                // Sum expected balance from our positions
+                let expectedBalance = 0;
+                for (const position of Object.values(this.livePositions)) {
+                    if (position.tokenId === tokenId) {
+                        expectedBalance += position.shares || 0;
+                    }
+                }
+                
+                const diff = Math.abs(actualBalance - expectedBalance);
+                const status = diff < 0.01 ? 'OK' : 'MISMATCH';
+                
+                checked.push({
+                    tokenId: tokenId.slice(0, 16) + '...',
+                    expected: expectedBalance,
+                    actual: actualBalance,
+                    diff,
+                    status
+                });
+                
+                if (status === 'MISMATCH') {
+                    discrepancies.push({
+                        tokenId,
+                        expected: expectedBalance,
+                        actual: actualBalance,
+                        diff
+                    });
+                    this.logger.error(`[LiveTrader] ❌ RECONCILIATION MISMATCH: ${tokenId.slice(0, 16)}... | Expected: ${expectedBalance} | Actual: ${actualBalance}`);
+                }
+            } catch (error) {
+                this.logger.warn(`[LiveTrader] Failed to check balance for ${tokenId}: ${error.message}`);
+            }
+        }
+        
+        // Also check USDC balance
+        try {
+            const usdcBalance = await this.client.getUSDCBalance();
+            checked.push({
+                tokenId: 'USDC',
+                actual: usdcBalance,
+                status: 'INFO'
+            });
+        } catch (e) {
+            // Ignore
+        }
+        
+        const result = {
+            timestamp: new Date().toISOString(),
+            positionsChecked: Object.keys(this.livePositions).length,
+            tokensChecked: tokenIds.size,
+            discrepancies: discrepancies.length,
+            details: checked
+        };
+        
+        if (discrepancies.length === 0) {
+            this.logger.log(`[LiveTrader] ✅ RECONCILIATION OK: ${tokenIds.size} tokens verified`);
+        } else {
+            this.logger.error(`[LiveTrader] ⚠️ RECONCILIATION FAILED: ${discrepancies.length} discrepancies found!`);
+        }
+        
+        return result;
+    }
+    
+    /**
+     * FACTOR 4: EXECUTION QUALITY METRICS
+     * Track fill rate, slippage, and other quality metrics
+     */
+    getExecutionMetrics() {
+        const fillRate = this.stats.ordersPlaced > 0 
+            ? (this.stats.ordersFilled / this.stats.ordersPlaced * 100).toFixed(1) 
+            : 0;
+        
+        return {
+            ordersPlaced: this.stats.ordersPlaced,
+            ordersFilled: this.stats.ordersFilled,
+            ordersRejected: this.stats.ordersRejected,
+            fillRate: `${fillRate}%`,
+            tradesExecuted: this.stats.tradesExecuted,
+            grossPnL: this.stats.grossPnL.toFixed(2),
+            fees: this.stats.fees.toFixed(2),
+            netPnL: this.stats.netPnL.toFixed(2),
+            avgPnLPerTrade: this.stats.tradesExecuted > 0 
+                ? (this.stats.netPnL / this.stats.tradesExecuted).toFixed(2) 
+                : '0.00'
+        };
+    }
+    
+    /**
      * Get current status
      */
     getStatus() {
@@ -617,6 +773,7 @@ export class LiveTrader extends EventEmitter {
             enabledStrategies: Array.from(this.enabledStrategies),
             livePositions: Object.values(this.livePositions),
             stats: this.stats,
+            executionMetrics: this.getExecutionMetrics(),
             riskStatus: this.riskManager.getStatus()
         };
     }

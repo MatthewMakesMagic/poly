@@ -242,10 +242,22 @@ export class SDKClient {
                 negRisk: false
             }, orderType);
             
-            this.logger.log(`[SDKClient] Order ${order?.orderID}: ${order?.status}`);
+            // MULTI-FACTOR FILL VERIFICATION
+            // Factor 1: Must have transaction hash (proves on-chain execution)
+            const hasTxHash = order?.transactionsHashes?.length > 0;
+            // Factor 2: Must have success flag
+            const hasSuccess = order?.success === true;
+            // Factor 3: Status should be matched or live
+            const hasGoodStatus = order?.status === 'matched' || order?.status === 'live';
             
-            // Check if order actually filled (FOK orders return null/undefined if killed)
-            const filled = order && (order.status === 'matched' || order.status === 'live');
+            // ALL factors must pass for a confirmed fill
+            const filled = hasTxHash && hasSuccess && hasGoodStatus;
+            
+            this.logger.log(`[SDKClient] Order ${order?.orderID}: status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess} → FILLED=${filled}`);
+            
+            if (!filled && order?.orderID) {
+                this.logger.warn(`[SDKClient] ⚠️ ORDER NOT FILLED: ${order?.orderID} (status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess})`);
+            }
             
             return {
                 orderId: order?.orderID,
@@ -255,6 +267,8 @@ export class SDKClient {
                 cost: filled ? actualCost : 0,
                 filled: filled,
                 tx: order?.transactionsHashes?.[0] || null,
+                txHashes: order?.transactionsHashes || [],
+                success: order?.success,
                 raw: order
             };
         } catch (error) {
@@ -310,9 +324,17 @@ export class SDKClient {
                 negRisk: false
             }, orderType);
             
-            this.logger.log(`[SDKClient] Order ${order?.orderID}: ${order?.status}`);
+            // MULTI-FACTOR FILL VERIFICATION (same as buy)
+            const hasTxHash = order?.transactionsHashes?.length > 0;
+            const hasSuccess = order?.success === true;
+            const hasGoodStatus = order?.status === 'matched' || order?.status === 'live';
+            const filled = hasTxHash && hasSuccess && hasGoodStatus;
             
-            const filled = order && (order.status === 'matched' || order.status === 'live');
+            this.logger.log(`[SDKClient] Order ${order?.orderID}: status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess} → FILLED=${filled}`);
+            
+            if (!filled && order?.orderID) {
+                this.logger.warn(`[SDKClient] ⚠️ SELL NOT FILLED: ${order?.orderID} (status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess})`);
+            }
             
             return {
                 orderId: order?.orderID,
@@ -322,6 +344,8 @@ export class SDKClient {
                 value: filled ? expectedValue : 0,
                 filled: filled,
                 tx: order?.transactionsHashes?.[0] || null,
+                txHashes: order?.transactionsHashes || [],
+                success: order?.success,
                 raw: order
             };
         } catch (error) {
