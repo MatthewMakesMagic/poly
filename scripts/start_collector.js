@@ -33,22 +33,15 @@ async function runMigrations() {
         // =================================================================
         // ENABLE - Strategies that WORK based on live trading data
         // =================================================================
+        // OVERNIGHT MODE: Only Endgame strategies (near-resolution plays)
+        // All SpotLag and CL strategies disabled pending thesis validation
+        // =================================================================
         const toEnable = [
-            // PROVEN WINNERS from live data:
-            'SpotLag_Aggressive',     // 100% WR, +$2.54 - Best performer
-            'SpotLag_TP3',            // 75% WR, +$2.27 - Quick profit exits
-            'Endgame_Aggressive',     // 100% WR, +$0.15 - Late confirmation
-            'SpotLag_Trailing',       // 50% WR but trailing logic locks in gains
-            
-            // NEW DATA-DRIVEN STRATEGIES:
-            'SpotLag_LateValue',      // Late (60-180s) + cheap entry + strong lag
-            'SpotLag_DeepValue',      // Very cheap (<30c) + conviction play  
-            'SpotLag_CorrectSide',    // Only when spot on correct side + blocks deadzone
-            'SpotLag_ExtremeReversal', // Extreme zone + large contrary move + trailing stop
-            
-            // CHAINLINK FINAL SECONDS - test frozen Chainlink thesis
-            'CL_FinalSeconds',        // Final 30s
-            'CL_FinalSeconds_Ultra'   // Final 15s
+            'Endgame',                // Base endgame strategy
+            'Endgame_Aggressive',     // More aggressive endgame
+            'Endgame_Conservative',   // Conservative endgame
+            'Endgame_Safe',           // Safest endgame variant
+            'Endgame_Momentum'        // Momentum-based endgame
         ];
         
         for (const strat of toEnable) {
@@ -57,18 +50,31 @@ async function runMigrations() {
         }
         
         // =================================================================
-        // DISABLE - Strategies that DON'T WORK based on live data
+        // DISABLE ALL - SpotLag thesis under review
         // =================================================================
         const toDisable = [
-            // EARLY CHAINLINK DIVERGENCE - 0% live win rate
-            'CL_Divergence',          // 0% WR in live
-            'CL_Divergence_Aggro',    // 0% WR in live
-            'CL_Divergence_Safe',     // 0% WR in live
+            // ALL SPOTLAG - thesis unproven
+            'SpotLag_Aggressive',
+            'SpotLag_TP3',
+            'SpotLag_Trailing',
+            'SpotLag_LateValue',
+            'SpotLag_DeepValue',
+            'SpotLag_CorrectSide',
+            'SpotLag_ExtremeReversal',
+            'SpotLag_TrailWide',
+            'SpotLag_TrailTight',
+            'SpotLag_TP6',
+            'SpotLag_VolAdapt',
+            'SpotLagSimple',
+            'SpotLag_Fast',
+            'SpotLag_Confirmed',
             
-            // UNDERPERFORMERS from live data:
-            'SpotLag_TrailWide',      // 17% WR, -$1.35 - too wide trailing
-            'SpotLag_TrailTight',     // Keep disabled for now
-            'SpotLag_TP6'             // Higher threshold underperformed TP3
+            // ALL CHAINLINK - thesis unproven
+            'CL_Divergence',
+            'CL_Divergence_Aggro',
+            'CL_Divergence_Safe',
+            'CL_FinalSeconds',
+            'CL_FinalSeconds_Ultra'
         ];
         
         for (const strat of toDisable) {
