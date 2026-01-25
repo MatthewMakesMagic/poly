@@ -218,18 +218,26 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Calculate minimum viable position size
-     * Polymarket requires minimum 5 shares per order
+     * Polymarket requires minimum $1 order VALUE (shares * price >= $1)
      */
     calculateMinimumSize(price, requestedSize) {
-        const MIN_SHARES = 5;
-        const minSizeForShares = MIN_SHARES * price;
+        const MIN_ORDER_VALUE = 1.0;  // $1 minimum order value
         
-        // Use the larger of: requested size OR minimum for 5 shares
-        const actualSize = Math.max(requestedSize, minSizeForShares);
+        // Calculate shares for requested size
+        const requestedShares = requestedSize / price;
+        const requestedValue = requestedShares * price;
         
-        if (actualSize > requestedSize) {
-            this.logger.log(`[LiveTrader] Adjusted size: $${requestedSize} → $${actualSize.toFixed(2)} (need ${MIN_SHARES} shares at $${price.toFixed(2)})`);
+        // If requested value is already >= $1, use it
+        if (requestedValue >= MIN_ORDER_VALUE) {
+            return requestedSize;
         }
+        
+        // Otherwise, calculate minimum size to hit $1 value
+        // shares * price >= $1, so shares >= 1/price
+        const minShares = Math.ceil(MIN_ORDER_VALUE / price);
+        const actualSize = minShares * price;
+        
+        this.logger.log(`[LiveTrader] Adjusted size: $${requestedSize} → $${actualSize.toFixed(2)} (min $1 value requires ${minShares} shares at $${price.toFixed(2)})`);
         
         return actualSize;
     }
@@ -330,6 +338,18 @@ export class LiveTrader extends EventEmitter {
         } catch (error) {
             this.stats.ordersRejected++;
             this.logger.error(`[LiveTrader] Entry order failed: ${error.message}`);
+            
+            // Log the missed opportunity for analysis
+            this.emit('trade_missed', {
+                strategyName,
+                crypto,
+                side: signal.side,
+                price: entryPrice,
+                size: actualSize,
+                reason: error.message,
+                timestamp: Date.now()
+            });
+            
             return null;
         }
     }
