@@ -22,7 +22,7 @@ export { MicrostructureStrategy } from './microstructure_strategy.js';
 export { CrossAssetStrategy } from './cross_asset_strategy.js';
 export { ContrarianStrategy, ContrarianSOLStrategy, ContrarianScalpStrategy, ContrarianStrongStrategy, createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 export { EndgameStrategy, EndgameConservativeStrategy, EndgameAggressiveStrategy, EndgameSafeStrategy, EndgameMomentumStrategy, createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
-export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, SpotLagChainlinkConfirmedStrategy, SpotLagAggressiveCLStrategy, MispricingChainlinkConfirmedStrategy, UpOnlyChainlinkStrategy, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, SpotLag_TakeProfit3Strategy, SpotLag_TakeProfit6Strategy, SpotLag_VolatilityAdaptiveStrategy, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt } from './spot_lag_simple.js';
+export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, SpotLagChainlinkConfirmedStrategy, SpotLagAggressiveCLStrategy, MispricingChainlinkConfirmedStrategy, UpOnlyChainlinkStrategy, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, SpotLag_TakeProfit3Strategy, SpotLag_TakeProfit6Strategy, SpotLag_VolatilityAdaptiveStrategy, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt, SpotLag_TrailingStopStrategy, SpotLag_TrailingTightStrategy, SpotLag_TrailingWideStrategy, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide } from './spot_lag_simple.js';
 
 // Import for factory
 import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift, createFairValueDrift1H, createFairValueDrift4H, createFairValueDrift24H, createFairValueUpOnly4H } from './fair_value_strategy.js';
@@ -33,7 +33,7 @@ import { MicrostructureStrategy } from './microstructure_strategy.js';
 import { CrossAssetStrategy } from './cross_asset_strategy.js';
 import { createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 import { createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
-import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt } from './spot_lag_simple.js';
+import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide } from './spot_lag_simple.js';
 
 /**
  * Create all quant strategies
@@ -74,6 +74,13 @@ export function createAllQuantStrategies(capital = 100) {
         //           MED vol (4-8%) = 84% hit rate on 15% TP → use 6% TP
         //           LOW vol (<4%) = only 51% hit 3% → hold to expiry (no TP)
         createSpotLagVolAdapt(capital),   // Dynamic TP based on volatility regime
+        
+        // Spot Lag - TRAILING STOP variants (NEW!)
+        // Lets winners run while protecting profits
+        // Activates after initial gain, then trails high-water mark
+        createSpotLagTrailing(capital),    // Standard: 5% activation, 10% trail, 3% floor
+        createSpotLagTrailTight(capital),  // Tight: 3% activation, 5% trail, 2% floor
+        createSpotLagTrailWide(capital),   // Wide: 8% activation, 15% trail, 5% floor
         
         // Spot Lag - TIMED EXIT variants - DISABLED (data shows they destroy alpha)
         // These exit early before binary resolution, losing 96%+ of the time

@@ -1109,6 +1109,214 @@ export function createSpotLagTP6(capital = 100) {
 }
 
 // ================================================================
+// TRAILING STOP STRATEGY
+// Lets winners run while protecting profits
+// ================================================================
+
+/**
+ * SpotLag with Trailing Stop
+ * 
+ * THESIS: Fixed take-profit (3-6%) exits too early on big winners.
+ * A trailing stop lets winners run while protecting accumulated gains.
+ * 
+ * Logic:
+ * 1. Enter using SpotLag_Aggressive entry criteria
+ * 2. Once profit exceeds activationThreshold (e.g., 5%), activate trailing stop
+ * 3. Track high-water mark (peak price since entry)
+ * 4. Trail by trailPercent (e.g., 10%) below high-water mark
+ * 5. Exit when price drops below trailing stop
+ * 6. Never exit below a profit floor (e.g., 3%) once trailing is activated
+ * 
+ * Example:
+ * - Entry: 80¢, activation at 5% = 84¢
+ * - Price runs to 99¢ → high-water mark = 99¢
+ * - Trailing stop at 10% below HWM = 89.1¢
+ * - If price drops to 89¢ → exit with ~9¢ profit vs 4¢ with TP5
+ */
+export class SpotLag_TrailingStopStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_Trailing',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0002,  // Aggressive entry
+            marketLagRatio: 0.6,
+            
+            // Trailing stop parameters
+            activationThreshold: 0.05,   // Activate trailing after 5% profit
+            trailPercent: 0.10,          // Trail 10% below high-water mark
+            profitFloor: 0.03,           // Never exit below 3% profit once activated
+            
+            ...options
+        });
+        
+        // Track high-water mark per crypto
+        this.highWaterMark = {};  // crypto -> highest price seen since entry
+        this.trailingActivated = {};  // crypto -> boolean
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        const state = this.initCrypto(crypto);
+        const windowEpoch = tick.window_epoch;
+        
+        // Update history
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        // POSITION MANAGEMENT WITH TRAILING STOP
+        if (position) {
+            // Get current sellable price
+            const currentPrice = position.side === 'up' 
+                ? tick.up_bid 
+                : tick.down_bid;
+            
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Update high-water mark
+            if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
+                this.highWaterMark[crypto] = currentPrice;
+            }
+            
+            const hwm = this.highWaterMark[crypto];
+            const hwmPnlPct = (hwm - position.entryPrice) / position.entryPrice;
+            
+            // Check if trailing stop should be activated
+            if (!this.trailingActivated[crypto] && pnlPct >= this.options.activationThreshold) {
+                this.trailingActivated[crypto] = true;
+                console.log(`[TrailingStop] ${crypto}: ACTIVATED at ${(pnlPct * 100).toFixed(1)}% profit, HWM=${hwm.toFixed(3)}`);
+            }
+            
+            // If trailing is activated, check for exit
+            if (this.trailingActivated[crypto]) {
+                // Calculate trailing stop level
+                const trailingStopPrice = hwm * (1 - this.options.trailPercent);
+                
+                // Calculate profit floor price
+                const floorPrice = position.entryPrice * (1 + this.options.profitFloor);
+                
+                // Trailing stop can't go below floor
+                const effectiveStop = Math.max(trailingStopPrice, floorPrice);
+                
+                // Check if we should exit
+                if (currentPrice <= effectiveStop) {
+                    // Clean up state
+                    delete this.highWaterMark[crypto];
+                    delete this.trailingActivated[crypto];
+                    this.tradedThisWindow[crypto] = windowEpoch;
+                    
+                    const exitReason = currentPrice <= trailingStopPrice ? 'trailing_stop' : 'profit_floor';
+                    
+                    return this.createSignal('sell', null, exitReason, {
+                        pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                        entryPrice: position.entryPrice.toFixed(3),
+                        exitPrice: currentPrice.toFixed(3),
+                        highWaterMark: hwm.toFixed(3),
+                        hwmPnlPct: (hwmPnlPct * 100).toFixed(1) + '%',
+                        trailingStopPrice: trailingStopPrice.toFixed(3),
+                        floorPrice: floorPrice.toFixed(3)
+                    });
+                }
+                
+                // Still holding with active trailing stop
+                return this.createSignal('hold', null, 'trailing_active', {
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    hwm: hwm.toFixed(3),
+                    hwmPnlPct: (hwmPnlPct * 100).toFixed(1) + '%',
+                    trailingStop: effectiveStop.toFixed(3),
+                    cushion: ((currentPrice - effectiveStop) / effectiveStop * 100).toFixed(1) + '%'
+                });
+            }
+            
+            // Not yet activated - check for extreme stop (safety)
+            if (pnlPct <= -this.options.extremeStopLoss) {
+                delete this.highWaterMark[crypto];
+                delete this.trailingActivated[crypto];
+                this.tradedThisWindow[crypto] = windowEpoch;
+                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
+            }
+            
+            // Waiting for activation
+            return this.createSignal('hold', null, 'waiting_for_activation', {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                activationAt: (this.options.activationThreshold * 100) + '%',
+                needed: ((this.options.activationThreshold - pnlPct) * 100).toFixed(1) + '%'
+            });
+        }
+        
+        // Reset tracking when no position
+        delete this.highWaterMark[crypto];
+        delete this.trailingActivated[crypto];
+        
+        // Entry logic - delegate to parent
+        return super.onTick(tick, position, context);
+    }
+    
+    onWindowStart(windowInfo) {
+        super.onWindowStart && super.onWindowStart(windowInfo);
+        // Reset trailing state on new window
+        this.highWaterMark = {};
+        this.trailingActivated = {};
+    }
+}
+
+/**
+ * Tighter trailing - activates earlier, tighter trail
+ * Good for volatile markets where quick reversals happen
+ */
+export class SpotLag_TrailingTightStrategy extends SpotLag_TrailingStopStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_TrailTight',
+            activationThreshold: 0.03,   // Activate at 3% profit
+            trailPercent: 0.05,          // Trail 5% below HWM (tighter)
+            profitFloor: 0.02,           // Floor at 2% profit
+            ...options
+        });
+    }
+}
+
+/**
+ * Wider trailing - lets winners run more
+ * Good for trending markets with big moves
+ */
+export class SpotLag_TrailingWideStrategy extends SpotLag_TrailingStopStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_TrailWide',
+            activationThreshold: 0.08,   // Activate at 8% profit
+            trailPercent: 0.15,          // Trail 15% below HWM (wider)
+            profitFloor: 0.05,           // Floor at 5% profit
+            ...options
+        });
+    }
+}
+
+export function createSpotLagTrailing(capital = 100) {
+    return new SpotLag_TrailingStopStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagTrailTight(capital = 100) {
+    return new SpotLag_TrailingTightStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagTrailWide(capital = 100) {
+    return new SpotLag_TrailingWideStrategy({ maxPosition: capital });
+}
+
+// ================================================================
 // VOLATILITY-ADAPTIVE TAKE-PROFIT STRATEGY
 // ================================================================
 // Based on backtest analysis:
