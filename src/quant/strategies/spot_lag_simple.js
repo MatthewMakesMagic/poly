@@ -1938,7 +1938,7 @@ export class SpotLag_LateValueStrategy extends SpotLagSimpleStrategy {
         const timeRemaining = tick.time_remaining_sec || 0;
         
         // TIME GATE: Only 60-180s window
-        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.maxTimeRemaining) {
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
             return this.createSignal('hold', null, 'wrong_time_for_late_value', { 
                 timeRemaining,
                 required: '60-180s'
@@ -2061,7 +2061,7 @@ export class SpotLag_DeepValueStrategy extends SpotLagSimpleStrategy {
         }
         
         const timeRemaining = tick.time_remaining_sec || 0;
-        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.maxTimeRemaining) {
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
             return this.createSignal('hold', null, 'wrong_time', { timeRemaining });
         }
         
