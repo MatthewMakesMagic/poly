@@ -44,6 +44,7 @@ async function runMigrations() {
             'SpotLag_LateValue',      // Late (60-180s) + cheap entry + strong lag
             'SpotLag_DeepValue',      // Very cheap (<30c) + conviction play  
             'SpotLag_CorrectSide',    // Only when spot on correct side + blocks deadzone
+            'SpotLag_ExtremeReversal' // Extreme zone + large contrary move + trailing stop
             
             // CHAINLINK FINAL SECONDS - test frozen Chainlink thesis
             'CL_FinalSeconds',        // Final 30s

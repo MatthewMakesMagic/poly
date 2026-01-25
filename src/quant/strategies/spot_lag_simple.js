@@ -139,9 +139,24 @@ export class SpotLagSimpleStrategy {
         const newMarket = state.marketHistory[state.marketHistory.length - 1];
         const marketMove = newMarket - oldMarket;  // Market is already 0-1 probability
         
-        // Check if spot moved enough
-        if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
-            return this.createSignal('hold', null, 'spot_not_moving', { spotMove });
+        // DYNAMIC THRESHOLD: Scale required move based on distance from 50¢
+        // At extremes (<20¢ or >80¢), require LARGER moves to bet against consensus
+        const marketPrice = tick.up_mid || 0.5;
+        const distanceFrom50 = Math.abs(marketPrice - 0.5);  // 0 at 50¢, 0.4 at 10¢/90¢
+        
+        // Scale factor: 1x at 50¢, up to 3x at extremes
+        // This prevents noise trading against strong consensus
+        const dynamicMultiplier = 1 + (distanceFrom50 * 4);  // 1x at 50¢, 2.6x at 10¢/90¢
+        const dynamicThreshold = this.options.spotMoveThreshold * dynamicMultiplier;
+        
+        // Check if spot moved enough (using dynamic threshold)
+        if (Math.abs(spotMove) < dynamicThreshold) {
+            return this.createSignal('hold', null, 'spot_not_moving', { 
+                spotMove,
+                threshold: (dynamicThreshold * 100).toFixed(4) + '%',
+                marketPrice: (marketPrice * 100).toFixed(0) + '¢',
+                multiplier: dynamicMultiplier.toFixed(2) + 'x'
+            });
         }
         
         this.stats.spotMovesDetected++;
@@ -2275,6 +2290,182 @@ export class SpotLag_CorrectSideOnlyStrategy extends SpotLagSimpleStrategy {
     }
 }
 
+/**
+ * SpotLag_ExtremeReversal Strategy
+ * 
+ * THESIS: When market is at extreme (<25¢ or >75¢), strong consensus exists.
+ * If spot then moves STRONGLY against that consensus, it may signal a reversal.
+ * 
+ * Key: Require LARGE moves at extremes + use trailing stop to capture reversal.
+ * 
+ * From data: Moderate zone (20-35¢, 65-80¢) had 83% WR.
+ * Extreme zone (<20¢, >80¢) had 41% WR with small moves.
+ * Hypothesis: Large moves at extremes could be predictive.
+ */
+export class SpotLag_ExtremeReversalStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_ExtremeReversal',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0008,  // 0.08% BASE - much higher than normal
+            marketLagRatio: 0.4,
+            minTimeRemaining: 120,      // At least 2 min for reversal to play out
+            maxTimeRemaining: 600,      // Not too early
+            ...options
+        });
+        
+        // Extreme zone boundaries
+        this.extremeThreshold = options.extremeThreshold || 0.25;  // <25¢ or >75¢
+        
+        // Trailing stop parameters for reversal capture
+        this.activationThreshold = options.activationThreshold || 0.08;  // 8% profit to activate
+        this.trailPercent = options.trailPercent || 0.12;  // Trail 12% below peak
+        this.profitFloor = options.profitFloor || 0.05;    // Lock in 5% minimum
+        
+        this.highWaterMark = {};
+        this.trailingActivated = {};
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        const marketPrice = tick.up_mid || 0.5;
+        
+        // POSITION MANAGEMENT WITH TRAILING STOP
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Update high-water mark
+            if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
+                this.highWaterMark[crypto] = currentPrice;
+            }
+            
+            const hwm = this.highWaterMark[crypto];
+            
+            // Check if trailing stop should be activated
+            if (!this.trailingActivated[crypto] && pnlPct >= this.activationThreshold) {
+                this.trailingActivated[crypto] = true;
+            }
+            
+            // If trailing is activated, check for exit
+            if (this.trailingActivated[crypto]) {
+                const trailingStopPrice = hwm * (1 - this.trailPercent);
+                const floorPrice = position.entryPrice * (1 + this.profitFloor);
+                const effectiveStop = Math.max(trailingStopPrice, floorPrice);
+                
+                if (currentPrice <= effectiveStop) {
+                    delete this.highWaterMark[crypto];
+                    delete this.trailingActivated[crypto];
+                    this.tradedThisWindow[crypto] = windowEpoch;
+                    
+                    return this.createSignal('sell', null, 'extreme_reversal_trailing_exit', {
+                        entryPrice: position.entryPrice.toFixed(2),
+                        exitPrice: currentPrice.toFixed(2),
+                        hwm: hwm.toFixed(2),
+                        pnlPct: (pnlPct * 100).toFixed(1) + '%'
+                    });
+                }
+            }
+            
+            return this.createSignal('hold', null, 'holding_extreme_reversal', {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                trailing: this.trailingActivated[crypto] ? 'ACTIVE' : 'waiting'
+            });
+        }
+        
+        // Clean up state if no position
+        delete this.highWaterMark[crypto];
+        delete this.trailingActivated[crypto];
+        
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'wrong_time', { timeRemaining });
+        }
+        
+        // EXTREME ZONE CHECK: Only trade when market is at extreme
+        const isExtreme = marketPrice < this.extremeThreshold || marketPrice > (1 - this.extremeThreshold);
+        
+        if (!isExtreme) {
+            return this.createSignal('hold', null, 'not_extreme_zone', {
+                marketPrice: (marketPrice * 100).toFixed(0) + '¢',
+                required: '<' + (this.extremeThreshold * 100) + '¢ or >' + ((1 - this.extremeThreshold) * 100) + '¢'
+            });
+        }
+        
+        // Build history
+        const state = this.initCrypto(crypto);
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        if (state.spotHistory.length < this.options.lookbackTicks) {
+            return this.createSignal('hold', null, 'insufficient_history');
+        }
+        
+        // Calculate spot movement
+        const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
+        const newSpot = state.spotHistory[state.spotHistory.length - 1];
+        const spotMove = (newSpot - oldSpot) / oldSpot;
+        
+        // LARGE MOVE CHECK: At extremes, require bigger moves
+        // Additional multiplier on top of already high base threshold
+        const extremeMultiplier = 1.5;  // 50% harder at extremes
+        const requiredMove = this.options.spotMoveThreshold * extremeMultiplier;
+        
+        if (Math.abs(spotMove) < requiredMove) {
+            return this.createSignal('hold', null, 'move_not_large_enough', {
+                spotMove: (spotMove * 100).toFixed(4) + '%',
+                required: (requiredMove * 100).toFixed(4) + '%'
+            });
+        }
+        
+        // Determine direction: bet AGAINST the current extreme consensus
+        // If market is at 10¢ (consensus DOWN), and spot moves UP strongly → bet UP
+        // If market is at 90¢ (consensus UP), and spot moves DOWN strongly → bet DOWN
+        const betSide = spotMove > 0 ? 'up' : 'down';
+        const entryPrice = betSide === 'up' ? tick.up_ask : tick.down_ask;
+        
+        // Verify we're betting against consensus (the whole point)
+        const isContrarian = (marketPrice < 0.5 && betSide === 'up') || 
+                            (marketPrice > 0.5 && betSide === 'down');
+        
+        if (!isContrarian) {
+            return this.createSignal('hold', null, 'not_contrarian', {
+                marketPrice: (marketPrice * 100).toFixed(0) + '¢',
+                betSide,
+                reason: 'Extreme reversal requires betting against consensus'
+            });
+        }
+        
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        return this.createSignal('buy', betSide, 'extreme_reversal_entry', {
+            entryPrice: entryPrice.toFixed(2),
+            marketPrice: (marketPrice * 100).toFixed(0) + '¢',
+            spotMove: (spotMove * 100).toFixed(3) + '%',
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            thesis: 'Large move against strong consensus'
+        });
+    }
+}
+
 // Factory functions for new strategies
 export function createSpotLagLateValue(capital = 100) {
     return new SpotLag_LateValueStrategy({ maxPosition: capital });
@@ -2286,6 +2477,10 @@ export function createSpotLagDeepValue(capital = 100) {
 
 export function createSpotLagCorrectSide(capital = 100) {
     return new SpotLag_CorrectSideOnlyStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagExtremeReversal(capital = 100) {
+    return new SpotLag_ExtremeReversalStrategy({ maxPosition: capital });
 }
 
 export default SpotLagSimpleStrategy;
