@@ -447,8 +447,42 @@ export async function getResearchStats() {
 /**
  * Save a completed paper trade to database for historical tracking
  */
+// Sanitize numeric values to prevent database overflow errors
+function sanitizeNumeric(value, defaultVal = null) {
+    if (value === null || value === undefined) return defaultVal;
+    if (typeof value !== 'number') value = parseFloat(value);
+    if (!Number.isFinite(value)) return defaultVal;  // Handle NaN, Infinity
+    return value;
+}
+
 export async function savePaperTrade(trade) {
     if (USE_POSTGRES && pgPool) {
+        // Sanitize all numeric fields to prevent overflow errors
+        const sanitized = {
+            ...trade,
+            entryPrice: sanitizeNumeric(trade.entryPrice),
+            exitPrice: sanitizeNumeric(trade.exitPrice),
+            entrySpotPrice: sanitizeNumeric(trade.entrySpotPrice),
+            exitSpotPrice: sanitizeNumeric(trade.exitSpotPrice),
+            priceToBeat: sanitizeNumeric(trade.priceToBeat),
+            entryMarketProb: sanitizeNumeric(trade.entryMarketProb),
+            exitMarketProb: sanitizeNumeric(trade.exitMarketProb),
+            timeRemainingAtEntry: sanitizeNumeric(trade.timeRemainingAtEntry),
+            pnl: sanitizeNumeric(trade.pnl),
+            holdingTimeMs: sanitizeNumeric(trade.holdingTimeMs),
+            entryBidSize: sanitizeNumeric(trade.entryBidSize),
+            entryAskSize: sanitizeNumeric(trade.entryAskSize),
+            entrySpread: sanitizeNumeric(trade.entrySpread),
+            entrySpreadPct: sanitizeNumeric(trade.entrySpreadPct),
+            exitBidSize: sanitizeNumeric(trade.exitBidSize),
+            exitAskSize: sanitizeNumeric(trade.exitAskSize),
+            exitSpread: sanitizeNumeric(trade.exitSpread),
+            spotMoveDuringTrade: sanitizeNumeric(trade.spotMoveDuringTrade),
+            marketMoveDuringTrade: sanitizeNumeric(trade.marketMoveDuringTrade),
+            signalStrength: sanitizeNumeric(trade.signalStrength),
+            entryBookImbalance: sanitizeNumeric(trade.entryBookImbalance)
+        };
+        
         try {
             await pgPool.query(`
                 INSERT INTO paper_trades (
@@ -464,39 +498,51 @@ export async function savePaperTrade(trade) {
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
                           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
             `, [
-                trade.strategyName,
-                trade.crypto,
-                trade.side,
-                new Date(trade.entryTime),
-                new Date(trade.exitTime),
-                trade.windowEpoch,
-                trade.holdingTimeMs,
-                trade.entryPrice,
-                trade.exitPrice,
-                trade.entrySpotPrice,
-                trade.exitSpotPrice,
-                trade.priceToBeat,
-                trade.entryMarketProb,
-                trade.exitMarketProb,
-                trade.timeRemainingAtEntry,
-                trade.pnl,
-                trade.outcome,
-                trade.reason,
+                sanitized.strategyName,
+                sanitized.crypto,
+                sanitized.side,
+                new Date(sanitized.entryTime),
+                new Date(sanitized.exitTime),
+                sanitized.windowEpoch,
+                sanitized.holdingTimeMs,
+                sanitized.entryPrice,
+                sanitized.exitPrice,
+                sanitized.entrySpotPrice,
+                sanitized.exitSpotPrice,
+                sanitized.priceToBeat,
+                sanitized.entryMarketProb,
+                sanitized.exitMarketProb,
+                sanitized.timeRemainingAtEntry,
+                sanitized.pnl,
+                sanitized.outcome,
+                sanitized.reason,
                 // New depth fields
-                trade.entryBidSize,
-                trade.entryAskSize,
-                trade.entrySpread,
-                trade.entrySpreadPct,
-                trade.exitBidSize,
-                trade.exitAskSize,
-                trade.exitSpread,
-                trade.spotMoveDuringTrade,
-                trade.marketMoveDuringTrade,
-                trade.signalStrength,
-                trade.entryBookImbalance
+                sanitized.entryBidSize,
+                sanitized.entryAskSize,
+                sanitized.entrySpread,
+                sanitized.entrySpreadPct,
+                sanitized.exitBidSize,
+                sanitized.exitAskSize,
+                sanitized.exitSpread,
+                sanitized.spotMoveDuringTrade,
+                sanitized.marketMoveDuringTrade,
+                sanitized.signalStrength,
+                sanitized.entryBookImbalance
             ]);
         } catch (error) {
-            console.error('Failed to save paper trade:', error.message);
+            // Log more detail for numeric overflow errors
+            if (error.message.includes('numeric field overflow')) {
+                console.error('Failed to save paper trade (numeric overflow). Values:', JSON.stringify({
+                    entrySpotPrice: trade.entrySpotPrice,
+                    exitSpotPrice: trade.exitSpotPrice,
+                    priceToBeat: trade.priceToBeat,
+                    pnl: trade.pnl,
+                    holdingTimeMs: trade.holdingTimeMs,
+                    signalStrength: trade.signalStrength
+                }));
+            } else {
+                console.error('Failed to save paper trade:', error.message);
+            }
         }
     }
 }
