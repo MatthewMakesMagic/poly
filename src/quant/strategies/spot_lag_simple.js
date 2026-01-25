@@ -918,6 +918,211 @@ export class UpOnlyChainlinkStrategy {
     getStats() { return { name: this.name, ...this.stats }; }
 }
 
+// ================================================================
+// CHAINLINK DIVERGENCE STRATEGY (NEW!)
+// Bet on Chainlink's side when it disagrees with Binance
+// Because Polymarket resolves using Chainlink, not Binance!
+// ================================================================
+
+/**
+ * Chainlink Divergence Strategy
+ * 
+ * THESIS: When Binance and Chainlink disagree on which side of the
+ * price_to_beat the price is, bet on CHAINLINK's side because:
+ * 1. Resolution uses Chainlink, not Binance
+ * 2. Most traders watch Binance, so market will be mispriced
+ * 3. Chainlink is slower to update, so it represents the "true" resolution price
+ * 
+ * Example from ETH trade:
+ * - Price to beat: $2,931.82
+ * - Binance: $2,931.32 (barely above) → Market shows UP at 98¢
+ * - Chainlink: $2,926.44 (well below) → Will resolve DOWN
+ * - Strategy: Buy DOWN (following Chainlink)
+ * - Result: DOWN wins because resolution uses Chainlink!
+ */
+export class ChainlinkDivergenceStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'CL_Divergence';
+        this.options = {
+            // Minimum divergence between Binance and Chainlink (as % of price)
+            minDivergence: 0.001,  // 0.1% minimum disagreement
+            
+            // Chainlink must be on opposite side of threshold by this margin
+            minChainlinkMargin: 0.0005,  // 0.05% buffer to avoid edge cases
+            
+            // Time constraints
+            minTimeRemaining: 60,   // At least 1 min left (for execution)
+            maxTimeRemaining: 600,  // Max 10 min (closer to expiry = more confident)
+            
+            // Market pricing constraint - don't buy if already expensive
+            maxEntryPrice: 0.70,    // Don't pay more than 70¢ (30%+ expected return)
+            
+            maxPosition: 100,
+            enabledCryptos: ['btc', 'eth', 'sol'],  // Not XRP (no Chainlink feed)
+            ...options
+        };
+        this.tradedThisWindow = {};
+        this.stats = { signals: 0, divergences_detected: 0 };
+    }
+    
+    getName() { return this.name; }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        // Position management - HOLD TO EXPIRY
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_mid : tick.down_mid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            return this.createSignal('hold', null, 'holding_to_expiry', { pnlPct });
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'wrong_time', { timeRemaining });
+        }
+        
+        // Get all price data
+        const strike = tick.price_to_beat;
+        const binancePrice = tick.spot_price;
+        const chainlinkPrice = tick.chainlink_price;
+        
+        // MUST have Chainlink data
+        if (!chainlinkPrice || !strike || !binancePrice) {
+            return this.createSignal('hold', null, 'missing_data');
+        }
+        
+        // Calculate divergence
+        const divergencePct = Math.abs(binancePrice - chainlinkPrice) / binancePrice;
+        
+        if (divergencePct < this.options.minDivergence) {
+            return this.createSignal('hold', null, 'insufficient_divergence', { 
+                divergence: (divergencePct * 100).toFixed(3) + '%'
+            });
+        }
+        
+        // Determine which side each source is on
+        const binanceUp = binancePrice > strike;
+        const chainlinkUp = chainlinkPrice > strike;
+        
+        // THE KEY CHECK: Do they disagree?
+        if (binanceUp === chainlinkUp) {
+            return this.createSignal('hold', null, 'sources_agree', {
+                both: binanceUp ? 'UP' : 'DOWN'
+            });
+        }
+        
+        this.stats.divergences_detected++;
+        
+        // They disagree! Bet on CHAINLINK's side
+        const betSide = chainlinkUp ? 'up' : 'down';
+        const entryPrice = chainlinkUp ? tick.up_ask : tick.down_ask;
+        
+        // Check entry price constraint
+        if (entryPrice > this.options.maxEntryPrice) {
+            return this.createSignal('hold', null, 'too_expensive', {
+                entryPrice: entryPrice.toFixed(2),
+                maxAllowed: this.options.maxEntryPrice
+            });
+        }
+        
+        // Check Chainlink margin (not right at the edge)
+        const chainlinkMargin = chainlinkUp 
+            ? (chainlinkPrice - strike) / strike
+            : (strike - chainlinkPrice) / strike;
+            
+        if (chainlinkMargin < this.options.minChainlinkMargin) {
+            return this.createSignal('hold', null, 'chainlink_too_close', {
+                margin: (chainlinkMargin * 100).toFixed(3) + '%'
+            });
+        }
+        
+        // ALL CONDITIONS MET - Trade on Chainlink's side!
+        this.stats.signals++;
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        console.log(`[CL_Divergence] 🎯 DIVERGENCE DETECTED ${crypto}:`);
+        console.log(`   Strike: $${strike.toFixed(2)}`);
+        console.log(`   Binance: $${binancePrice.toFixed(2)} → ${binanceUp ? 'UP' : 'DOWN'}`);
+        console.log(`   Chainlink: $${chainlinkPrice.toFixed(2)} → ${chainlinkUp ? 'UP' : 'DOWN'}`);
+        console.log(`   Betting: ${betSide.toUpperCase()} (following Chainlink)`);
+        
+        return this.createSignal('buy', betSide, 'chainlink_divergence', {
+            binancePrice: binancePrice.toFixed(2),
+            binanceSide: binanceUp ? 'UP' : 'DOWN',
+            chainlinkPrice: chainlinkPrice.toFixed(2),
+            chainlinkSide: chainlinkUp ? 'UP' : 'DOWN',
+            strike: strike.toFixed(2),
+            divergence: (divergencePct * 100).toFixed(2) + '%',
+            chainlinkMargin: (chainlinkMargin * 100).toFixed(2) + '%',
+            entryPrice: entryPrice.toFixed(2),
+            timeRemaining: Math.round(timeRemaining) + 's'
+        });
+    }
+    
+    createSignal(action, side, reason, analysis = {}) {
+        return { action, side, reason, size: this.options.maxPosition, ...analysis };
+    }
+    
+    onWindowStart(windowInfo) { this.tradedThisWindow = {}; }
+    onWindowEnd(windowInfo, outcome) {}
+    getStats() { return { name: this.name, ...this.stats }; }
+}
+
+/**
+ * Aggressive Chainlink Divergence - lower thresholds, trades more often
+ */
+export class ChainlinkDivergenceAggressiveStrategy extends ChainlinkDivergenceStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'CL_Divergence_Aggro',
+            minDivergence: 0.0005,      // 0.05% divergence (lower)
+            minChainlinkMargin: 0.0002, // Tighter margin
+            maxEntryPrice: 0.80,        // Pay up to 80¢
+            maxTimeRemaining: 780,      // Earlier entries OK
+            ...options
+        });
+    }
+}
+
+/**
+ * Conservative Chainlink Divergence - higher thresholds, fewer but higher confidence trades
+ */
+export class ChainlinkDivergenceConservativeStrategy extends ChainlinkDivergenceStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'CL_Divergence_Safe',
+            minDivergence: 0.002,       // 0.2% divergence required
+            minChainlinkMargin: 0.001,  // Wider margin required
+            maxEntryPrice: 0.50,        // Only cheap entries (50%+ expected return)
+            minTimeRemaining: 30,       // Can trade closer to expiry
+            maxTimeRemaining: 300,      // Only last 5 minutes
+            ...options
+        });
+    }
+}
+
+export function createCLDivergence(capital = 100) {
+    return new ChainlinkDivergenceStrategy({ maxPosition: capital });
+}
+
+export function createCLDivergenceAggro(capital = 100) {
+    return new ChainlinkDivergenceAggressiveStrategy({ maxPosition: capital });
+}
+
+export function createCLDivergenceSafe(capital = 100) {
+    return new ChainlinkDivergenceConservativeStrategy({ maxPosition: capital });
+}
+
 // Factory functions for Chainlink-confirmed strategies
 export function createSpotLagCLConfirmed(capital = 100) {
     return new SpotLagChainlinkConfirmedStrategy({ maxPosition: capital });

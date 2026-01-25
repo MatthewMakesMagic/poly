@@ -30,11 +30,17 @@ async function runMigrations() {
         // Initialize database connection first
         await initDatabase();
         
-        // Enable new trailing stop strategies (one-time migration)
+        // Enable new strategies (one-time migration)
         const newStrategies = [
+            // Trailing stop strategies
             'SpotLag_Trailing',
             'SpotLag_TrailTight',
-            'SpotLag_TrailWide'
+            'SpotLag_TrailWide',
+            // Chainlink divergence strategies (NEW!)
+            // Bet on Chainlink's side when it disagrees with Binance
+            'CL_Divergence',
+            'CL_Divergence_Aggro',
+            'CL_Divergence_Safe'
         ];
         
         for (const strat of newStrategies) {
