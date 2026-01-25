@@ -883,3 +883,44 @@ const filled = hasTxHash && hasSuccess && hasGoodStatus;
 - Orders placed, filled, rejected
 - Gross P&L, fees, net P&L
 - Average P&L per trade
+
+### January 25, 2026 (Later) - Balance Verification Fix
+
+**Problem Identified:** Valid trades were being rejected because RPC balance check returned 0 immediately after trade execution. Example: 36 BTC DOWN shares executed on-chain, but only 17 were tracked internally.
+
+**Root Cause:** Blockchain state propagation lag. When we check balance 10-50ms after trade, RPC node may not have updated yet, returning 0 tokens even though trade executed.
+
+**Solution - Trust TX Hash Over RPC Balance:**
+```javascript
+// Before (BROKEN):
+const postTradeBalance = await this.client.getBalance(tokenId);
+if (postTradeBalance === 0) {
+    // ❌ REJECT - even though trade executed on-chain!
+}
+
+// After (FIXED):
+// Retry 3 times with 500ms delays
+for (let attempt = 1; attempt <= 3; attempt++) {
+    await delay(500);
+    postTradeBalance = await this.client.getBalance(tokenId);
+    if (postTradeBalance > 0) break;
+}
+
+// CRITICAL: TX hash = blockchain proof, more reliable than RPC
+if (!balanceVerified && response.tx && response.txHashes?.length > 0) {
+    balanceVerified = true;  // Trust on-chain proof
+}
+```
+
+**Verification Priority:**
+| Factor | Priority | Reason |
+|--------|----------|--------|
+| TX Hash exists | **Highest** | Immutable on-chain proof |
+| Balance > 0 | Secondary | RPC can lag 1-10 seconds |
+| status=matched | Lowest | Just means order accepted |
+
+**Issue Also Identified - $1 Minimum Exit:**
+- Polymarket requires $1 minimum order value
+- When position value drops below $1, we CANNOT exit
+- Example: 17 shares @ $0.01 = $0.17 < $1 minimum → exit blocked
+- This needs future work: accumulate small positions or accept binary resolution
