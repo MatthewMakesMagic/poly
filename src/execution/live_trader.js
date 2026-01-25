@@ -46,7 +46,7 @@ export class LiveTrader extends EventEmitter {
         this.client = null;
         this.riskManager = new RiskManager({
             logger: this.logger,
-            maxPositionPerTrade: 2,  // Allow up to $2 to accommodate minimum order adjustments
+            maxPositionPerTrade: 3,  // Allow up to $3 to accommodate minimum order adjustments
             maxTotalExposure: 20,
             maxLossPerDay: 20,
             minBidSize: 2,           // Lower threshold for thin markets
@@ -264,8 +264,8 @@ export class LiveTrader extends EventEmitter {
         const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
         const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
         
-        // Add 2 cent buffer to cross the spread
-        const ENTRY_BUFFER = 0.02;
+        // Add 3 cent buffer to cross the spread
+        const ENTRY_BUFFER = 0.03;
         const rawPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
         const entryPrice = Math.min(rawPrice + ENTRY_BUFFER, 0.99);
         
@@ -437,8 +437,8 @@ export class LiveTrader extends EventEmitter {
         
         const tokenId = position.tokenId;
         
-        // Subtract 2 cent buffer to ensure sell fills
-        const EXIT_BUFFER = 0.02;
+        // Subtract 3 cent buffer to ensure sell fills
+        const EXIT_BUFFER = 0.03;
         const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
         const price = Math.max(rawPrice - EXIT_BUFFER, 0.01);
         
