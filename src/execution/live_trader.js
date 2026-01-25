@@ -261,7 +261,11 @@ export class LiveTrader extends EventEmitter {
         // Determine token side and price first
         const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
         const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
-        const entryPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
+        
+        // Add 1 cent buffer to cross the spread and ensure fill
+        const ENTRY_BUFFER = 0.01;
+        const rawPrice = tokenSide === 'UP' ? tick.up_ask : tick.down_ask;
+        const entryPrice = Math.min(rawPrice + ENTRY_BUFFER, 0.99);
         
         // Calculate actual position size (ensure minimum 5 shares for Polymarket)
         const actualSize = this.calculateMinimumSize(entryPrice, this.options.positionSize);
@@ -427,7 +431,11 @@ export class LiveTrader extends EventEmitter {
         }
         
         const tokenId = position.tokenId;
-        const price = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
+        
+        // Subtract 1 cent buffer to ensure sell fills
+        const EXIT_BUFFER = 0.01;
+        const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
+        const price = Math.max(rawPrice - EXIT_BUFFER, 0.01);
         
         this.logger.log(`[LiveTrader] 📉 EXECUTING LIVE EXIT: ${strategyName} | ${crypto} | ${position.tokenSide} | @ ${price.toFixed(3)}`);
         
