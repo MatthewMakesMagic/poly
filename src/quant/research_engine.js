@@ -162,11 +162,18 @@ export class ResearchEngine {
                     const liveTrader = getLiveTrader();
                     // Get market info for this crypto (need tokenIds)
                     const market = this.currentMarkets?.[crypto];
-                    if (market && liveTrader.isRunning) {
+                    
+                    if (!market) {
+                        // Market not available yet - skip silently
+                    } else if (!liveTrader.isRunning) {
+                        // LiveTrader not running - skip silently
+                    } else {
+                        // Log signal being sent to live trader
+                        console.log(`[LiveSignal] ${strategy.getName()} | ${crypto} | ${signal.action} ${signal.side} | enabled: ${liveTrader.enabledStrategies?.has(strategy.getName())}`);
                         liveTrader.processSignal(strategy.getName(), signal, tick, market);
                     }
                 } catch (e) {
-                    // Live trader not initialized or error - continue with paper trading
+                    console.error(`[LiveSignal] Error: ${e.message}`);
                 }
             }
             
