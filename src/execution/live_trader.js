@@ -46,9 +46,11 @@ export class LiveTrader extends EventEmitter {
         this.client = null;
         this.riskManager = new RiskManager({
             logger: this.logger,
-            maxPositionPerTrade: this.options.positionSize,
+            maxPositionPerTrade: 2,  // Allow up to $2 to accommodate minimum order adjustments
             maxTotalExposure: 20,
             maxLossPerDay: 20,
+            minBidSize: 2,           // Lower threshold for thin markets
+            minAskSize: 2,           // Lower threshold for thin markets
         });
         
         // State
