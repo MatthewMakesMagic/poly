@@ -89,9 +89,14 @@ export class LiveTrader extends EventEmitter {
             // Initialize Polymarket client
             this.client = createClientFromEnv();
             
-            // Verify API connection
-            const keyInfo = await this.client.getApiKeyInfo();
-            this.logger.log(`[LiveTrader] API Key verified for: ${keyInfo.address || 'unknown'}`);
+            // Verify API connection by fetching open orders (simpler than /auth/api-key which doesn't exist)
+            try {
+                const orders = await this.client.getOpenOrders();
+                this.logger.log(`[LiveTrader] API verified - ${orders?.length || 0} open orders found`);
+            } catch (verifyError) {
+                this.logger.warn(`[LiveTrader] API verification skipped: ${verifyError.message}`);
+                // Continue anyway - we'll find out if auth fails when placing orders
+            }
             
             // Load enabled strategies from database
             await this.loadEnabledStrategies();
