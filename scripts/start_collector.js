@@ -24,41 +24,58 @@ import { initDatabase, setLiveStrategyEnabled } from '../src/db/connection.js';
 
 console.log('🚀 Starting Polymarket Tick Collector...\n');
 
-// Run startup migrations
+// Run startup migrations - UPDATED Jan 2026 based on live data analysis
 async function runMigrations() {
     try {
         // Initialize database connection first
         await initDatabase();
         
-        // Enable new strategies (one-time migration)
-        const newStrategies = [
-            // Trailing stop strategies
-            'SpotLag_Trailing',
-            'SpotLag_TrailTight',
-            'SpotLag_TrailWide',
-            // CHAINLINK FINAL SECONDS ONLY - the "frozen Chainlink" edge
-            // In final 10-30s, Chainlink is locked. If it disagrees with market at cheap prices = 10-100x
-            'CL_FinalSeconds',
-            'CL_FinalSeconds_Ultra'
+        // =================================================================
+        // ENABLE - Strategies that WORK based on live trading data
+        // =================================================================
+        const toEnable = [
+            // PROVEN WINNERS from live data:
+            'SpotLag_Aggressive',     // 100% WR, +$2.54 - Best performer
+            'SpotLag_TP3',            // 75% WR, +$2.27 - Quick profit exits
+            'Endgame_Aggressive',     // 100% WR, +$0.15 - Late confirmation
+            'SpotLag_Trailing',       // 50% WR but trailing logic locks in gains
+            
+            // NEW DATA-DRIVEN STRATEGIES:
+            'SpotLag_LateValue',      // Late (60-180s) + cheap entry + strong lag
+            'SpotLag_DeepValue',      // Very cheap (<30c) + conviction play  
+            'SpotLag_CorrectSide',    // Only when spot on correct side + blocks deadzone
+            
+            // CHAINLINK FINAL SECONDS - test frozen Chainlink thesis
+            'CL_FinalSeconds',        // Final 30s
+            'CL_FinalSeconds_Ultra'   // Final 15s
         ];
         
-        for (const strat of newStrategies) {
+        for (const strat of toEnable) {
             await setLiveStrategyEnabled(strat, true);
             console.log(`✅ Enabled ${strat} for live trading`);
         }
         
-        // DISABLE strategies that trade too early (Chainlink can update before expiry)
-        // This runs AFTER enables to ensure they stay disabled
+        // =================================================================
+        // DISABLE - Strategies that DON'T WORK based on live data
+        // =================================================================
         const toDisable = [
-            'CL_Divergence',        // 60-600s remaining = Chainlink updates ~10x
-            'CL_Divergence_Aggro',  // 60-780s remaining = even worse
-            'CL_Divergence_Safe'    // 30-300s remaining = still risky
+            // EARLY CHAINLINK DIVERGENCE - 0% live win rate
+            'CL_Divergence',          // 0% WR in live
+            'CL_Divergence_Aggro',    // 0% WR in live
+            'CL_Divergence_Safe',     // 0% WR in live
+            
+            // UNDERPERFORMERS from live data:
+            'SpotLag_TrailWide',      // 17% WR, -$1.35 - too wide trailing
+            'SpotLag_TrailTight',     // Keep disabled for now
+            'SpotLag_TP6'             // Higher threshold underperformed TP3
         ];
         
         for (const strat of toDisable) {
             await setLiveStrategyEnabled(strat, false);
-            console.log(`❌ Disabled ${strat} (Chainlink can update before expiry)`);
+            console.log(`❌ Disabled ${strat} - underperformed in live data`);
         }
+        
+        console.log('\n📊 Strategy configuration updated based on live data analysis');
     } catch (error) {
         console.error('⚠️ Migration warning:', error.message);
         // Don't fail startup, just log warning

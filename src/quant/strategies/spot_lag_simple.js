@@ -1884,4 +1884,404 @@ export function createSpotLagVolAdapt(capital = 100) {
     return new SpotLag_VolatilityAdaptiveStrategy({ maxPosition: capital });
 }
 
+// ================================================================
+// NEW STRATEGIES BASED ON LIVE DATA ANALYSIS (Jan 2026)
+// ================================================================
+
+/**
+ * SpotLag_LateValue Strategy
+ * 
+ * THESIS: Late in the window (60-180s) + cheap entry (<50c) + strong lag
+ * This is the "dream scenario" - market disagrees with us, but we catch the move.
+ * 
+ * Key insight: Winners had cheap entries + big spot moves during trade.
+ * Late timing reduces reversal risk.
+ */
+export class SpotLag_LateValueStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_LateValue',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0003,  // 0.03% - need some movement
+            marketLagRatio: 0.5,
+            minTimeRemaining: 60,       // At least 1 min (for execution)
+            maxTimeRemaining: 180,      // Max 3 min (late game focus)
+            ...options
+        });
+        
+        // Additional constraints for this strategy
+        this.maxEntryPrice = options.maxEntryPrice || 0.50;  // Only cheap entries
+        this.minSpotDistFromStrike = options.minSpotDistFromStrike || 0.0005;  // 0.05% min (not pure noise)
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        // Hold to expiry if we have position
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            return this.createSignal('hold', null, 'holding_late_value', { 
+                pnlPct: (pnlPct * 100).toFixed(1) + '%' 
+            });
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        
+        // TIME GATE: Only 60-180s window
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'wrong_time_for_late_value', { 
+                timeRemaining,
+                required: '60-180s'
+            });
+        }
+        
+        // Get price context
+        const strike = tick.price_to_beat;
+        const spotPrice = tick.spot_price;
+        
+        if (!strike || !spotPrice) {
+            return this.createSignal('hold', null, 'missing_price_data');
+        }
+        
+        // Calculate spot distance from strike
+        const spotDistFromStrike = Math.abs(spotPrice - strike) / strike;
+        
+        // FILTER: Need some distance (not pure noise)
+        if (spotDistFromStrike < this.minSpotDistFromStrike) {
+            return this.createSignal('hold', null, 'spot_too_close_to_strike', {
+                distance: (spotDistFromStrike * 100).toFixed(3) + '%',
+                minRequired: (this.minSpotDistFromStrike * 100).toFixed(2) + '%'
+            });
+        }
+        
+        // Determine our bet direction from lag signal
+        const state = this.initCrypto(crypto);
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        if (state.spotHistory.length < this.options.lookbackTicks) {
+            return this.createSignal('hold', null, 'insufficient_history');
+        }
+        
+        // Calculate lag signal
+        const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
+        const newSpot = state.spotHistory[state.spotHistory.length - 1];
+        const spotMove = (newSpot - oldSpot) / oldSpot;
+        
+        if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
+            return this.createSignal('hold', null, 'spot_not_moving_enough');
+        }
+        
+        // Determine direction
+        const betSide = spotMove > 0 ? 'up' : 'down';
+        const entryPrice = betSide === 'up' ? tick.up_ask : tick.down_ask;
+        
+        // CHEAP ENTRY GATE: Must be under max entry price
+        if (entryPrice > this.maxEntryPrice) {
+            return this.createSignal('hold', null, 'entry_too_expensive', {
+                entryPrice: entryPrice.toFixed(2),
+                maxAllowed: this.maxEntryPrice.toFixed(2)
+            });
+        }
+        
+        // ALL CONDITIONS MET - Enter!
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        return this.createSignal('buy', betSide, 'late_value_entry', {
+            entryPrice: entryPrice.toFixed(2),
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            spotDistFromStrike: (spotDistFromStrike * 100).toFixed(3) + '%',
+            spotMove: (spotMove * 100).toFixed(3) + '%',
+            spotPrice: spotPrice.toFixed(2),
+            strike: strike.toFixed(2)
+        });
+    }
+}
+
+/**
+ * SpotLag_DeepValue Strategy
+ * 
+ * THESIS: Very cheap entries (<30c) with strong conviction
+ * High risk/reward - market strongly disagrees, but if we're right it's a big win.
+ * 
+ * From paper data: 2c-26c entries had best wins (+$98, +$90, +$88)
+ */
+export class SpotLag_DeepValueStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_DeepValue',
+            lookbackTicks: 10,
+            spotMoveThreshold: 0.0004,  // 0.04% - stronger signal required
+            marketLagRatio: 0.4,        // Market must be really lagging
+            minTimeRemaining: 90,       // At least 1.5 min
+            maxTimeRemaining: 300,      // Up to 5 min
+            ...options
+        });
+        
+        this.maxEntryPrice = options.maxEntryPrice || 0.30;  // Very cheap only
+        this.minSpotDistFromStrike = options.minSpotDistFromStrike || 0.0003;  // 0.03%
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            return this.createSignal('hold', null, 'holding_deep_value', { 
+                pnlPct: (pnlPct * 100).toFixed(1) + '%' 
+            });
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'wrong_time', { timeRemaining });
+        }
+        
+        const strike = tick.price_to_beat;
+        const spotPrice = tick.spot_price;
+        
+        if (!strike || !spotPrice) {
+            return this.createSignal('hold', null, 'missing_data');
+        }
+        
+        const spotDistFromStrike = Math.abs(spotPrice - strike) / strike;
+        if (spotDistFromStrike < this.minSpotDistFromStrike) {
+            return this.createSignal('hold', null, 'too_close_to_strike');
+        }
+        
+        // Build history
+        const state = this.initCrypto(crypto);
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        if (state.spotHistory.length < this.options.lookbackTicks) {
+            return this.createSignal('hold', null, 'insufficient_history');
+        }
+        
+        // Calculate lag
+        const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
+        const newSpot = state.spotHistory[state.spotHistory.length - 1];
+        const spotMove = (newSpot - oldSpot) / oldSpot;
+        
+        const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
+        const newMarket = state.marketHistory[state.marketHistory.length - 1];
+        const marketMove = newMarket - oldMarket;
+        
+        // Expected market move
+        const expectedMarketMove = spotMove * 0.5;
+        
+        if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
+            return this.createSignal('hold', null, 'spot_not_moving');
+        }
+        
+        // Check if market is lagging
+        if (Math.abs(marketMove) > Math.abs(expectedMarketMove) * this.options.marketLagRatio) {
+            return this.createSignal('hold', null, 'market_not_lagging');
+        }
+        
+        const betSide = spotMove > 0 ? 'up' : 'down';
+        const entryPrice = betSide === 'up' ? tick.up_ask : tick.down_ask;
+        
+        // DEEP VALUE GATE: Must be very cheap
+        if (entryPrice > this.maxEntryPrice) {
+            return this.createSignal('hold', null, 'not_deep_value', {
+                entryPrice: entryPrice.toFixed(2),
+                maxAllowed: this.maxEntryPrice.toFixed(2)
+            });
+        }
+        
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        return this.createSignal('buy', betSide, 'deep_value_entry', {
+            entryPrice: entryPrice.toFixed(2),
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            spotDistFromStrike: (spotDistFromStrike * 100).toFixed(3) + '%',
+            spotMove: (spotMove * 100).toFixed(3) + '%',
+            marketMove: (marketMove * 100).toFixed(2) + '%',
+            spotPrice: spotPrice.toFixed(2),
+            strike: strike.toFixed(2)
+        });
+    }
+}
+
+/**
+ * SpotLag_CorrectSideOnly Strategy
+ * 
+ * THESIS: Only enter when spot is ALREADY on the correct side of strike.
+ * From live data: 65.4% WR when correct side vs 14.3% when wrong side.
+ * 
+ * This is the "confirmation" play - lower risk, consistent returns.
+ */
+export class SpotLag_CorrectSideOnlyStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_CorrectSide',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0002,
+            marketLagRatio: 0.6,
+            minTimeRemaining: 60,   // Skip the deadzone
+            maxTimeRemaining: 600,
+            ...options
+        });
+        
+        this.minSpotMargin = options.minSpotMargin || 0.0005;  // 0.05% - spot must be clearly on one side
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            return this.createSignal('hold', null, 'holding_correct_side', { 
+                pnlPct: (pnlPct * 100).toFixed(1) + '%' 
+            });
+        }
+        
+        const windowEpoch = tick.window_epoch;
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+        
+        const timeRemaining = tick.time_remaining_sec || 0;
+        
+        // DEADZONE BLOCK: Skip 2-5min (120-300s) - 8% WR death zone
+        if (timeRemaining >= 120 && timeRemaining <= 300) {
+            return this.createSignal('hold', null, 'deadzone_blocked', {
+                timeRemaining,
+                reason: '2-5min has 8% WR'
+            });
+        }
+        
+        if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'wrong_time', { timeRemaining });
+        }
+        
+        const strike = tick.price_to_beat;
+        const spotPrice = tick.spot_price;
+        
+        if (!strike || !spotPrice) {
+            return this.createSignal('hold', null, 'missing_data');
+        }
+        
+        // Calculate spot's position relative to strike
+        const spotMargin = (spotPrice - strike) / strike;  // Positive = above strike
+        const spotAboveStrike = spotMargin > 0;
+        
+        // Check if spot has enough margin (not noise)
+        if (Math.abs(spotMargin) < this.minSpotMargin) {
+            return this.createSignal('hold', null, 'spot_too_close_to_strike', {
+                margin: (spotMargin * 100).toFixed(3) + '%',
+                minRequired: (this.minSpotMargin * 100).toFixed(2) + '%'
+            });
+        }
+        
+        // Build history for lag check
+        const state = this.initCrypto(crypto);
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        if (state.spotHistory.length < this.options.lookbackTicks) {
+            return this.createSignal('hold', null, 'insufficient_history');
+        }
+        
+        // Calculate lag
+        const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
+        const newSpot = state.spotHistory[state.spotHistory.length - 1];
+        const spotMove = (newSpot - oldSpot) / oldSpot;
+        
+        if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
+            return this.createSignal('hold', null, 'spot_not_moving');
+        }
+        
+        // Determine bet from lag
+        const lagSide = spotMove > 0 ? 'up' : 'down';
+        const spotSide = spotAboveStrike ? 'up' : 'down';
+        
+        // CORRECT SIDE GATE: Lag must agree with spot's current side
+        if (lagSide !== spotSide) {
+            return this.createSignal('hold', null, 'lag_disagrees_with_spot', {
+                spotSide,
+                lagSide,
+                reason: 'Only enter when lag confirms spot position'
+            });
+        }
+        
+        const entryPrice = lagSide === 'up' ? tick.up_ask : tick.down_ask;
+        
+        this.tradedThisWindow[crypto] = windowEpoch;
+        
+        return this.createSignal('buy', lagSide, 'correct_side_confirmed', {
+            entryPrice: entryPrice.toFixed(2),
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            spotMargin: (spotMargin * 100).toFixed(3) + '%',
+            spotMove: (spotMove * 100).toFixed(3) + '%',
+            spotPrice: spotPrice.toFixed(2),
+            strike: strike.toFixed(2),
+            side: spotSide
+        });
+    }
+}
+
+// Factory functions for new strategies
+export function createSpotLagLateValue(capital = 100) {
+    return new SpotLag_LateValueStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagDeepValue(capital = 100) {
+    return new SpotLag_DeepValueStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagCorrectSide(capital = 100) {
+    return new SpotLag_CorrectSideOnlyStrategy({ maxPosition: capital });
+}
+
 export default SpotLagSimpleStrategy;
