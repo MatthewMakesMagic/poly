@@ -47,7 +47,7 @@ const DEFAULT_RISK_PARAMS = {
     maxLossPerTrade: 1,          // $1 max loss per trade
     maxLossPerHour: 5,           // $5 max loss per hour
     maxLossPerDay: 20,           // $20 max loss per day
-    stopTradingAfterConsecutiveLosses: 5,  // Stop after 5 losses in a row
+    stopTradingAfterConsecutiveLosses: 50,  // Effectively disabled - let strategies run
     
     // Slippage protection
     maxSlippagePercent: 5,       // Max 5% slippage from expected price

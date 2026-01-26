@@ -51,7 +51,7 @@ export class LiveTrader extends EventEmitter {
             maxLossPerDay: 20,
             minBidSize: 2,           // Lower threshold for thin markets
             minAskSize: 2,           // Lower threshold for thin markets
-            stopTradingAfterConsecutiveLosses: 10,  // Increased from 5 - too aggressive for binary markets
+            stopTradingAfterConsecutiveLosses: 50,  // Effectively disabled - let strategies run, we have other risk controls
         });
         
         // State

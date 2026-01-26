@@ -186,7 +186,7 @@ echo "Emergency stop" > KILL_SWITCH
 | `maxLossPerTrade` | $1 | Stop loss per trade |
 | `maxLossPerHour` | $5 | Hourly loss limit |
 | `maxLossPerDay` | $20 | Daily loss limit |
-| `stopTradingAfterConsecutiveLosses` | 5 | Auto-stop after streak |
+| `stopTradingAfterConsecutiveLosses` | 50 | Auto-stop after streak (effectively disabled) |
 
 #### Market Quality Checks
 - Minimum bid/ask size: $10
