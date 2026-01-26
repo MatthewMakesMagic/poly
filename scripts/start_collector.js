@@ -26,9 +26,51 @@ if (process.env.PROXY_URL) {
 }
 
 import { TickCollector } from '../src/collectors/tick_collector.js';
-import { initDatabase, setLiveStrategyEnabled } from '../src/db/connection.js';
+import { initDatabase, setLiveStrategyEnabled, getLiveEnabledStrategies } from '../src/db/connection.js';
+import { createAllQuantStrategies } from '../src/quant/strategies/index.js';
 
 console.log('🚀 Starting Polymarket Tick Collector...\n');
+
+// =============================================================================
+// HEALTH CHECK: Verify DB strategies match code strategies
+// This prevents silent failures when strategies are enabled but don't exist
+// =============================================================================
+async function verifyStrategySync() {
+    console.log('\n🔍 Verifying strategy sync between code and database...');
+
+    // Get all strategy names from code
+    const codeStrategies = new Set(createAllQuantStrategies(100).map(s => s.getName()));
+
+    // Get enabled strategies from database
+    let dbEnabled;
+    try {
+        dbEnabled = await getLiveEnabledStrategies();
+    } catch (e) {
+        console.warn('⚠️  Could not check DB strategies:', e.message);
+        return;
+    }
+
+    // Check for mismatches
+    const missingInCode = dbEnabled.filter(name => !codeStrategies.has(name));
+
+    if (missingInCode.length > 0) {
+        console.error('❌ CRITICAL: Strategies enabled in DB but NOT in code:');
+        for (const name of missingInCode) {
+            console.error(`   - ${name}`);
+        }
+        console.error('   These strategies will NOT trade! Add them to code or disable in DB.');
+    } else {
+        console.log('✅ All enabled strategies exist in code');
+    }
+
+    // Log what's actually enabled
+    console.log(`\n📊 Live trading enabled for ${dbEnabled.length} strategies:`);
+    for (const name of dbEnabled) {
+        const inCode = codeStrategies.has(name) ? '✓' : '❌';
+        console.log(`   ${inCode} ${name}`);
+    }
+    console.log('');
+}
 
 // Run startup migrations - UPDATED Jan 2026 based on live data analysis
 async function runMigrations() {
@@ -136,6 +178,9 @@ async function runMigrations() {
 
 // Run migrations before starting collector
 await runMigrations();
+
+// Verify strategy sync (alerts if DB strategies don't exist in code)
+await verifyStrategySync();
 
 let collector = null;
 let restartCount = 0;
