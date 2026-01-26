@@ -37,11 +37,11 @@ async function runMigrations() {
         await initDatabase();
         
         // =================================================================
-        // ENABLE - Strategies based on Jan 2026 fair value analysis
-        // Key insight: Market prices time correctly, edge is in SPEED
+        // ENABLE - ONLY new time-aware SpotLag strategies + Endgame
+        // All other SpotLag strategies are DISABLED for live trading
         // =================================================================
         const toEnable = [
-            // NEW TIME-AWARE STRATEGIES (v2) - fair value validated
+            // NEW TIME-AWARE STRATEGIES (v2) - the only SpotLag we should trade live
             'SpotLag_TimeAware',       // Base time-aware strategy
             'SpotLag_TimeAwareAggro',  // Aggressive variant
             'SpotLag_TimeAwareSafe',   // Conservative variant
@@ -49,21 +49,12 @@ async function runMigrations() {
             'SpotLag_LateOnly',        // Late window only
             'SpotLag_ProbEdge',        // Probability edge based
 
-            // TOP PERFORMERS - proven profitable
-            'SpotLag_Aggressive',      // +$4,735 PnL
-            'SpotLag_Fast',            // +$3,678 PnL
-            'SpotLagSimple',           // +$2,276 PnL
-
-            // ENDGAME - near-resolution plays
+            // ENDGAME - near-resolution plays (proven safe)
             'Endgame',
             'Endgame_Aggressive',
             'Endgame_Conservative',
             'Endgame_Safe',
             'Endgame_Momentum',
-
-            // TAKE-PROFIT strategies
-            'SpotLag_TP3',
-            'SpotLag_TP3_Trailing'
         ];
 
         for (const strat of toEnable) {
@@ -72,12 +63,47 @@ async function runMigrations() {
         }
 
         // =================================================================
-        // DISABLE - Fair Value strategies (proven losers: -$6,766 total)
+        // DISABLE - ALL old SpotLag strategies (not time-aware)
+        // Also disable Fair Value and Contrarian
         // =================================================================
         const toDisable = [
-            'FairValue_RealizedVol',   // -$2,724 loss
-            'FairValue_EWMA',          // -$3,068 loss
-            'FairValue_WithDrift',     // -$974 loss
+            // OLD SPOTLAG - not time-aware, disable for live
+            'SpotLag_Aggressive',
+            'SpotLag_Fast',
+            'SpotLagSimple',
+            'SpotLag_Confirmed',
+            'SpotLag_TP3',
+            'SpotLag_TP3_Trailing',
+            'SpotLag_TP6',
+            'SpotLag_VolAdapt',
+            'SpotLag_Trailing',
+            'SpotLag_TrailTight',
+            'SpotLag_TrailWide',
+            'SpotLag_LateValue',
+            'SpotLag_DeepValue',
+            'SpotLag_CorrectSide',
+            'SpotLag_ExtremeReversal',
+            'SpotLag_CLConfirmed',
+            'SpotLag_Aggressive_CL',
+
+            // Mispricing
+            'MispricingOnly',
+            'Mispricing_Strict',
+            'Mispricing_Loose',
+            'Mispricing_CLConfirmed',
+            'UpOnly_CLConfirmed',
+
+            // Chainlink divergence
+            'CL_Divergence',
+            'CL_Divergence_Aggro',
+            'CL_Divergence_Safe',
+            'CL_FinalSeconds',
+            'CL_FinalSeconds_Ultra',
+
+            // Fair Value - proven losers
+            'FairValue_RealizedVol',
+            'FairValue_EWMA',
+            'FairValue_WithDrift',
             'FV_Drift_1H',
             'FV_Drift_4H',
             'FV_Drift_24H',
@@ -87,12 +113,18 @@ async function runMigrations() {
             'Contrarian',
             'Contrarian_SOL',
             'Contrarian_Scalp',
-            'Contrarian_Strong'
+            'Contrarian_Strong',
+
+            // Other
+            'TimeConditional',
+            'Microstructure',
+            'CrossAsset',
+            'Regime',
         ];
 
         for (const strat of toDisable) {
             await setLiveStrategyEnabled(strat, false);
-            console.log(`❌ Disabled ${strat} - losing strategy`);
+            console.log(`❌ Disabled ${strat} for live trading`);
         }
         
         console.log('\n📊 Strategy configuration updated based on live data analysis');
