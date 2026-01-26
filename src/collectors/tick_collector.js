@@ -14,6 +14,7 @@ import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearc
 import { getResearchEngine } from '../quant/research_engine.js';
 import { startDashboard, sendTick, sendStrategyComparison, sendMetrics } from '../dashboard/server.js';
 import { getChainlinkCollector } from './chainlink_prices.js';
+import { getMultiSourcePriceCollector } from './multi_source_prices.js';
 
 // Configuration
 const CONFIG = {
@@ -74,6 +75,9 @@ class TickCollector {
         // Chainlink oracle prices (used for actual resolution)
         this.chainlinkCollector = null;
         this.chainlinkPrices = {};  // crypto -> { price, staleness, updatedAt }
+
+        // Multi-source price collector (Pyth, Coinbase, Kraken, OKX, CoinCap, CoinGecko, RedStone)
+        this.multiSourceCollector = null;
     }
     
     /**
@@ -129,6 +133,19 @@ class TickCollector {
             console.log('   Will continue with Binance prices only');
             this.chainlinkCollector = null;
         }
+
+        // Initialize multi-source price collector
+        // Provides Pyth, Coinbase, Kraken, OKX, CoinCap, CoinGecko, RedStone prices
+        // Used for oracle comparison analysis and strategy optimization
+        try {
+            this.multiSourceCollector = await getMultiSourcePriceCollector();
+            this.multiSourceCollector.startPolling();
+            console.log('✅ Multi-source price feeds initialized');
+        } catch (error) {
+            console.error('⚠️  Multi-source collector initialization failed:', error.message);
+            console.log('   Will continue without multi-source prices');
+            this.multiSourceCollector = null;
+        }
         
         // Set up periodic tasks
         this.setupPeriodicTasks();
@@ -160,6 +177,9 @@ class TickCollector {
         }
         if (this.coinGeckoInterval) {
             clearInterval(this.coinGeckoInterval);
+        }
+        if (this.multiSourceCollector) {
+            this.multiSourceCollector.stop();
         }
         
         // Save state
@@ -609,6 +629,53 @@ class TickCollector {
                 }
             }
             
+            // Get multi-source prices for oracle comparison analysis
+            let pythPrice = null;
+            let pythStaleness = null;
+            let coinbasePrice = null;
+            let krakenPrice = null;
+            let okxPrice = null;
+            let coincapPrice = null;
+            let coingeckoPrice = null;
+            let redstonePrice = null;
+            let consensusPrice = null;
+            let sourceCount = 0;
+            let priceSpreadPct = null;
+
+            if (this.multiSourceCollector) {
+                const pythData = this.multiSourceCollector.getPrice('pyth', crypto);
+                if (pythData) {
+                    pythPrice = pythData.price;
+                    pythStaleness = pythData.staleness;
+                }
+
+                const cbData = this.multiSourceCollector.getPrice('coinbase', crypto);
+                if (cbData) coinbasePrice = cbData.price;
+
+                const krData = this.multiSourceCollector.getPrice('kraken', crypto);
+                if (krData) krakenPrice = krData.price;
+
+                const okxData = this.multiSourceCollector.getPrice('okx', crypto);
+                if (okxData) okxPrice = okxData.price;
+
+                const ccData = this.multiSourceCollector.getPrice('coincap', crypto);
+                if (ccData) coincapPrice = ccData.price;
+
+                const cgData = this.multiSourceCollector.getPrice('coingecko', crypto);
+                if (cgData) coingeckoPrice = cgData.price;
+
+                const rsData = this.multiSourceCollector.getPrice('redstone', crypto);
+                if (rsData) redstonePrice = rsData.price;
+
+                // Get consensus metrics
+                const consensus = this.multiSourceCollector.getConsensusPrice(crypto);
+                if (consensus) {
+                    consensusPrice = consensus.price;
+                    sourceCount = consensus.sourceCount;
+                    priceSpreadPct = consensus.spreadPct;
+                }
+            }
+
             // LOCK IN price_to_beat on first tick of window
             // This is the strike price - it should NOT change during the window!
             if (!market.priceToBeatLocked && spotPrice > 0) {
@@ -665,7 +732,22 @@ class TickCollector {
                 // Key insight: If divergence is positive and significant, Binance shows UP
                 // but Chainlink (resolution) might not agree yet
                 price_divergence: priceDivergence,
-                price_divergence_pct: priceDivergencePct
+                price_divergence_pct: priceDivergencePct,
+
+                // Multi-source price data for oracle comparison analysis
+                pyth_price: pythPrice,
+                pyth_staleness: pythStaleness,
+                coinbase_price: coinbasePrice,
+                kraken_price: krakenPrice,
+                okx_price: okxPrice,
+                coincap_price: coincapPrice,
+                coingecko_price: coingeckoPrice,
+                redstone_price: redstonePrice,
+
+                // Multi-source consensus
+                consensus_price: consensusPrice,
+                source_count: sourceCount,
+                price_spread_pct: priceSpreadPct
             };
             
             // Process tick through research engine
@@ -870,8 +952,25 @@ class TickCollector {
                     }
                 }
                 
-                console.log(`   ${crypto.toUpperCase()}: Binance $${price.toLocaleString()} | Up ${bestBid.price}/${bestAsk.price}${clInfo}`);
+                // Get multi-source consensus
+                let msInfo = '';
+                if (this.multiSourceCollector) {
+                    const consensus = this.multiSourceCollector.getConsensusPrice(crypto);
+                    if (consensus && consensus.sourceCount > 0) {
+                        msInfo = ` | ${consensus.sourceCount} sources, spread ${consensus.spreadPct.toFixed(3)}%`;
+                    }
+                }
+
+                console.log(`   ${crypto.toUpperCase()}: Binance $${price.toLocaleString()} | Up ${bestBid.price}/${bestAsk.price}${clInfo}${msInfo}`);
             }
+        }
+
+        // Log multi-source collector stats
+        if (this.multiSourceCollector) {
+            const msStats = this.multiSourceCollector.getStats();
+            const activeCount = Object.values(msStats.sources).filter(s => !s.disabled).length;
+            const totalSources = Object.keys(msStats.sources).length;
+            console.log(`\n   🌐 Multi-Source: ${activeCount}/${totalSources} active, ${msStats.tickCount} ticks emitted`);
         }
         
         // Log and save research engine stats

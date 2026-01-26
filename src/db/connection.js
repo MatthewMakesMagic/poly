@@ -14,7 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Database mode
-const USE_POSTGRES = !!process.env.DATABASE_URL;
+export const USE_POSTGRES = !!process.env.DATABASE_URL;
 
 // PostgreSQL pool
 let pgPool = null;
@@ -56,7 +56,7 @@ function initPostgres() {
 /**
  * Recreate pool if it's dead
  */
-function ensurePool() {
+export function ensurePool() {
     if (!pgPool) {
         return initPostgres();
     }
@@ -145,11 +145,14 @@ export async function insertTick(tick) {
                 spread, spread_pct, implied_prob_up,
                 up_book_depth, down_book_depth,
                 chainlink_price, chainlink_staleness, chainlink_updated_at,
-                price_divergence, price_divergence_pct
+                price_divergence, price_divergence_pct,
+                pyth_price, pyth_staleness, coinbase_price, kraken_price,
+                okx_price, coincap_price, coingecko_price, redstone_price,
+                consensus_price, source_count, price_spread_pct
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-                $25, $26, $27, $28, $29
+                $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40
             )
         `;
         const values = [
@@ -160,7 +163,10 @@ export async function insertTick(tick) {
             tick.spread, tick.spread_pct, tick.implied_prob_up,
             tick.up_book_depth, tick.down_book_depth,
             tick.chainlink_price, tick.chainlink_staleness, tick.chainlink_updated_at,
-            tick.price_divergence, tick.price_divergence_pct
+            tick.price_divergence, tick.price_divergence_pct,
+            tick.pyth_price, tick.pyth_staleness, tick.coinbase_price, tick.kraken_price,
+            tick.okx_price, tick.coincap_price, tick.coingecko_price, tick.redstone_price,
+            tick.consensus_price, tick.source_count, tick.price_spread_pct
         ];
         return pool.query(query, values);
     } else {
@@ -174,7 +180,10 @@ export async function insertTick(tick) {
                 spread, spread_pct, implied_prob_up,
                 up_book_depth, down_book_depth,
                 chainlink_price, chainlink_staleness, chainlink_updated_at,
-                price_divergence, price_divergence_pct
+                price_divergence, price_divergence_pct,
+                pyth_price, pyth_staleness, coinbase_price, kraken_price,
+                okx_price, coincap_price, coingecko_price, redstone_price,
+                consensus_price, source_count, price_spread_pct
             ) VALUES (
                 @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
                 @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
@@ -183,7 +192,10 @@ export async function insertTick(tick) {
                 @spread, @spread_pct, @implied_prob_up,
                 @up_book_depth, @down_book_depth,
                 @chainlink_price, @chainlink_staleness, @chainlink_updated_at,
-                @price_divergence, @price_divergence_pct
+                @price_divergence, @price_divergence_pct,
+                @pyth_price, @pyth_staleness, @coinbase_price, @kraken_price,
+                @okx_price, @coincap_price, @coingecko_price, @redstone_price,
+                @consensus_price, @source_count, @price_spread_pct
             )
         `);
         return stmt.run(tick);
@@ -196,14 +208,14 @@ export async function insertTick(tick) {
  */
 export async function insertTicksBatch(ticks) {
     if (!ticks || ticks.length === 0) return;
-    
+
     if (USE_POSTGRES) {
         const pool = ensurePool();
         let client;
         try {
             client = await pool.connect();
             await client.query('BEGIN');
-            
+
             // Insert each tick using the SAME client (not calling insertTick which gets new connection)
             const query = `
                 INSERT INTO ticks (
@@ -214,10 +226,13 @@ export async function insertTicksBatch(ticks) {
                     spread, spread_pct, implied_prob_up,
                     up_book_depth, down_book_depth,
                     chainlink_price, chainlink_staleness, chainlink_updated_at,
-                    price_divergence, price_divergence_pct
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+                    price_divergence, price_divergence_pct,
+                    pyth_price, pyth_staleness, coinbase_price, kraken_price,
+                    okx_price, coincap_price, coingecko_price, redstone_price,
+                    consensus_price, source_count, price_spread_pct
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
             `;
-            
+
             for (const tick of ticks) {
                 const values = [
                     tick.timestamp_ms, tick.crypto, tick.window_epoch, tick.time_remaining_sec,
@@ -227,11 +242,14 @@ export async function insertTicksBatch(ticks) {
                     tick.spread, tick.spread_pct, tick.implied_prob_up,
                     tick.up_book_depth, tick.down_book_depth,
                     tick.chainlink_price, tick.chainlink_staleness, tick.chainlink_updated_at,
-                    tick.price_divergence, tick.price_divergence_pct
+                    tick.price_divergence, tick.price_divergence_pct,
+                    tick.pyth_price, tick.pyth_staleness, tick.coinbase_price, tick.kraken_price,
+                    tick.okx_price, tick.coincap_price, tick.coingecko_price, tick.redstone_price,
+                    tick.consensus_price, tick.source_count, tick.price_spread_pct
                 ];
                 await client.query(query, values);
             }
-            
+
             await client.query('COMMIT');
         } catch (e) {
             if (client) {
@@ -254,7 +272,10 @@ export async function insertTicksBatch(ticks) {
                 spread, spread_pct, implied_prob_up,
                 up_book_depth, down_book_depth,
                 chainlink_price, chainlink_staleness, chainlink_updated_at,
-                price_divergence, price_divergence_pct
+                price_divergence, price_divergence_pct,
+                pyth_price, pyth_staleness, coinbase_price, kraken_price,
+                okx_price, coincap_price, coingecko_price, redstone_price,
+                consensus_price, source_count, price_spread_pct
             ) VALUES (
                 @timestamp_ms, @crypto, @window_epoch, @time_remaining_sec,
                 @up_bid, @up_ask, @up_bid_size, @up_ask_size, @up_last_trade, @up_mid,
@@ -263,7 +284,10 @@ export async function insertTicksBatch(ticks) {
                 @spread, @spread_pct, @implied_prob_up,
                 @up_book_depth, @down_book_depth,
                 @chainlink_price, @chainlink_staleness, @chainlink_updated_at,
-                @price_divergence, @price_divergence_pct
+                @price_divergence, @price_divergence_pct,
+                @pyth_price, @pyth_staleness, @coinbase_price, @kraken_price,
+                @okx_price, @coincap_price, @coingecko_price, @redstone_price,
+                @consensus_price, @source_count, @price_spread_pct
             )
         `);
         const insertMany = db.transaction((ticks) => {

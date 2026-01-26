@@ -49,7 +49,22 @@ CREATE TABLE IF NOT EXISTS ticks (
     
     -- Price divergence between Binance (display) and Chainlink (resolution)
     price_divergence REAL,          -- Binance - Chainlink (positive = Binance higher)
-    price_divergence_pct REAL       -- Divergence as percentage
+    price_divergence_pct REAL,      -- Divergence as percentage
+
+    -- Multi-source price data (for oracle comparison analysis)
+    pyth_price REAL,                -- Pyth Network oracle price
+    pyth_staleness INTEGER,         -- Seconds since Pyth update
+    coinbase_price REAL,            -- Coinbase exchange price
+    kraken_price REAL,              -- Kraken exchange price
+    okx_price REAL,                 -- OKX exchange price
+    coincap_price REAL,             -- CoinCap aggregator price
+    coingecko_price REAL,           -- CoinGecko aggregator price
+    redstone_price REAL,            -- RedStone oracle price
+
+    -- Multi-source consensus
+    consensus_price REAL,           -- Median of all available sources
+    source_count INTEGER,           -- Number of sources with data
+    price_spread_pct REAL           -- Max-min spread as percentage of consensus
 );
 
 -- Index for fast queries
