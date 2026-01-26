@@ -41,7 +41,7 @@ const DEFAULT_RISK_PARAMS = {
     maxPositionPerTrade: 1,      // $1 per trade (start small!)
     maxPositionPerWindow: 5,     // $5 max exposure per 15-min window
     maxTotalExposure: 20,        // $20 max total exposure across all positions
-    maxOpenOrders: 5,            // Max concurrent open orders
+    maxOpenOrders: 10,           // Max concurrent open positions (4 cryptos * 2+ overlapping windows)
     
     // Loss limits
     maxLossPerTrade: 1,          // $1 max loss per trade
@@ -487,21 +487,28 @@ export class RiskManager extends EventEmitter {
      */
     recordTradeOpen(trade) {
         const windowKey = `${trade.crypto}_${trade.windowEpoch}`;
-        
+
+        // Check if this is a NEW position or adding to existing
+        const existing = this.state.openPositions.get(windowKey);
+        const isNewPosition = !existing || existing.size === 0;
+
         // Update window exposure
-        const existing = this.state.openPositions.get(windowKey) || { size: 0, side: null };
         this.state.openPositions.set(windowKey, {
-            size: existing.size + trade.size,
+            size: (existing?.size || 0) + trade.size,
             side: trade.side
         });
-        
+
         // Update total exposure
         this.state.totalExposure += trade.size;
-        this.state.openOrderCount++;
         this.state.lastTradeTime = Date.now();
         this.state.dailyTrades++;
-        
-        this.logger.log(`[RiskManager] Trade opened: $${trade.size} on ${windowKey}. Total exposure: $${this.state.totalExposure}`);
+
+        // Only increment openOrderCount for NEW positions, not additions to existing
+        if (isNewPosition) {
+            this.state.openOrderCount++;
+        }
+
+        this.logger.log(`[RiskManager] Trade opened: $${trade.size} on ${windowKey}. Total exposure: $${this.state.totalExposure}, Open orders: ${this.state.openOrderCount}`);
     }
     
     /**
