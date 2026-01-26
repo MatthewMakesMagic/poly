@@ -33,15 +33,19 @@ async function runMigrations() {
         // =================================================================
         // ENABLE - Strategies that WORK based on live trading data
         // =================================================================
-        // OVERNIGHT MODE: Only Endgame strategies (near-resolution plays)
-        // All SpotLag and CL strategies disabled pending thesis validation
+        // LIVE STRATEGIES - Validated or testing
         // =================================================================
         const toEnable = [
+            // ENDGAME - near-resolution plays
             'Endgame',                // Base endgame strategy
             'Endgame_Aggressive',     // More aggressive endgame
             'Endgame_Conservative',   // Conservative endgame
             'Endgame_Safe',           // Safest endgame variant
-            'Endgame_Momentum'        // Momentum-based endgame
+            'Endgame_Momentum',       // Momentum-based endgame
+            
+            // TAKE-PROFIT strategies - monetize catch-up quickly
+            'SpotLag_TP3',            // Fixed 3% take-profit
+            'SpotLag_TP3_Trailing'    // NEW: 3% TP OR trailing for big winners
         ];
         
         for (const strat of toEnable) {
@@ -53,9 +57,9 @@ async function runMigrations() {
         // DISABLE ALL - SpotLag thesis under review
         // =================================================================
         const toDisable = [
-            // ALL SPOTLAG - thesis unproven
+            // SPOTLAG - thesis unproven (except TP variants)
             'SpotLag_Aggressive',
-            'SpotLag_TP3',
+            // 'SpotLag_TP3',         // ENABLED - quick profit exit
             'SpotLag_Trailing',
             'SpotLag_LateValue',
             'SpotLag_DeepValue',

@@ -1524,6 +1524,156 @@ export function createSpotLagTP6(capital = 100) {
 }
 
 // ================================================================
+// TP3 + TRAILING HYBRID STRATEGY
+// Quick profit OR let winners run
+// ================================================================
+
+/**
+ * SpotLag_TP3_Trailing - Hybrid Strategy
+ * 
+ * THESIS: TP3 exits too early on big winners. This hybrid:
+ * 1. Takes quick 3% profit if momentum fades
+ * 2. BUT if profit exceeds 5%, activates trailing to capture bigger moves
+ * 
+ * Logic:
+ * - If profit hits 3% but momentum is fading → EXIT (like TP3)
+ * - If profit exceeds 5% → activate trailing stop
+ * - Trail 8% below peak, floor at 4%
+ * - Let winners run to 20%+ while protecting gains
+ */
+export class SpotLag_TP3_TrailingStrategy extends SpotLagSimpleStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_TP3_Trailing',
+            lookbackTicks: 8,
+            spotMoveThreshold: 0.0002,
+            marketLagRatio: 0.6,
+            
+            // Take-profit threshold (quick exit)
+            takeProfitThreshold: 0.03,  // 3%
+            
+            // Trailing activation (let winners run)
+            trailingActivation: 0.05,   // Activate at 5%
+            trailPercent: 0.08,         // Trail 8% below peak
+            profitFloor: 0.04,          // Never below 4% once trailing
+            
+            ...options
+        });
+        
+        this.highWaterMark = {};
+        this.trailingActivated = {};
+    }
+    
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+        
+        const state = this.initCrypto(crypto);
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+        
+        // Update history
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+        
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+        
+        // POSITION MANAGEMENT - HYBRID TP3 + TRAILING
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+            
+            // Update high-water mark
+            if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
+                this.highWaterMark[crypto] = currentPrice;
+            }
+            
+            const hwm = this.highWaterMark[crypto];
+            
+            // Check if trailing should activate
+            if (!this.trailingActivated[crypto] && pnlPct >= this.options.trailingActivation) {
+                this.trailingActivated[crypto] = true;
+                console.log(`[TP3_Trailing] ${crypto}: TRAILING ACTIVATED at ${(pnlPct * 100).toFixed(1)}% profit`);
+            }
+            
+            // TRAILING LOGIC (if activated)
+            if (this.trailingActivated[crypto]) {
+                const trailingStop = hwm * (1 - this.options.trailPercent);
+                const floorPrice = position.entryPrice * (1 + this.options.profitFloor);
+                const effectiveStop = Math.max(trailingStop, floorPrice);
+                
+                if (currentPrice <= effectiveStop) {
+                    // Clean up
+                    delete this.highWaterMark[crypto];
+                    delete this.trailingActivated[crypto];
+                    this.tradedThisWindow[crypto] = windowEpoch;
+                    
+                    return this.createSignal('sell', null, 'trailing_stop', {
+                        entryPrice: position.entryPrice.toFixed(2),
+                        exitPrice: currentPrice.toFixed(2),
+                        hwm: hwm.toFixed(2),
+                        pnlPct: (pnlPct * 100).toFixed(1) + '%'
+                    });
+                }
+                
+                // Still trailing - hold
+                return this.createSignal('hold', null, 'trailing_active', {
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    hwm: hwm.toFixed(2),
+                    trailStop: effectiveStop.toFixed(2)
+                });
+            }
+            
+            // QUICK TP3 LOGIC (if not trailing yet)
+            // Take 3% profit if available
+            if (pnlPct >= this.options.takeProfitThreshold) {
+                delete this.highWaterMark[crypto];
+                delete this.trailingActivated[crypto];
+                this.tradedThisWindow[crypto] = windowEpoch;
+                
+                return this.createSignal('sell', null, 'take_profit_3pct', {
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    entryPrice: position.entryPrice.toFixed(2),
+                    exitPrice: currentPrice.toFixed(2)
+                });
+            }
+            
+            // Holding, not yet at TP
+            return this.createSignal('hold', null, 'holding_position', {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                target: (this.options.takeProfitThreshold * 100) + '%'
+            });
+        }
+        
+        // Clean up if no position
+        delete this.highWaterMark[crypto];
+        delete this.trailingActivated[crypto];
+        
+        // Use parent's entry logic
+        return super.onTick(tick, position, context);
+    }
+    
+    onWindowStart(windowInfo) {
+        super.onWindowStart(windowInfo);
+        this.highWaterMark = {};
+        this.trailingActivated = {};
+    }
+}
+
+export function createSpotLagTP3Trailing(capital = 100) {
+    return new SpotLag_TP3_TrailingStrategy({ maxPosition: capital });
+}
+
+// ================================================================
 // TRAILING STOP STRATEGY
 // Lets winners run while protecting profits
 // ================================================================
