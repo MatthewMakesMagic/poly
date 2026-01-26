@@ -16,6 +16,7 @@ import EventEmitter from 'events';
 import { SDKClient } from './sdk_client.js';
 import { RiskManager } from './risk_manager.js';
 import { saveLiveTrade, getLiveEnabledStrategies, setLiveStrategyEnabled } from '../db/connection.js';
+import { getClaimService } from '../services/claim_service.js';
 
 // Order sides and types for SDK
 const Side = { BUY: 'BUY', SELL: 'SELL' };
@@ -81,6 +82,11 @@ export class LiveTrader extends EventEmitter {
             this.killSwitchActive = true;
             this.emit('kill_switch', data);
         });
+
+        // Claim service for tracking and claiming resolved positions
+        this.claimService = getClaimService({
+            autoClaimEnabled: process.env.AUTO_CLAIM_ENABLED === 'true'
+        });
     }
     
     /**
@@ -107,12 +113,17 @@ export class LiveTrader extends EventEmitter {
             
             // Load enabled strategies from database
             await this.loadEnabledStrategies();
-            
+
+            // Link SDK client to claim service and start it
+            this.claimService.setSDKClient(this.client);
+            this.claimService.start();
+
             this.isRunning = true;
             this.logger.log('[LiveTrader] Initialized successfully');
             this.logger.log(`[LiveTrader] Position size: $${this.options.positionSize}`);
             this.logger.log(`[LiveTrader] Enabled strategies: ${this.enabledStrategies.size > 0 ? Array.from(this.enabledStrategies).join(', ') : 'NONE'}`);
-            
+            this.logger.log(`[LiveTrader] Auto-claim: ${this.claimService.options.autoClaimEnabled ? 'ENABLED' : 'DISABLED (manual)'}`);
+
             return true;
         } catch (error) {
             this.logger.error('[LiveTrader] Failed to initialize:', error.message);
@@ -384,7 +395,19 @@ export class LiveTrader extends EventEmitter {
                     windowEpoch,
                     size: actualSize
                 });
-                
+
+                // Track position for claiming after resolution
+                this.claimService.trackPosition({
+                    strategyName,
+                    crypto,
+                    windowEpoch,
+                    side: tokenSide.toLowerCase(),
+                    tokenId,
+                    shares: response.shares,
+                    entryPrice: response.avgPrice || entryPrice,
+                    entryTimestamp: Date.now()
+                });
+
                 this.logger.log(`[LiveTrader] ✅ ENTRY FILLED & VERIFIED: ${strategyName} | ${crypto} ${tokenSide} @ ${(response.avgPrice || entryPrice).toFixed(3)} (${response.shares} shares) | tx=${response.tx?.slice(0, 10)}...`);
                 
                 this.emit('trade_entry', {
@@ -455,7 +478,19 @@ export class LiveTrader extends EventEmitter {
                         };
                         
                         this.riskManager.recordTradeOpen({ crypto, windowEpoch, size: actualSize });
-                        
+
+                        // Track position for claiming after resolution
+                        this.claimService.trackPosition({
+                            strategyName,
+                            crypto,
+                            windowEpoch,
+                            side: tokenSide.toLowerCase(),
+                            tokenId,
+                            shares: retryResponse.shares,
+                            entryPrice: retryResponse.avgPrice || retryPrice,
+                            entryTimestamp: Date.now()
+                        });
+
                         this.logger.log(`[LiveTrader] ✅ RETRY FILLED & VERIFIED: ${strategyName} | ${crypto} ${tokenSide} @ ${(retryResponse.avgPrice || retryPrice).toFixed(3)} | tx=${retryResponse.tx?.slice(0, 10)}...`);
                         
                         this.emit('trade_entry', {

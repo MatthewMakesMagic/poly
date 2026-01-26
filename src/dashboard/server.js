@@ -28,6 +28,7 @@ import {
 import { getOracleOverseer } from '../services/oracle_overseer.js';
 import { getResolutionService } from '../services/resolution_service.js';
 import { getPositionPathTracker } from '../services/position_path_tracker.js';
+import { getClaimService } from '../services/claim_service.js';
 import { getLiveTrader } from '../execution/live_trader.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -297,6 +298,14 @@ async function handleAPI(req, res) {
                 return apiPathsExitAnalysis(req, res);
             case '/api/paths/stats':
                 return apiPathsStats(req, res);
+
+            // Claims endpoints
+            case '/api/claims':
+                return apiClaims(req, res);
+            case '/api/claims/pending':
+                return apiClaimsPending(req, res);
+            case '/api/claims/trigger':
+                return apiClaimsTrigger(req, res);
 
             default:
                 res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1435,6 +1444,80 @@ export function sendWindowEvent(event) {
         type: 'window_event',
         payload: event
     });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLAIMS API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET /api/claims - Get claims report
+async function apiClaims(req, res) {
+    try {
+        const claimService = getClaimService();
+        const report = claimService.getReport();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            report,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// GET /api/claims/pending - Get pending claims needing manual action
+async function apiClaimsPending(req, res) {
+    try {
+        const claimService = getClaimService();
+        const pending = claimService.getPendingManualClaims();
+        const all = claimService.getAllPendingClaims();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            needsManualClaim: pending,
+            allPending: all,
+            count: pending.length,
+            totalPendingValue: pending.reduce((sum, c) => sum + c.expectedPayout, 0),
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// POST /api/claims/trigger - Manually trigger claim for a position
+async function apiClaimsTrigger(req, res) {
+    try {
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        const body = await getRequestBody(req);
+        const { positionId } = JSON.parse(body || '{}');
+
+        if (!positionId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'positionId required' }));
+            return;
+        }
+
+        const claimService = getClaimService();
+        const result = await claimService.manualClaim(positionId);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            result,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
 }
 
 // Start server
