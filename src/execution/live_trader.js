@@ -395,8 +395,8 @@ export class LiveTrader extends EventEmitter {
                     shares: response.shares
                 });
                 
-                // Save to database
-                await this.saveTrade('entry', strategyName, signal, tick, response.avgPrice || entryPrice);
+                // Save to database with tx_hash for reconciliation
+                await this.saveTrade('entry', strategyName, signal, tick, response.avgPrice || entryPrice, null, null, response.tx || response.txHashes?.[0]);
                 
                 return response;
             } else {
@@ -467,7 +467,7 @@ export class LiveTrader extends EventEmitter {
                             wasRetry: true
                         });
                         
-                        await this.saveTrade('entry', strategyName, signal, tick, retryResponse.avgPrice || retryPrice);
+                        await this.saveTrade('entry', strategyName, signal, tick, retryResponse.avgPrice || retryPrice, null, null, retryResponse.tx || retryResponse.txHashes?.[0]);
                         return retryResponse;
                     }
                 } catch (retryError) {
@@ -580,8 +580,9 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Save live trade to database
+     * Now includes tx_hash and condition_id for reconciliation with Polymarket
      */
-    async saveTrade(type, strategyName, signal, tick, price, position = null, pnl = null) {
+    async saveTrade(type, strategyName, signal, tick, price, position = null, pnl = null, txHash = null) {
         try {
             await saveLiveTrade({
                 type,
@@ -596,10 +597,13 @@ export class LiveTrader extends EventEmitter {
                 reason: signal.reason,
                 entry_price: position?.entryPrice,
                 pnl,
+                tx_hash: txHash,
+                condition_id: tick.condition_id || null,
                 timestamp: new Date().toISOString()
             });
         } catch (error) {
-            this.logger.error('[LiveTrader] Failed to save trade:', error.message);
+            // saveLiveTrade now has retry logic, this is a final fallback log
+            this.logger.error('[LiveTrader] Failed to save trade after retries:', error.message);
         }
     }
     

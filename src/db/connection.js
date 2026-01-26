@@ -724,16 +724,61 @@ export async function setLiveStrategyEnabled(strategyName, enabled) {
 }
 
 /**
- * Save a live trade to database
+ * Get timestamp in Eastern Time (ET) to match Polymarket display
  */
-export async function saveLiveTrade(trade) {
+function getETTimestamp() {
+    const now = new Date();
+    // Format in Eastern Time
+    return now.toLocaleString('en-US', { 
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit', 
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    }).replace(/(\d+)\/(\d+)\/(\d+),?\s*/, '$3-$1-$2 ');
+}
+
+/**
+ * Backup failed trades to file (fallback if DB fails)
+ */
+const fs = await import('fs').then(m => m.promises).catch(() => null);
+const BACKUP_FILE = './data/failed_trades.jsonl';
+
+async function backupTradeToFile(trade) {
+    if (!fs) return;
+    try {
+        const line = JSON.stringify({ ...trade, backup_time: new Date().toISOString() }) + '\n';
+        await fs.appendFile(BACKUP_FILE, line);
+        console.log('[TradeBackup] Saved to backup file');
+    } catch (e) {
+        console.error('[TradeBackup] File backup also failed:', e.message);
+    }
+}
+
+/**
+ * Save a live trade to database with retry and backup
+ */
+export async function saveLiveTrade(trade, retryCount = 0) {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 1000;
+    
+    // Add ET timestamp if not provided
+    if (!trade.timestamp_et) {
+        trade.timestamp_et = getETTimestamp();
+    }
+    
+    // If no Postgres, backup to file
     if (!USE_POSTGRES || !pgPool) {
-        console.log('[LiveTrade]', trade);
+        console.log('[LiveTrade] No DB, backing up:', trade);
+        await backupTradeToFile(trade);
         return;
     }
     
     try {
-        // Ensure table exists with all columns (including outcome for window expiry tracking)
+        // Ensure table exists with all columns
         await pgPool.query(`
             CREATE TABLE IF NOT EXISTS live_trades (
                 id SERIAL PRIMARY KEY,
@@ -750,24 +795,31 @@ export async function saveLiveTrade(trade) {
                 entry_price REAL,
                 pnl REAL,
                 outcome TEXT,
-                timestamp TIMESTAMP DEFAULT NOW()
+                tx_hash TEXT,
+                condition_id TEXT,
+                timestamp TIMESTAMP DEFAULT NOW(),
+                timestamp_et TEXT
             )
         `);
         
-        // Add outcome column if it doesn't exist (for existing tables)
-        await pgPool.query(`
-            ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS outcome TEXT
-        `).catch(() => {}); // Ignore error if column exists or syntax not supported
+        // Add new columns if they don't exist
+        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS outcome TEXT`).catch(() => {});
+        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS tx_hash TEXT`).catch(() => {});
+        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS condition_id TEXT`).catch(() => {});
+        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timestamp_et TEXT`).catch(() => {});
         
         await pgPool.query(`
-            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, timestamp)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id, timestamp, timestamp_et)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         `, [
             trade.type, trade.strategy_name, trade.crypto, trade.side,
             trade.window_epoch, trade.price, trade.size, trade.spot_price,
             trade.time_remaining, trade.reason, trade.entry_price, trade.pnl,
-            trade.outcome || null, trade.timestamp
+            trade.outcome || null, trade.tx_hash || null, trade.condition_id || null,
+            trade.timestamp, trade.timestamp_et
         ]);
+        
+        console.log(`[LiveTrade] ✅ Saved: ${trade.type} ${trade.strategy_name} ${trade.crypto} ${trade.side} @ ${trade.price}`);
         
         // Update strategy stats
         if (trade.pnl !== null && trade.pnl !== undefined) {
@@ -778,7 +830,19 @@ export async function saveLiveTrade(trade) {
             `, [trade.strategy_name, trade.pnl]);
         }
     } catch (error) {
-        console.error('Failed to save live trade:', error.message);
+        console.error(`[LiveTrade] ❌ Save failed (attempt ${retryCount + 1}/${MAX_RETRIES}):`, error.message);
+        
+        // Retry with exponential backoff
+        if (retryCount < MAX_RETRIES - 1) {
+            const delay = RETRY_DELAY * Math.pow(2, retryCount);
+            console.log(`[LiveTrade] Retrying in ${delay}ms...`);
+            await new Promise(r => setTimeout(r, delay));
+            return saveLiveTrade(trade, retryCount + 1);
+        }
+        
+        // All retries failed - backup to file
+        console.error('[LiveTrade] All retries failed, backing up to file');
+        await backupTradeToFile(trade);
     }
 }
 
