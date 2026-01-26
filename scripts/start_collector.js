@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 /**
  * Start the Tick Data Collector Service
- * 
+ *
  * Usage: npm run collect
- * 
+ *
  * Made crash-resistant: Will try to recover from errors instead of exiting.
  */
 
 import dotenv from 'dotenv';
 dotenv.config();
+
+// ENABLE LIVE TRADING - Set env var if not already set
+if (!process.env.LIVE_TRADING_ENABLED) {
+    process.env.LIVE_TRADING_ENABLED = 'true';
+    console.log('🔴 LIVE TRADING ENABLED (set automatically)');
+}
 
 // Initialize global proxy agent for all HTTP/HTTPS requests (bypasses Cloudflare blocks)
 if (process.env.PROXY_URL) {
@@ -31,59 +37,62 @@ async function runMigrations() {
         await initDatabase();
         
         // =================================================================
-        // ENABLE - Strategies that WORK based on live trading data
-        // =================================================================
-        // LIVE STRATEGIES - Validated or testing
+        // ENABLE - Strategies based on Jan 2026 fair value analysis
+        // Key insight: Market prices time correctly, edge is in SPEED
         // =================================================================
         const toEnable = [
+            // NEW TIME-AWARE STRATEGIES (v2) - fair value validated
+            'SpotLag_TimeAware',       // Base time-aware strategy
+            'SpotLag_TimeAwareAggro',  // Aggressive variant
+            'SpotLag_TimeAwareSafe',   // Conservative variant
+            'SpotLag_TimeAwareTP',     // With take-profit
+            'SpotLag_LateOnly',        // Late window only
+            'SpotLag_ProbEdge',        // Probability edge based
+
+            // TOP PERFORMERS - proven profitable
+            'SpotLag_Aggressive',      // +$4,735 PnL
+            'SpotLag_Fast',            // +$3,678 PnL
+            'SpotLagSimple',           // +$2,276 PnL
+
             // ENDGAME - near-resolution plays
-            'Endgame',                // Base endgame strategy
-            'Endgame_Aggressive',     // More aggressive endgame
-            'Endgame_Conservative',   // Conservative endgame
-            'Endgame_Safe',           // Safest endgame variant
-            'Endgame_Momentum',       // Momentum-based endgame
-            
-            // TAKE-PROFIT strategies - monetize catch-up quickly
-            'SpotLag_TP3',            // Fixed 3% take-profit
-            'SpotLag_TP3_Trailing'    // NEW: 3% TP OR trailing for big winners
+            'Endgame',
+            'Endgame_Aggressive',
+            'Endgame_Conservative',
+            'Endgame_Safe',
+            'Endgame_Momentum',
+
+            // TAKE-PROFIT strategies
+            'SpotLag_TP3',
+            'SpotLag_TP3_Trailing'
         ];
-        
+
         for (const strat of toEnable) {
             await setLiveStrategyEnabled(strat, true);
             console.log(`✅ Enabled ${strat} for live trading`);
         }
-        
+
         // =================================================================
-        // DISABLE ALL - SpotLag thesis under review
+        // DISABLE - Fair Value strategies (proven losers: -$6,766 total)
         // =================================================================
         const toDisable = [
-            // SPOTLAG - thesis unproven (except TP variants)
-            'SpotLag_Aggressive',
-            // 'SpotLag_TP3',         // ENABLED - quick profit exit
-            'SpotLag_Trailing',
-            'SpotLag_LateValue',
-            'SpotLag_DeepValue',
-            'SpotLag_CorrectSide',
-            'SpotLag_ExtremeReversal',
-            'SpotLag_TrailWide',
-            'SpotLag_TrailTight',
-            'SpotLag_TP6',
-            'SpotLag_VolAdapt',
-            'SpotLagSimple',
-            'SpotLag_Fast',
-            'SpotLag_Confirmed',
-            
-            // ALL CHAINLINK - thesis unproven
-            'CL_Divergence',
-            'CL_Divergence_Aggro',
-            'CL_Divergence_Safe',
-            'CL_FinalSeconds',
-            'CL_FinalSeconds_Ultra'
+            'FairValue_RealizedVol',   // -$2,724 loss
+            'FairValue_EWMA',          // -$3,068 loss
+            'FairValue_WithDrift',     // -$974 loss
+            'FV_Drift_1H',
+            'FV_Drift_4H',
+            'FV_Drift_24H',
+            'FV_UpOnly_4H',
+
+            // Contrarian - losing money
+            'Contrarian',
+            'Contrarian_SOL',
+            'Contrarian_Scalp',
+            'Contrarian_Strong'
         ];
-        
+
         for (const strat of toDisable) {
             await setLiveStrategyEnabled(strat, false);
-            console.log(`❌ Disabled ${strat} - underperformed in live data`);
+            console.log(`❌ Disabled ${strat} - losing strategy`);
         }
         
         console.log('\n📊 Strategy configuration updated based on live data analysis');
