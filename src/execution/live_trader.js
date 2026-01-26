@@ -16,6 +16,7 @@ import EventEmitter from 'events';
 import { SDKClient } from './sdk_client.js';
 import { RiskManager } from './risk_manager.js';
 import { saveLiveTrade, getLiveEnabledStrategies, setLiveStrategyEnabled } from '../db/connection.js';
+import { getOracleOverseer } from '../services/oracle_overseer.js';
 
 // Order sides and types for SDK
 const Side = { BUY: 'BUY', SELL: 'SELL' };
@@ -259,7 +260,16 @@ export class LiveTrader extends EventEmitter {
     async executeEntry(strategyName, signal, tick, market) {
         const crypto = tick.crypto;
         const windowEpoch = tick.window_epoch;
-        
+
+        // Track signal generation for latency measurement
+        let signalId = null;
+        try {
+            const overseer = getOracleOverseer();
+            signalId = overseer.onSignalGenerated(strategyName, signal, tick);
+        } catch (e) {
+            // Non-critical - continue without latency tracking
+        }
+
         // STALENESS CHECK: Don't trade with data older than 5 seconds
         const MAX_TICK_AGE_MS = 5000;
         const tickAge = Date.now() - (tick.timestamp_ms || Date.now());
@@ -267,7 +277,7 @@ export class LiveTrader extends EventEmitter {
             this.logger.warn(`[LiveTrader] SKIPPING: ${crypto} tick is ${(tickAge/1000).toFixed(1)}s stale (max ${MAX_TICK_AGE_MS/1000}s)`);
             return null;
         }
-        
+
         // Determine token side and price first
         const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
         const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
@@ -307,7 +317,15 @@ export class LiveTrader extends EventEmitter {
         
         try {
             this.stats.ordersPlaced++;
-            
+
+            // Track order submission for latency measurement
+            if (signalId) {
+                try {
+                    const overseer = getOracleOverseer();
+                    overseer.onOrderSent(signalId, tick);
+                } catch (e) { /* non-critical */ }
+            }
+
             // Place order using SDK client (FOK with price buffer for fill)
             const response = await this.client.buy(tokenId, actualSize, entryPrice, 'FOK');
             
@@ -358,7 +376,19 @@ export class LiveTrader extends EventEmitter {
                 }
                 
                 this.stats.ordersFilled++;
-                
+
+                // Track order fill for latency measurement
+                if (signalId) {
+                    try {
+                        const overseer = getOracleOverseer();
+                        overseer.onOrderFilled(signalId, {
+                            avgPrice: response.avgPrice || entryPrice,
+                            shares: response.shares,
+                            wasRetry: false
+                        }, tick);
+                    } catch (e) { /* non-critical */ }
+                }
+
                 // Record position
                 const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
                 this.livePositions[positionKey] = {
@@ -402,12 +432,28 @@ export class LiveTrader extends EventEmitter {
             } else {
                 this.stats.ordersRejected++;
                 this.logger.warn(`[LiveTrader] Order not filled: ${JSON.stringify(response)}`);
+
+                // Track order rejection for latency measurement
+                if (signalId) {
+                    try {
+                        const overseer = getOracleOverseer();
+                        overseer.onOrderRejected(signalId, 'not_filled');
+                    } catch (e) { /* non-critical */ }
+                }
                 return null;
             }
-            
+
         } catch (error) {
             this.stats.ordersRejected++;
             this.logger.error(`[LiveTrader] Entry order failed: ${error.message}`);
+
+            // Track order failure for latency measurement
+            if (signalId) {
+                try {
+                    const overseer = getOracleOverseer();
+                    overseer.onOrderRejected(signalId, error.message);
+                } catch (e) { /* non-critical */ }
+            }
             
             // RETRY ONCE at slightly worse price (+2 cents)
             const RETRY_SLIPPAGE = 0.02;
@@ -695,7 +741,51 @@ export class LiveTrader extends EventEmitter {
         this.killSwitchActive = false;
         this.logger.log('[LiveTrader] Kill switch reset');
     }
-    
+
+    /**
+     * Pause live trading (keeps positions but stops new trades)
+     * @param {string} reason - Reason for pausing
+     */
+    pause(reason = 'manual') {
+        this.killSwitchActive = true;
+        this.logger.log(`[LiveTrader] ⏸️ Trading PAUSED: ${reason}`);
+        this.emit('paused', { reason });
+    }
+
+    /**
+     * Resume live trading after pause
+     * @returns {boolean} Whether trading was successfully resumed
+     */
+    resume() {
+        if (!this.isRunning) {
+            this.logger.warn('[LiveTrader] Cannot resume - not initialized');
+            return false;
+        }
+
+        // Check if risk manager allows resuming
+        const riskStatus = this.riskManager.getStatus();
+        if (riskStatus.maxDailyLossExceeded) {
+            this.logger.warn('[LiveTrader] Cannot resume - daily loss limit exceeded');
+            return false;
+        }
+
+        this.killSwitchActive = false;
+        this.logger.log('[LiveTrader] ▶️ Trading RESUMED');
+        this.emit('resumed', {});
+        return true;
+    }
+
+    /**
+     * Stop live trading completely
+     * @param {string} reason - Reason for stopping
+     */
+    async stop(reason = 'manual') {
+        this.killSwitchActive = true;
+        this.isRunning = false;
+        this.logger.log(`[LiveTrader] 🛑 Trading STOPPED: ${reason}`);
+        this.emit('stopped', { reason });
+    }
+
     /**
      * FACTOR 3: RECONCILIATION
      * Compare internal position state vs actual on-chain balances

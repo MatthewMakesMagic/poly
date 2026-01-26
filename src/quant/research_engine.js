@@ -87,8 +87,20 @@ export class ResearchEngine {
         // Position path tracker for exit analysis
         this.pathTracker = getPositionPathTracker();
 
+        // Live trader will be initialized asynchronously
+        // We can't await in constructor, so we track initialization state
+        this.liveTraderInitPromise = null;
+        this.liveTraderReady = false;
+    }
+
+    /**
+     * Initialize the research engine (call after construction)
+     * This handles async initialization that can't be done in constructor
+     */
+    async initialize() {
         // Initialize live trader (if enabled)
-        this.initLiveTrader();
+        await this.initLiveTrader();
+        return this;
     }
     
     /**
@@ -99,11 +111,23 @@ export class ResearchEngine {
             const liveTrader = getLiveTrader();
             const initialized = await liveTrader.initialize();
             if (initialized) {
-                console.log('[ResearchEngine] Live trader initialized and ready');
+                this.liveTraderReady = true;
+                console.log('[ResearchEngine] ✅ Live trader initialized and ready');
+                console.log(`[ResearchEngine] Enabled strategies: ${liveTrader.getEnabledStrategies().join(', ') || 'none'}`);
+            } else {
+                console.log('[ResearchEngine] Live trader not enabled (LIVE_TRADING_ENABLED not set)');
             }
         } catch (error) {
-            // Live trading not configured - that's fine
-            console.log('[ResearchEngine] Live trading not enabled:', error.message);
+            // Live trading not configured - log why
+            console.log('[ResearchEngine] ❌ Live trading initialization failed:', error.message);
+
+            // Check for common missing env vars
+            if (!process.env.POLYMARKET_PRIVATE_KEY) {
+                console.log('[ResearchEngine]    Missing: POLYMARKET_PRIVATE_KEY');
+            }
+            if (!process.env.POLYMARKET_FUNDER_ADDRESS) {
+                console.log('[ResearchEngine]    Missing: POLYMARKET_FUNDER_ADDRESS');
+            }
         }
     }
     
@@ -752,10 +776,26 @@ export class ResearchEngine {
 
 // Singleton
 let researchEngineInstance = null;
+let researchEngineInitialized = false;
 
 export function getResearchEngine(options = {}) {
     if (!researchEngineInstance) {
         researchEngineInstance = new ResearchEngine(options);
+    }
+    return researchEngineInstance;
+}
+
+/**
+ * Get or create an initialized research engine
+ * This is the preferred method when you need async initialization (live trading)
+ */
+export async function getInitializedResearchEngine(options = {}) {
+    if (!researchEngineInstance) {
+        researchEngineInstance = new ResearchEngine(options);
+    }
+    if (!researchEngineInitialized) {
+        await researchEngineInstance.initialize();
+        researchEngineInitialized = true;
     }
     return researchEngineInstance;
 }

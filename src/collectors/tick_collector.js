@@ -10,10 +10,13 @@
  */
 
 import WebSocket from 'ws';
-import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats } from '../db/connection.js';
-import { getResearchEngine } from '../quant/research_engine.js';
-import { startDashboard, sendTick, sendStrategyComparison, sendMetrics } from '../dashboard/server.js';
+import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats, initOracleResolutionTables } from '../db/connection.js';
+import { getInitializedResearchEngine } from '../quant/research_engine.js';
+import { startDashboard, sendTick, sendStrategyComparison, sendMetrics, setLiveEngine } from '../dashboard/server.js';
+import { getLiveTrader } from '../execution/live_trader.js';
 import { getChainlinkCollector } from './chainlink_prices.js';
+import { getOracleOverseer } from '../services/oracle_overseer.js';
+import { getResolutionService } from '../services/resolution_service.js';
 
 // Configuration
 const CONFIG = {
@@ -74,6 +77,10 @@ class TickCollector {
         // Chainlink oracle prices (used for actual resolution)
         this.chainlinkCollector = null;
         this.chainlinkPrices = {};  // crypto -> { price, staleness, updatedAt }
+
+        // OracleOverseer & Resolution services
+        this.oracleOverseer = null;
+        this.resolutionService = null;
     }
     
     /**
@@ -87,21 +94,21 @@ class TickCollector {
         
         // Initialize database
         this.db = initDatabase();
-        
-        // Initialize research engine
+
+        // Initialize research engine (with async live trader initialization)
         try {
-            this.researchEngine = getResearchEngine({ 
+            this.researchEngine = await getInitializedResearchEngine({
                 capitalPerTrade: 100,
-                enablePaperTrading: true 
+                enablePaperTrading: true
             });
             console.log('✅ Research engine initialized with', this.researchEngine.strategies.length, 'strategies');
         } catch (error) {
             console.error('⚠️  Research engine init failed:', error.message);
             this.researchEngine = null;
         }
-        
+
         this.isRunning = true;
-        
+
         // Start dashboard server for WebSocket connections
         const dashboardPort = process.env.PORT || process.env.DASHBOARD_PORT || 3333;
         try {
@@ -109,6 +116,19 @@ class TickCollector {
             console.log(`✅ Dashboard server started on port ${dashboardPort}`);
         } catch (error) {
             console.error('⚠️  Dashboard server failed to start:', error.message);
+        }
+
+        // Connect live trader to dashboard for status API
+        try {
+            const liveTrader = getLiveTrader();
+            if (liveTrader.isRunning) {
+                setLiveEngine(liveTrader);
+                console.log('✅ Live trader connected to dashboard');
+            } else {
+                console.log('ℹ️  Live trader not running - dashboard will show disconnected');
+            }
+        } catch (error) {
+            console.error('⚠️  Failed to connect live trader to dashboard:', error.message);
         }
         
         // Discover current 15-minute markets
@@ -129,7 +149,26 @@ class TickCollector {
             console.log('   Will continue with Binance prices only');
             this.chainlinkCollector = null;
         }
-        
+
+        // Initialize OracleOverseer & Resolution services
+        try {
+            // Initialize database tables for new services
+            await initOracleResolutionTables();
+
+            // Initialize OracleOverseer (tracks lag events with price changes)
+            this.oracleOverseer = getOracleOverseer();
+            console.log('✅ OracleOverseer initialized');
+
+            // Initialize Resolution service (tracks final-minute data)
+            this.resolutionService = getResolutionService();
+            if (this.chainlinkCollector) {
+                this.resolutionService.setChainlinkCollector(this.chainlinkCollector);
+            }
+            console.log('✅ Resolution service initialized');
+        } catch (error) {
+            console.error('⚠️  OracleOverseer/Resolution init failed:', error.message);
+        }
+
         // Set up periodic tasks
         this.setupPeriodicTasks();
         
@@ -669,9 +708,11 @@ class TickCollector {
             };
             
             // Process tick through research engine
+            let fairProb = null;
             if (this.researchEngine) {
                 try {
-                    this.researchEngine.processTick(tick);
+                    const analysis = this.researchEngine.processTick(tick);
+                    fairProb = analysis?.fairValue?.fairProb;
                 } catch (error) {
                     // Don't let research engine errors stop data collection
                     if (this.stats.errors % 100 === 0) {
@@ -679,7 +720,25 @@ class TickCollector {
                     }
                 }
             }
-            
+
+            // Process tick through OracleOverseer (lag detection + price tracking)
+            if (this.oracleOverseer) {
+                try {
+                    this.oracleOverseer.processTick(tick, fairProb);
+                } catch (error) {
+                    // Don't let OracleOverseer errors stop data collection
+                }
+            }
+
+            // Process tick through Resolution service (final-minute capture)
+            if (this.resolutionService) {
+                try {
+                    this.resolutionService.processTick(tick);
+                } catch (error) {
+                    // Don't let Resolution errors stop data collection
+                }
+            }
+
             // Send tick to dashboard
             try {
                 sendTick(tick);
@@ -743,6 +802,21 @@ class TickCollector {
                         }
                     } catch (error) {
                         console.error('⚠️  Live trader window end error:', error.message);
+                    }
+
+                    // Notify Resolution service of window end (captures outcome analysis)
+                    if (this.resolutionService) {
+                        try {
+                            await this.resolutionService.onWindowEnd({
+                                crypto,
+                                epoch: market.epoch,
+                                outcome,
+                                finalPrice: spotPrice,
+                                priceToBeat
+                            });
+                        } catch (error) {
+                            console.error('⚠️  Resolution service window end error:', error.message);
+                        }
                     }
                     
                     // Save window summary for old epoch
