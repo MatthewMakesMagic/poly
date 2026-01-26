@@ -12,7 +12,22 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getDatabase, getPaperTrades, getLiveEnabledStrategies, setLiveStrategyEnabled, getLiveTrades } from '../db/connection.js';
+import {
+    getDatabase,
+    getPaperTrades,
+    getLiveEnabledStrategies,
+    setLiveStrategyEnabled,
+    getLiveTrades,
+    // OracleOverseer & Resolution imports
+    getLagEvents,
+    getLatencyStats,
+    getResolutionSnapshots,
+    getDivergenceOpportunities,
+    getResolutionAccuracyStats
+} from '../db/connection.js';
+import { getOracleOverseer } from '../services/oracle_overseer.js';
+import { getResolutionService } from '../services/resolution_service.js';
+import { getPositionPathTracker } from '../services/position_path_tracker.js';
 import { getLiveTrader } from '../execution/live_trader.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -252,7 +267,37 @@ async function handleAPI(req, res) {
                 return apiLiveResetOrders(req, res);
             case '/api/live/reconcile':
                 return apiLiveReconcile(req, res);
-            
+
+            // OracleOverseer endpoints
+            case '/api/oracle/lag-events':
+                return apiOracleLagEvents(req, res);
+            case '/api/oracle/lag-report':
+                return apiOracleLagReport(req, res);
+            case '/api/oracle/latency':
+                return apiOracleLatency(req, res);
+            case '/api/oracle/latency-report':
+                return apiOracleLatencyReport(req, res);
+
+            // Resolution endpoints
+            case '/api/resolution/snapshots':
+                return apiResolutionSnapshots(req, res);
+            case '/api/resolution/divergence':
+                return apiResolutionDivergence(req, res);
+            case '/api/resolution/accuracy':
+                return apiResolutionAccuracy(req, res);
+            case '/api/resolution/staleness':
+                return apiResolutionStaleness(req, res);
+
+            // Position path endpoints
+            case '/api/paths/active':
+                return apiPathsActive(req, res);
+            case '/api/paths/completed':
+                return apiPathsCompleted(req, res);
+            case '/api/paths/exit-analysis':
+                return apiPathsExitAnalysis(req, res);
+            case '/api/paths/stats':
+                return apiPathsStats(req, res);
+
             default:
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Not found' }));
@@ -952,6 +997,361 @@ function getRequestBody(req) {
         req.on('end', () => resolve(body));
         req.on('error', reject);
     });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORACLEOVERSEER API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get lag events with price changes
+// GET /api/oracle/lag-events?hours=24&crypto=btc&limit=100
+async function apiOracleLagEvents(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+        const crypto = url.searchParams.get('crypto');
+        const limit = parseInt(url.searchParams.get('limit') || '100');
+
+        const events = await getLagEvents({ hours, crypto, limit });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            events,
+            count: events.length,
+            query: { hours, crypto, limit },
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get aggregated lag→price analysis report
+// GET /api/oracle/lag-report?hours=24
+async function apiOracleLagReport(req, res) {
+    try {
+        const overseer = getOracleOverseer();
+        const report = overseer.getLagPriceReport();
+
+        // Also get recent events from DB for historical context
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+
+        const events = await getLagEvents({ hours, limit: 500 });
+
+        // Calculate aggregated stats from DB events
+        const dbStats = {
+            totalEvents: events.length,
+            byDirection: { up: 0, down: 0 },
+            avgBidChange: 0,
+            avgAskChange: 0,
+            eventsWithTrade: 0,
+            avgLagMagnitude: 0
+        };
+
+        if (events.length > 0) {
+            let bidChangeSum = 0;
+            let askChangeSum = 0;
+            let lagMagSum = 0;
+            let bidCount = 0;
+            let askCount = 0;
+
+            for (const e of events) {
+                if (e.direction === 'up') dbStats.byDirection.up++;
+                if (e.direction === 'down') dbStats.byDirection.down++;
+                if (e.resulted_in_trade) dbStats.eventsWithTrade++;
+                if (e.bid_change_cents !== null) {
+                    bidChangeSum += e.bid_change_cents;
+                    bidCount++;
+                }
+                if (e.ask_change_cents !== null) {
+                    askChangeSum += e.ask_change_cents;
+                    askCount++;
+                }
+                if (e.lag_magnitude_pct !== null) {
+                    lagMagSum += Math.abs(e.lag_magnitude_pct);
+                }
+            }
+
+            dbStats.avgBidChange = bidCount > 0 ? (bidChangeSum / bidCount).toFixed(3) : 0;
+            dbStats.avgAskChange = askCount > 0 ? (askChangeSum / askCount).toFixed(3) : 0;
+            dbStats.avgLagMagnitude = events.length > 0 ? (lagMagSum / events.length).toFixed(2) : 0;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            memoryStats: report,
+            databaseStats: dbStats,
+            hours,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get execution latency by strategy
+// GET /api/oracle/latency?strategy=SpotLag_TP3&hours=24
+async function apiOracleLatency(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const strategy = url.searchParams.get('strategy');
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+
+        const stats = await getLatencyStats({ strategy, hours });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            latencyStats: stats,
+            query: { strategy, hours },
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get P50/P90/P99 latency percentiles report
+// GET /api/oracle/latency-report
+async function apiOracleLatencyReport(req, res) {
+    try {
+        const overseer = getOracleOverseer();
+        const memoryReport = overseer.getLatencyReport();
+
+        // Get DB stats for all strategies
+        const allStats = await getLatencyStats({ hours: 24 });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            memoryStats: memoryReport,
+            databaseStats: allStats,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RESOLUTION SERVICE API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get final-minute snapshots by window
+// GET /api/resolution/snapshots?crypto=btc&window_epoch=1234567890
+async function apiResolutionSnapshots(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const crypto = url.searchParams.get('crypto');
+        const windowEpoch = url.searchParams.get('window_epoch');
+
+        if (!crypto || !windowEpoch) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'crypto and window_epoch required' }));
+            return;
+        }
+
+        const snapshots = await getResolutionSnapshots(crypto, parseInt(windowEpoch));
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            snapshots,
+            count: snapshots.length,
+            query: { crypto, windowEpoch },
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get divergence opportunities (Binance/Chainlink disagreements)
+// GET /api/resolution/divergence?hours=24&crypto=btc
+async function apiResolutionDivergence(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+        const crypto = url.searchParams.get('crypto');
+
+        const opportunities = await getDivergenceOpportunities({ hours, crypto });
+
+        // Also get in-memory stats
+        const resolutionService = getResolutionService();
+        const report = resolutionService.getDivergenceReport();
+        const activeSessions = resolutionService.getActiveSessions();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            opportunities,
+            count: opportunities.length,
+            serviceStats: report,
+            activeSessions,
+            query: { hours, crypto },
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get market vs Chainlink accuracy stats
+// GET /api/resolution/accuracy?hours=24
+async function apiResolutionAccuracy(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+        const crypto = url.searchParams.get('crypto');
+
+        const accuracy = await getResolutionAccuracyStats({ hours, crypto });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            accuracy,
+            query: { hours, crypto },
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Get Chainlink staleness analysis
+// GET /api/resolution/staleness?hours=24
+async function apiResolutionStaleness(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+
+        const db = getDatabase();
+        if (!db || !db.query) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Database not available' }));
+            return;
+        }
+
+        const cutoffMs = Date.now() - (hours * 60 * 60 * 1000);
+
+        // Get staleness distribution from resolution_outcomes
+        const stalenessResult = await db.query(`
+            SELECT
+                crypto,
+                COUNT(*) as total_windows,
+                SUM(CASE WHEN chainlink_was_stale THEN 1 ELSE 0 END) as stale_count,
+                AVG(chainlink_staleness_at_resolution) as avg_staleness_sec,
+                MAX(chainlink_staleness_at_resolution) as max_staleness_sec,
+                MIN(chainlink_staleness_at_resolution) as min_staleness_sec
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+            GROUP BY crypto
+            ORDER BY crypto
+        `, [cutoffMs]);
+
+        // Get staleness vs accuracy correlation
+        const correlationResult = await db.query(`
+            SELECT
+                CASE
+                    WHEN chainlink_staleness_at_resolution < 60 THEN '0-60s'
+                    WHEN chainlink_staleness_at_resolution < 120 THEN '60-120s'
+                    WHEN chainlink_staleness_at_resolution < 300 THEN '120-300s'
+                    ELSE '300s+'
+                END as staleness_bucket,
+                COUNT(*) as count,
+                SUM(CASE WHEN chainlink_was_correct THEN 1 ELSE 0 END) as chainlink_correct,
+                SUM(CASE WHEN binance_was_correct THEN 1 ELSE 0 END) as binance_correct
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+              AND chainlink_staleness_at_resolution IS NOT NULL
+            GROUP BY staleness_bucket
+            ORDER BY staleness_bucket
+        `, [cutoffMs]);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            byCrypto: stalenessResult.rows,
+            byStalenessBucket: correlationResult.rows,
+            hours,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Position Path Tracker Endpoints
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function apiPathsActive(req, res) {
+    try {
+        const tracker = getPositionPathTracker();
+        const active = tracker.getActivePositions();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            activePositions: active,
+            count: active.length,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+async function apiPathsCompleted(req, res) {
+    try {
+        const tracker = getPositionPathTracker();
+        const completed = tracker.getRecentlyCompleted();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            completedPositions: completed,
+            count: completed.length,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+async function apiPathsExitAnalysis(req, res) {
+    try {
+        const tracker = getPositionPathTracker();
+        const analysis = tracker.getExitAnalysisReport();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            exitAnalysis: analysis,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+async function apiPathsStats(req, res) {
+    try {
+        const tracker = getPositionPathTracker();
+        const stats = tracker.getStats();
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            stats,
+            timestamp: Date.now()
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

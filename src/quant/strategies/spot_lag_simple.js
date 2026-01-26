@@ -2633,4 +2633,457 @@ export function createSpotLagExtremeReversal(capital = 100) {
     return new SpotLag_ExtremeReversalStrategy({ maxPosition: capital });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIME-AWARE SPOTLAG STRATEGIES (v2)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Based on fair value analysis showing market DOES price time correctly:
+// - When spot is 0.2%+ above strike at 10min: market prob ~84%
+// - When spot is 0.2%+ above strike at <60s: market prob ~90%
+//
+// The edge is NOT in fair value mispricing, but in SPEED:
+// - Catch the market before it updates after spot moves
+// - Only enter when time-adjusted probability favors us
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Time-Aware SpotLag Base Strategy
+ *
+ * Combines spot lag detection with time-to-expiry awareness.
+ * Only enters when:
+ * 1. Spot has moved significantly
+ * 2. Market hasn't caught up (lag)
+ * 3. Time remaining creates favorable probability dynamics
+ *
+ * Key insight: Early in window, small displacements create smaller edges.
+ * Late in window, same displacement = near-certain outcome.
+ */
+export class SpotLag_TimeAwareStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'SpotLag_TimeAware';
+        this.options = {
+            // Spot movement thresholds (as % of spot price)
+            spotMoveThreshold: 0.0008,  // 0.08% minimum spot move
+
+            // Market lag detection
+            lookbackTicks: 8,
+            marketLagRatio: 0.5,  // Market should have moved < 50% of expected
+
+            // Time-based entry rules (key insight from data)
+            // Early window (>5min): need larger spot displacement for entry
+            // Mid window (2-5min): standard thresholds
+            // Late window (<2min): tighter spreads, smaller edges OK
+            earlyWindowMinSpotDelta: 0.15,    // Need 0.15% spot delta when >5min left
+            midWindowMinSpotDelta: 0.10,      // Need 0.10% spot delta when 2-5min left
+            lateWindowMinSpotDelta: 0.05,     // Need 0.05% spot delta when <2min left
+
+            // Time cutoffs
+            earlyWindowThreshold: 300,   // >5 min = early
+            lateWindowThreshold: 120,    // <2 min = late
+            minTimeRemaining: 30,        // Don't enter in final 30s
+
+            // Market probability constraints (avoid fighting strong consensus)
+            maxMarketProb: 0.92,  // Don't buy UP if market already >92%
+            minMarketProb: 0.08,  // Don't buy DOWN if market already <8%
+
+            // Position sizing
+            maxPosition: 100,
+
+            // Enabled cryptos
+            enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
+
+            ...options
+        };
+
+        this.state = {};
+        this.tradedThisWindow = {};
+        this.stats = { signals: 0, earlyEntries: 0, midEntries: 0, lateEntries: 0 };
+    }
+
+    getName() { return this.name; }
+
+    initCrypto(crypto) {
+        if (!this.state[crypto]) {
+            this.state[crypto] = {
+                spotHistory: [],
+                marketHistory: [],
+                timestamps: []
+            };
+        }
+        return this.state[crypto];
+    }
+
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+
+        const state = this.initCrypto(crypto);
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+
+        // Update history
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(tick.up_mid);
+        state.timestamps.push(Date.now());
+
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+
+        // Position management - HOLD TO EXPIRY
+        if (position) {
+            return this.createSignal('hold', null, 'holding_to_expiry');
+        }
+
+        // Block re-entry
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded_this_window');
+        }
+
+        // Time filter
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_close_to_expiry');
+        }
+
+        if (state.spotHistory.length < this.options.lookbackTicks) {
+            return this.createSignal('hold', null, 'insufficient_data');
+        }
+
+        // Calculate spot movement
+        const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
+        const newSpot = state.spotHistory[state.spotHistory.length - 1];
+        const spotMove = (newSpot - oldSpot) / oldSpot;
+
+        // Calculate spot delta from strike (price_to_beat)
+        const spotDeltaPct = tick.price_to_beat > 0
+            ? ((tick.spot_price - tick.price_to_beat) / tick.price_to_beat) * 100
+            : 0;
+
+        // Determine time window and required spot delta
+        let requiredSpotDelta;
+        let timeWindow;
+        if (timeRemaining > this.options.earlyWindowThreshold) {
+            requiredSpotDelta = this.options.earlyWindowMinSpotDelta;
+            timeWindow = 'early';
+        } else if (timeRemaining > this.options.lateWindowThreshold) {
+            requiredSpotDelta = this.options.midWindowMinSpotDelta;
+            timeWindow = 'mid';
+        } else {
+            requiredSpotDelta = this.options.lateWindowMinSpotDelta;
+            timeWindow = 'late';
+        }
+
+        // Check if spot delta is sufficient for this time window
+        if (Math.abs(spotDeltaPct) < requiredSpotDelta) {
+            return this.createSignal('hold', null, 'spot_delta_insufficient', {
+                spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
+                required: requiredSpotDelta + '%',
+                timeWindow
+            });
+        }
+
+        // Check for spot movement (lag detection)
+        if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
+            return this.createSignal('hold', null, 'spot_not_moving');
+        }
+
+        // Determine trade side based on spot position
+        const side = spotDeltaPct > 0 ? 'up' : 'down';
+        const marketProb = tick.up_mid || 0.5;
+
+        // Avoid fighting strong consensus
+        if (side === 'up' && marketProb > this.options.maxMarketProb) {
+            return this.createSignal('hold', null, 'market_already_high', { marketProb });
+        }
+        if (side === 'down' && marketProb < this.options.minMarketProb) {
+            return this.createSignal('hold', null, 'market_already_low', { marketProb });
+        }
+
+        // Check market lag
+        const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
+        const newMarket = state.marketHistory[state.marketHistory.length - 1];
+        const marketMove = newMarket - oldMarket;
+        const expectedMarketMove = spotMove * 10;
+        const lagRatio = Math.abs(marketMove) / Math.abs(expectedMarketMove);
+
+        if (lagRatio > this.options.marketLagRatio) {
+            return this.createSignal('hold', null, 'market_caught_up', { lagRatio });
+        }
+
+        // All conditions met - TRADE
+        this.stats.signals++;
+        if (timeWindow === 'early') this.stats.earlyEntries++;
+        else if (timeWindow === 'mid') this.stats.midEntries++;
+        else this.stats.lateEntries++;
+
+        this.tradedThisWindow[crypto] = windowEpoch;
+
+        return this.createSignal('buy', side, 'time_aware_entry', {
+            timeWindow,
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
+            marketProb: (marketProb * 100).toFixed(1) + '%',
+            lagRatio: lagRatio.toFixed(2),
+            crypto
+        });
+    }
+
+    createSignal(action, side, reason, analysis = {}) {
+        return { action, side, reason, size: this.options.maxPosition, ...analysis };
+    }
+}
+
+/**
+ * Time-Aware Aggressive: Lower thresholds, more trades
+ */
+export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_TimeAwareAggro',
+            spotMoveThreshold: 0.0005,
+            earlyWindowMinSpotDelta: 0.10,
+            midWindowMinSpotDelta: 0.07,
+            lateWindowMinSpotDelta: 0.03,
+            marketLagRatio: 0.6,
+            ...options
+        });
+    }
+}
+
+/**
+ * Time-Aware Conservative: Higher thresholds, fewer but higher-conviction trades
+ */
+export class SpotLag_TimeAwareConservativeStrategy extends SpotLag_TimeAwareStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_TimeAwareSafe',
+            spotMoveThreshold: 0.0012,
+            earlyWindowMinSpotDelta: 0.20,
+            midWindowMinSpotDelta: 0.15,
+            lateWindowMinSpotDelta: 0.08,
+            marketLagRatio: 0.4,
+            maxMarketProb: 0.88,
+            minMarketProb: 0.12,
+            ...options
+        });
+    }
+}
+
+/**
+ * Time-Aware with Take Profit
+ * Takes profit when market probability moves significantly in our favor
+ */
+export class SpotLag_TimeAwareTPStrategy extends SpotLag_TimeAwareStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_TimeAwareTP',
+            takeProfitThreshold: 0.05,  // 5% profit = exit
+            ...options
+        });
+    }
+
+    onTick(tick, position = null, context = {}) {
+        // Handle exit with take profit
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_mid : (1 - tick.up_mid);
+            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
+
+            if (pnlPct >= this.options.takeProfitThreshold) {
+                return this.createSignal('sell', null, 'take_profit', { pnlPct: (pnlPct * 100).toFixed(1) + '%' });
+            }
+
+            return this.createSignal('hold', null, 'holding', { pnlPct: (pnlPct * 100).toFixed(1) + '%' });
+        }
+
+        // Entry logic from parent
+        return super.onTick(tick, position, context);
+    }
+}
+
+/**
+ * Late-Window Only: Only trades in final 2-5 minutes
+ * This is where market prob is most predictive of outcome
+ */
+export class SpotLag_LateWindowOnlyStrategy extends SpotLag_TimeAwareStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_LateOnly',
+            earlyWindowThreshold: 300,  // Treat everything >5min as "don't trade"
+            lateWindowThreshold: 120,
+            minTimeRemaining: 30,
+            earlyWindowMinSpotDelta: 999,  // Effectively disable early entries
+            midWindowMinSpotDelta: 0.08,
+            lateWindowMinSpotDelta: 0.04,
+            ...options
+        });
+    }
+}
+
+/**
+ * Probability Edge: Only enters when there's a clear gap between
+ * where market IS and where it SHOULD BE given spot position and time
+ */
+export class SpotLag_ProbabilityEdgeStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'SpotLag_ProbEdge';
+        this.options = {
+            // Expected probabilities by time bucket when spot is displaced
+            // Based on actual data analysis
+            expectedProbByTime: {
+                // Time remaining (sec) -> expected prob when spot is 0.2%+ above strike
+                600: 0.80,  // 10min left: should be ~80%
+                300: 0.85,  // 5min left: should be ~85%
+                120: 0.89,  // 2min left: should be ~89%
+                60: 0.90,   // 1min left: should be ~90%
+                30: 0.91    // 30s left: should be ~91%
+            },
+
+            // Minimum edge required to trade
+            minEdge: 0.05,  // Market must be at least 5% below expected
+
+            // Spot displacement threshold to consider
+            minSpotDeltaPct: 0.10,  // Need at least 0.1% spot displacement
+
+            maxPosition: 100,
+            minTimeRemaining: 30,
+            enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
+
+            ...options
+        };
+
+        this.state = {};
+        this.tradedThisWindow = {};
+        this.stats = { signals: 0, avgEdge: 0 };
+    }
+
+    getName() { return this.name; }
+
+    initCrypto(crypto) {
+        if (!this.state[crypto]) {
+            this.state[crypto] = { spotHistory: [], marketHistory: [] };
+        }
+        return this.state[crypto];
+    }
+
+    getExpectedProb(timeRemainingSec, spotDeltaPct) {
+        // Interpolate expected probability based on time and spot delta
+        const times = Object.keys(this.options.expectedProbByTime).map(Number).sort((a, b) => b - a);
+
+        // Find bracketing times
+        let expectedProb = 0.5;
+        for (let i = 0; i < times.length; i++) {
+            if (timeRemainingSec >= times[i]) {
+                expectedProb = this.options.expectedProbByTime[times[i]];
+                break;
+            }
+            expectedProb = this.options.expectedProbByTime[times[i]];
+        }
+
+        // Adjust for spot delta magnitude (larger delta = higher confidence)
+        const deltaMultiplier = Math.min(Math.abs(spotDeltaPct) / 0.2, 1.5);  // Cap at 1.5x
+        const adjusted = 0.5 + (expectedProb - 0.5) * deltaMultiplier;
+
+        return Math.min(0.95, Math.max(0.05, adjusted));  // Clamp to [0.05, 0.95]
+    }
+
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+
+        if (position) {
+            return this.createSignal('hold', null, 'holding_to_expiry');
+        }
+
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded');
+        }
+
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_close_to_expiry');
+        }
+
+        // Calculate spot delta
+        const spotDeltaPct = tick.price_to_beat > 0
+            ? ((tick.spot_price - tick.price_to_beat) / tick.price_to_beat) * 100
+            : 0;
+
+        if (Math.abs(spotDeltaPct) < this.options.minSpotDeltaPct) {
+            return this.createSignal('hold', null, 'spot_not_displaced');
+        }
+
+        const marketProb = tick.up_mid || 0.5;
+        const side = spotDeltaPct > 0 ? 'up' : 'down';
+
+        // Calculate expected probability
+        const expectedProb = this.getExpectedProb(timeRemaining, spotDeltaPct);
+
+        // Determine edge
+        let edge;
+        if (side === 'up') {
+            edge = expectedProb - marketProb;  // Positive = market underpricing UP
+        } else {
+            edge = marketProb - (1 - expectedProb);  // Positive = market underpricing DOWN
+        }
+
+        if (edge < this.options.minEdge) {
+            return this.createSignal('hold', null, 'insufficient_edge', {
+                edge: (edge * 100).toFixed(1) + '%',
+                expected: (expectedProb * 100).toFixed(1) + '%',
+                market: (marketProb * 100).toFixed(1) + '%'
+            });
+        }
+
+        // Trade!
+        this.stats.signals++;
+        this.tradedThisWindow[crypto] = windowEpoch;
+
+        return this.createSignal('buy', side, 'probability_edge', {
+            edge: (edge * 100).toFixed(1) + '%',
+            expected: (expectedProb * 100).toFixed(1) + '%',
+            market: (marketProb * 100).toFixed(1) + '%',
+            spotDelta: spotDeltaPct.toFixed(2) + '%',
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            crypto
+        });
+    }
+
+    createSignal(action, side, reason, analysis = {}) {
+        return { action, side, reason, size: this.options.maxPosition, ...analysis };
+    }
+}
+
+// Factory functions for new strategies
+export function createSpotLagTimeAware(capital = 100) {
+    return new SpotLag_TimeAwareStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagTimeAwareAggro(capital = 100) {
+    return new SpotLag_TimeAwareAggressiveStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagTimeAwareSafe(capital = 100) {
+    return new SpotLag_TimeAwareConservativeStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagTimeAwareTP(capital = 100) {
+    return new SpotLag_TimeAwareTPStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagLateOnly(capital = 100) {
+    return new SpotLag_LateWindowOnlyStrategy({ maxPosition: capital });
+}
+
+export function createSpotLagProbEdge(capital = 100) {
+    return new SpotLag_ProbabilityEdgeStrategy({ maxPosition: capital });
+}
+
 export default SpotLagSimpleStrategy;

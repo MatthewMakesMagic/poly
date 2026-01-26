@@ -17,6 +17,7 @@ import { RegimeDetector } from './regime_detector.js';
 import { createAllQuantStrategies } from './strategies/index.js';
 import { savePaperTrade } from '../db/connection.js';
 import { getLiveTrader } from '../execution/live_trader.js';
+import { getPositionPathTracker } from '../services/position_path_tracker.js';
 
 /**
  * Main Research Engine
@@ -82,7 +83,10 @@ export class ResearchEngine {
         
         // Current markets (for live trading - need tokenIds)
         this.currentMarkets = {};
-        
+
+        // Position path tracker for exit analysis
+        this.pathTracker = getPositionPathTracker();
+
         // Initialize live trader (if enabled)
         this.initLiveTrader();
     }
@@ -134,7 +138,10 @@ export class ResearchEngine {
         
         // Record efficiency data
         this.recordEfficiencyData(tick, fairValueAnalysis);
-        
+
+        // Update position path tracker (tracks price paths for all active positions)
+        this.pathTracker.processTick(tick);
+
         // Run all strategies
         const strategySignals = [];
         for (const strategy of this.strategies) {
@@ -270,7 +277,9 @@ export class ResearchEngine {
         if (signal.action === 'buy' && !position) {
             // Open position
             const entryPrice = signal.side === 'up' ? tick.up_ask : (1 - tick.up_bid);
+            const positionId = `${strategyName}_${crypto}_${tick.window_epoch}`;
             this.positions[strategyName][crypto] = {
+                positionId,
                 side: signal.side,
                 entryPrice,
                 entryTime: Date.now(),
@@ -287,13 +296,27 @@ export class ResearchEngine {
                 entryAskSize: signal.side === 'up' ? tick.up_ask_size : tick.down_ask_size,
                 entrySpread: tick.spread,
                 entrySpreadPct: tick.spread_pct,
-                entryBookImbalance: tick.up_bid_size && tick.up_ask_size 
-                    ? (tick.up_bid_size - tick.up_ask_size) / (tick.up_bid_size + tick.up_ask_size) 
+                entryBookImbalance: tick.up_bid_size && tick.up_ask_size
+                    ? (tick.up_bid_size - tick.up_ask_size) / (tick.up_bid_size + tick.up_ask_size)
                     : null,
                 signalStrength: signal.confidence || signal.edge || null
             };
             perf.trades++;
             cryptoPerf.trades++;
+
+            // Track position path for exit analysis
+            this.pathTracker.trackPosition({
+                positionId,
+                strategyName,
+                crypto,
+                windowEpoch: tick.window_epoch,
+                side: signal.side,
+                entryPrice,
+                entryTimestampMs: Date.now(),
+                entryTimeRemainingSec: tick.time_remaining_sec,
+                entrySpotPrice: tick.spot_price,
+                priceToBeat: tick.price_to_beat
+            });
         } else if (signal.action === 'sell' && position) {
             // Close position
             const exitPrice = position.side === 'up' ? tick.up_bid : (1 - tick.up_ask);
@@ -361,9 +384,12 @@ export class ResearchEngine {
     /**
      * Handle window end - close positions at binary expiry
      */
-    onWindowEnd(windowInfo) {
+    async onWindowEnd(windowInfo) {
         this.stats.windowsAnalyzed++;
-        
+
+        // Resolve position paths for this window
+        await this.pathTracker.onWindowEnd(windowInfo);
+
         // Close any open positions for this crypto at window end
         const crypto = windowInfo.crypto;
         const windowEpoch = windowInfo.epoch;
@@ -700,6 +726,27 @@ export class ResearchEngine {
             vols[crypto] = this.volEstimator.getVolatilities(crypto);
         }
         return vols;
+    }
+
+    /**
+     * Get position path exit analysis report
+     */
+    getExitAnalysisReport() {
+        return this.pathTracker.getExitAnalysisReport();
+    }
+
+    /**
+     * Get position path tracker stats
+     */
+    getPathTrackerStats() {
+        return this.pathTracker.getStats();
+    }
+
+    /**
+     * Get active position paths
+     */
+    getActivePositionPaths() {
+        return this.pathTracker.getActivePositions();
     }
 }
 

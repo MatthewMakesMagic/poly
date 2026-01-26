@@ -22,7 +22,7 @@ export { MicrostructureStrategy } from './microstructure_strategy.js';
 export { CrossAssetStrategy } from './cross_asset_strategy.js';
 export { ContrarianStrategy, ContrarianSOLStrategy, ContrarianScalpStrategy, ContrarianStrongStrategy, createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 export { EndgameStrategy, EndgameConservativeStrategy, EndgameAggressiveStrategy, EndgameSafeStrategy, EndgameMomentumStrategy, createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
-export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, SpotLagChainlinkConfirmedStrategy, SpotLagAggressiveCLStrategy, MispricingChainlinkConfirmedStrategy, UpOnlyChainlinkStrategy, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, SpotLag_TakeProfit3Strategy, SpotLag_TakeProfit6Strategy, SpotLag_VolatilityAdaptiveStrategy, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt, SpotLag_TrailingStopStrategy, SpotLag_TrailingTightStrategy, SpotLag_TrailingWideStrategy, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, ChainlinkDivergenceStrategy, ChainlinkDivergenceAggressiveStrategy, ChainlinkDivergenceConservativeStrategy, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, ChainlinkFinalSecondsStrategy, ChainlinkFinalSecondsUltraStrategy, createCLFinalSeconds, createCLFinalSecondsUltra, SpotLag_LateValueStrategy, SpotLag_DeepValueStrategy, SpotLag_CorrectSideOnlyStrategy, SpotLag_ExtremeReversalStrategy, SpotLag_TP3_TrailingStrategy, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing } from './spot_lag_simple.js';
+export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, SpotLagChainlinkConfirmedStrategy, SpotLagAggressiveCLStrategy, MispricingChainlinkConfirmedStrategy, UpOnlyChainlinkStrategy, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, SpotLag_TakeProfit3Strategy, SpotLag_TakeProfit6Strategy, SpotLag_VolatilityAdaptiveStrategy, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt, SpotLag_TrailingStopStrategy, SpotLag_TrailingTightStrategy, SpotLag_TrailingWideStrategy, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, ChainlinkDivergenceStrategy, ChainlinkDivergenceAggressiveStrategy, ChainlinkDivergenceConservativeStrategy, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, ChainlinkFinalSecondsStrategy, ChainlinkFinalSecondsUltraStrategy, createCLFinalSeconds, createCLFinalSecondsUltra, SpotLag_LateValueStrategy, SpotLag_DeepValueStrategy, SpotLag_CorrectSideOnlyStrategy, SpotLag_ExtremeReversalStrategy, SpotLag_TP3_TrailingStrategy, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing, SpotLag_TimeAwareStrategy, SpotLag_TimeAwareAggressiveStrategy, SpotLag_TimeAwareConservativeStrategy, SpotLag_TimeAwareTPStrategy, SpotLag_LateWindowOnlyStrategy, SpotLag_ProbabilityEdgeStrategy, createSpotLagTimeAware, createSpotLagTimeAwareAggro, createSpotLagTimeAwareSafe, createSpotLagTimeAwareTP, createSpotLagLateOnly, createSpotLagProbEdge } from './spot_lag_simple.js';
 
 // Import for factory
 import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift, createFairValueDrift1H, createFairValueDrift4H, createFairValueDrift24H, createFairValueUpOnly4H } from './fair_value_strategy.js';
@@ -33,7 +33,7 @@ import { MicrostructureStrategy } from './microstructure_strategy.js';
 import { CrossAssetStrategy } from './cross_asset_strategy.js';
 import { createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 import { createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
-import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, createCLFinalSeconds, createCLFinalSecondsUltra, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing } from './spot_lag_simple.js';
+import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, createSpotLagTP3, createSpotLagTP6, createSpotLagVolAdapt, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, createCLFinalSeconds, createCLFinalSecondsUltra, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing, createSpotLagTimeAware, createSpotLagTimeAwareAggro, createSpotLagTimeAwareSafe, createSpotLagTimeAwareTP, createSpotLagLateOnly, createSpotLagProbEdge } from './spot_lag_simple.js';
 
 /**
  * Create all quant strategies
@@ -41,116 +41,95 @@ import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createS
  */
 export function createAllQuantStrategies(capital = 100) {
     return [
-        // Fair Value variants - ORIGINAL (assume drift=0)
-        createFairValueRealizedVol(capital),
-        createFairValueEWMA(capital),
-        createFairValueWithDrift(capital),
-        
-        // Fair Value - DRIFT-AWARE variants (measure actual drift, use in Black-Scholes)
-        createFairValueDrift1H(capital),   // 1-hour drift lookback
-        createFairValueDrift4H(capital),   // 4-hour drift lookback
-        createFairValueDrift24H(capital),  // 24-hour drift lookback
-        createFairValueUpOnly4H(capital),  // UP-only with 4H drift (based on UP > DOWN insight)
-        
-        // Spot Lag - OLD (uses fair value - may be wrong)
-        // createSpotLag1s(capital),
-        // createSpotLag5s(capital),
-        // createSpotLag10s(capital),
-        
-        // Spot Lag - NEW SIMPLE (just detect spot move, check if market lagged)
-        createSpotLagSimple(capital),     // Base: hold to expiry
-        createSpotLagFast(capital),       // Fast: hold to expiry
-        createSpotLagConfirmed(capital),  // Confirmed: hold to expiry
-        createSpotLagAggressive(capital), // Aggressive: hold to expiry
-        
-        // Spot Lag - TAKE PROFIT variants (exit early when price moves in our favor)
-        // Backtest shows: 3% TP improves P&L by ~32% vs hold-to-expiry
-        // At cheap prices (7c), we get more shares, so big moves = massive profits
-        createSpotLagTP3(capital),        // 3% take-profit threshold
-        createSpotLagTP6(capital),        // 6% take-profit threshold
-        
-        // Spot Lag - VOLATILITY ADAPTIVE take-profit
-        // Backtest: HIGH vol (>8%) = 100% hit rate on 15% TP → use 12% TP
-        //           MED vol (4-8%) = 84% hit rate on 15% TP → use 6% TP
-        //           LOW vol (<4%) = only 51% hit 3% → hold to expiry (no TP)
-        createSpotLagVolAdapt(capital),   // Dynamic TP based on volatility regime
-        
-        // Spot Lag - TRAILING STOP variants (NEW!)
-        // Lets winners run while protecting profits
-        // Activates after initial gain, then trails high-water mark
-        createSpotLagTrailing(capital),    // Standard: 5% activation, 10% trail, 3% floor
-        createSpotLagTrailTight(capital),  // Tight: 3% activation, 5% trail, 2% floor
-        createSpotLagTrailWide(capital),   // Wide: 8% activation, 15% trail, 5% floor
-        
-        // Spot Lag - TIMED EXIT variants - DISABLED (data shows they destroy alpha)
-        // These exit early before binary resolution, losing 96%+ of the time
-        // SpotLag thesis requires holding to expiry for $1/$0 payout
-        // createSpotLag5Sec(capital),       // DISABLED: 1.6% win rate
-        // createSpotLag10Sec(capital),      // DISABLED: 3.3% win rate
-        // createSpotLag30Sec(capital),      // DISABLED: 3.3% win rate
-        // createSpotLag60Sec(capital),      // DISABLED: 6.8% win rate
-        // createSpotLag120Sec(capital),     // DISABLED: 7.0% win rate
-        // createSpotLag300Sec(capital),     // Keep commented - 26% win rate but still negative
-        
-        // MISPRICING-ONLY strategies (based on our learning: edge is from mispricing, not lag)
-        createMispricingOnly(capital),    // Base: spot 0.1% off, market >10% wrong
-        createMispricingStrict(capital),  // Strict: only big mispricings (>15% wrong)
-        createMispricingLoose(capital),   // Loose: smaller mispricings too
-        createMispricingExtreme(capital), // Extreme: only massive mispricings (>25% wrong)
-        
-        // CHAINLINK-CONFIRMED strategies - ONLY bet when Binance AND Chainlink agree
-        // Data shows: 58% win when sources agree, 0% win when they disagree
-        createSpotLagCLConfirmed(capital),    // SpotLag but only when both sources agree
-        createSpotLagAggressiveCL(capital),   // Aggressive SpotLag with Chainlink confirmation
-        createMispricingCLConfirmed(capital), // Mispricing only when sources agree
-        createUpOnlyCLConfirmed(capital),     // UP-only when both Binance & Chainlink show UP
-        
-        // CHAINLINK DIVERGENCE strategies - bet on Chainlink when it disagrees with Binance
-        // Thesis: Polymarket resolves using Chainlink, not Binance!
-        // When Binance shows UP but Chainlink shows DOWN → bet DOWN (Chainlink wins)
-        createCLDivergence(capital),          // Base: 0.1% divergence, 0.05% margin
-        createCLDivergenceAggro(capital),     // Aggressive: lower thresholds
-        createCLDivergenceSafe(capital),      // Conservative: higher confidence
-        
-        // CHAINLINK FINAL SECONDS strategies - the "frozen Chainlink" edge
-        // In final 10-30 seconds, Chainlink is essentially LOCKED (heartbeat ~60s, deviation ~0.5%)
-        // If Chainlink shows DOWN but market shows UP at 99¢ (DOWN at 1¢):
-        // - $1 at 1¢ = 100 shares → $100 payout = 100x return
-        createCLFinalSeconds(capital),        // Final 30s, max entry 15¢
-        createCLFinalSecondsUltra(capital),   // Final 15s, max entry 10¢ (highest leverage)
-        
-        // NEW DATA-DRIVEN STRATEGIES (Jan 2026 analysis)
-        // Based on live trading analysis: what conditions actually work?
-        createSpotLagLateValue(capital),      // Late (60-180s) + cheap (<50c) + strong lag
-        createSpotLagDeepValue(capital),      // Very cheap (<30c) + conviction play
-        createSpotLagCorrectSide(capital),    // Only enter when spot already on correct side + blocks deadzone
-        createSpotLagExtremeReversal(capital), // Extreme zone (<25c/>75c) + large contrary move + trailing stop
-        createSpotLagTP3Trailing(capital),    // TP3 + trailing hybrid: 3% quick exit OR trail winners
-        
-        // CONTRARIAN variants (FADE spot - backtest shows edge!)
-        createContrarianBase(capital),      // All cryptos, moderate threshold
-        createContrarianSOL(capital),       // SOL only (63% accuracy in backtest)
-        createContrarianScalp(capital),     // Quick scalp, lower threshold
-        createContrarianStrong(capital),    // Only big moves
-        
-        // ENDGAME variants (buy near-certain outcomes in final seconds)
-        createEndgameBase(capital),         // 90%+ prob, last 60s
-        createEndgameConservative(capital), // 95%+ prob, last 30s (safer)
-        createEndgameAggressive(capital),   // 85%+ prob, last 90s (riskier)
-        createEndgameSafe(capital),         // 97%+ prob, last 20s (very safe)
-        createEndgameMomentum(capital),     // 90%+ prob with momentum confirmation
-        
-        // Time Conditional
+        // ═══════════════════════════════════════════════════════════════════════
+        // FAIR VALUE STRATEGIES - DISABLED (Jan 2026 analysis shows they LOSE money)
+        // Market already prices time-to-expiry correctly, no edge in fair value deviation
+        // Total loss: -$6,766 across all FairValue variants
+        // ═══════════════════════════════════════════════════════════════════════
+        // createFairValueRealizedVol(capital),  // DISABLED: -$2,724 loss
+        // createFairValueEWMA(capital),         // DISABLED: -$3,068 loss
+        // createFairValueWithDrift(capital),    // DISABLED: -$974 loss
+        // createFairValueDrift1H(capital),      // DISABLED
+        // createFairValueDrift4H(capital),      // DISABLED
+        // createFairValueDrift24H(capital),     // DISABLED
+        // createFairValueUpOnly4H(capital),     // DISABLED
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // TIME-AWARE SPOTLAG STRATEGIES (v2) - NEW!
+        // Based on fair value analysis: market prices time correctly, edge is in SPEED
+        // These combine lag detection with time-to-expiry awareness
+        // ═══════════════════════════════════════════════════════════════════════
+        createSpotLagTimeAware(capital),       // Base: time-aware entry rules
+        createSpotLagTimeAwareAggro(capital),  // Aggressive: lower thresholds, more trades
+        createSpotLagTimeAwareSafe(capital),   // Conservative: higher thresholds, fewer trades
+        createSpotLagTimeAwareTP(capital),     // With 5% take-profit
+        createSpotLagLateOnly(capital),        // Only trade in final 2-5 minutes
+        createSpotLagProbEdge(capital),        // Entry based on probability edge vs expected
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // PROVEN WINNERS - SpotLag strategies with positive PnL
+        // ═══════════════════════════════════════════════════════════════════════
+        createSpotLagAggressive(capital),  // +$4,735 (top performer)
+        createSpotLagFast(capital),        // +$3,678
+        createSpotLagSimple(capital),      // +$2,276
+        createSpotLagConfirmed(capital),   // +$1,042
+
+        // Take profit variants
+        createSpotLagTP3(capital),         // 3% take-profit
+        createSpotLagTP6(capital),         // 6% take-profit
+        createSpotLagVolAdapt(capital),    // Dynamic TP based on volatility
+
+        // Trailing stop variants
+        createSpotLagTrailing(capital),
+        createSpotLagTrailTight(capital),
+        createSpotLagTrailWide(capital),
+
+        // Mispricing strategies (based on actual data)
+        createMispricingOnly(capital),
+        createMispricingStrict(capital),
+        createMispricingLoose(capital),    // +$1,707
+
+        // Data-driven strategies (Jan 2026)
+        createSpotLagLateValue(capital),   // +$1,337
+        createSpotLagDeepValue(capital),   // +$873
+        createSpotLagCorrectSide(capital),
+        createSpotLagExtremeReversal(capital),
+        createSpotLagTP3Trailing(capital),
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // CHAINLINK STRATEGIES
+        // ═══════════════════════════════════════════════════════════════════════
+        createSpotLagCLConfirmed(capital),
+        createSpotLagAggressiveCL(capital),
+        createMispricingCLConfirmed(capital),
+        createUpOnlyCLConfirmed(capital),
+        createCLDivergence(capital),
+        createCLDivergenceAggro(capital),
+        createCLDivergenceSafe(capital),
+        createCLFinalSeconds(capital),
+        createCLFinalSecondsUltra(capital),
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // ENDGAME STRATEGIES (final seconds plays)
+        // ═══════════════════════════════════════════════════════════════════════
+        createEndgameBase(capital),
+        createEndgameConservative(capital),
+        createEndgameAggressive(capital),
+        createEndgameSafe(capital),
+        createEndgameMomentum(capital),
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // OTHER STRATEGIES - keep for comparison but lower priority
+        // ═══════════════════════════════════════════════════════════════════════
+        createContrarianBase(capital),
+        createContrarianSOL(capital),
+        createContrarianScalp(capital),
+        createContrarianStrong(capital),
+
         new TimeConditionalStrategy({ maxPosition: capital }),
-        
-        // Regime (was broken, now fixed to hold)
-        new RegimeStrategy({ maxPosition: capital }),
-        
-        // Microstructure
         new MicrostructureStrategy({ maxPosition: capital }),
-        
-        // Cross Asset
-        new CrossAssetStrategy({ maxPosition: capital })
+        new CrossAssetStrategy({ maxPosition: capital }),
+        new RegimeStrategy({ maxPosition: capital })
     ];
 }
 

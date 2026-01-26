@@ -890,6 +890,778 @@ export async function getLiveTrades(options = {}) {
     }
 }
 
+// ============================================================================
+// ORACLE OVERSEER & RESOLUTION SERVICE TABLES
+// ============================================================================
+
+/**
+ * Initialize OracleOverseer and Resolution tables
+ */
+export async function initOracleResolutionTables() {
+    if (!USE_POSTGRES || !pgPool) {
+        console.log('⚠️  Oracle/Resolution tables require PostgreSQL');
+        return false;
+    }
+
+    try {
+        // Oracle Lag Events - tracks lag detection with market price changes
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS oracle_lag_events (
+                id SERIAL PRIMARY KEY,
+                event_id TEXT UNIQUE,
+                timestamp_ms BIGINT NOT NULL,
+                crypto TEXT NOT NULL,
+                window_epoch BIGINT NOT NULL,
+
+                -- Lag Detection
+                direction TEXT NOT NULL,
+                lag_magnitude REAL,
+                lag_magnitude_pct REAL,
+
+                -- Spot Movement
+                spot_before REAL,
+                spot_after REAL,
+                spot_change_pct REAL,
+
+                -- Market Price Changes (key data)
+                up_bid_before REAL,
+                up_ask_before REAL,
+                up_bid_after REAL,
+                up_ask_after REAL,
+                bid_change_cents REAL,
+                ask_change_cents REAL,
+                cost_to_buy_direction REAL,
+
+                -- Down side prices
+                down_bid_before REAL,
+                down_ask_before REAL,
+                down_bid_after REAL,
+                down_ask_after REAL,
+
+                -- Volume at time
+                up_bid_size REAL,
+                up_ask_size REAL,
+
+                -- Timing
+                time_remaining_sec REAL,
+                tracking_duration_ms INTEGER,
+
+                -- Trade linkage
+                resulted_in_trade BOOLEAN DEFAULT FALSE,
+                linked_trade_id TEXT,
+
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        await pgPool.query(`
+            CREATE INDEX IF NOT EXISTS idx_lag_events_crypto_epoch
+            ON oracle_lag_events(crypto, window_epoch)
+        `);
+        await pgPool.query(`
+            CREATE INDEX IF NOT EXISTS idx_lag_events_direction
+            ON oracle_lag_events(direction, lag_magnitude_pct)
+        `);
+
+        // Execution Latency - tracks signal-to-execution timing
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS execution_latency (
+                id SERIAL PRIMARY KEY,
+                signal_id TEXT UNIQUE,
+                timestamp_ms BIGINT NOT NULL,
+
+                strategy_name TEXT NOT NULL,
+                crypto TEXT NOT NULL,
+                window_epoch BIGINT,
+                side TEXT,
+
+                -- Timestamps
+                signal_generated_ms BIGINT NOT NULL,
+                order_sent_ms BIGINT,
+                order_filled_ms BIGINT,
+
+                -- Derived latencies
+                signal_to_order_ms INTEGER,
+                order_to_fill_ms INTEGER,
+                total_latency_ms INTEGER,
+
+                -- Market movement during latency
+                price_at_signal REAL,
+                price_at_order REAL,
+                price_at_fill REAL,
+                slippage_cents REAL,
+
+                -- Spot movement
+                spot_at_signal REAL,
+                spot_at_fill REAL,
+
+                -- Execution outcome
+                requested_size REAL,
+                filled_size REAL,
+                fill_rate REAL,
+                was_retry BOOLEAN DEFAULT FALSE,
+                fill_status TEXT,
+
+                -- Linked lag event
+                lag_event_id TEXT,
+
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        await pgPool.query(`
+            CREATE INDEX IF NOT EXISTS idx_exec_latency_strategy
+            ON execution_latency(strategy_name, crypto)
+        `);
+
+        // Resolution Snapshots - final minute capture
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS resolution_snapshots (
+                id SERIAL PRIMARY KEY,
+                timestamp_ms BIGINT NOT NULL,
+                crypto TEXT NOT NULL,
+                window_epoch BIGINT NOT NULL,
+                seconds_to_resolution INTEGER NOT NULL,
+
+                -- Three price sources
+                binance_price REAL NOT NULL,
+                chainlink_price REAL,
+                chainlink_staleness INTEGER,
+
+                -- Market prices
+                up_bid REAL,
+                up_ask REAL,
+                up_mid REAL,
+                down_bid REAL,
+                down_ask REAL,
+
+                -- Divergence
+                binance_chainlink_divergence REAL,
+                binance_chainlink_divergence_pct REAL,
+
+                -- Strike context
+                price_to_beat REAL,
+                binance_implies TEXT,
+                chainlink_implies TEXT,
+                market_implies TEXT,
+
+                -- Opportunity flag
+                is_divergence_opportunity BOOLEAN DEFAULT FALSE,
+
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+
+                UNIQUE(crypto, window_epoch, seconds_to_resolution)
+            )
+        `);
+
+        await pgPool.query(`
+            CREATE INDEX IF NOT EXISTS idx_resolution_window
+            ON resolution_snapshots(crypto, window_epoch)
+        `);
+        await pgPool.query(`
+            CREATE INDEX IF NOT EXISTS idx_resolution_divergence
+            ON resolution_snapshots(is_divergence_opportunity)
+        `);
+
+        // Resolution Outcomes - post-resolution analysis
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS resolution_outcomes (
+                id SERIAL PRIMARY KEY,
+                crypto TEXT NOT NULL,
+                window_epoch BIGINT NOT NULL,
+
+                -- Final prices
+                final_binance REAL,
+                final_chainlink REAL,
+                final_market_up_mid REAL,
+                price_to_beat REAL,
+
+                -- Predictions
+                binance_predicted TEXT,
+                chainlink_predicted TEXT,
+                market_predicted TEXT,
+
+                -- Outcome
+                actual_outcome TEXT,
+
+                -- Analysis
+                chainlink_was_stale BOOLEAN,
+                chainlink_staleness_at_resolution INTEGER,
+                had_divergence_opportunity BOOLEAN,
+                divergence_magnitude REAL,
+
+                -- Accuracy
+                binance_was_correct BOOLEAN,
+                chainlink_was_correct BOOLEAN,
+                market_was_correct BOOLEAN,
+
+                resolved_at TIMESTAMPTZ DEFAULT NOW(),
+
+                UNIQUE(crypto, window_epoch)
+            )
+        `);
+
+        await pgPool.query(`
+            CREATE INDEX IF NOT EXISTS idx_resolution_outcomes_crypto
+            ON resolution_outcomes(crypto)
+        `);
+
+        console.log('✅ Oracle/Resolution tables initialized');
+        return true;
+    } catch (error) {
+        console.error('Failed to init Oracle/Resolution tables:', error.message);
+        return false;
+    }
+}
+
+/**
+ * Save an oracle lag event
+ */
+export async function saveLagEvent(event) {
+    if (!USE_POSTGRES || !pgPool) return;
+
+    try {
+        await pgPool.query(`
+            INSERT INTO oracle_lag_events (
+                event_id, timestamp_ms, crypto, window_epoch,
+                direction, lag_magnitude, lag_magnitude_pct,
+                spot_before, spot_after, spot_change_pct,
+                up_bid_before, up_ask_before, up_bid_after, up_ask_after,
+                bid_change_cents, ask_change_cents, cost_to_buy_direction,
+                down_bid_before, down_ask_before, down_bid_after, down_ask_after,
+                up_bid_size, up_ask_size,
+                time_remaining_sec, tracking_duration_ms,
+                resulted_in_trade, linked_trade_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+            ON CONFLICT (event_id) DO UPDATE SET
+                up_bid_after = EXCLUDED.up_bid_after,
+                up_ask_after = EXCLUDED.up_ask_after,
+                down_bid_after = EXCLUDED.down_bid_after,
+                down_ask_after = EXCLUDED.down_ask_after,
+                bid_change_cents = EXCLUDED.bid_change_cents,
+                ask_change_cents = EXCLUDED.ask_change_cents,
+                tracking_duration_ms = EXCLUDED.tracking_duration_ms,
+                resulted_in_trade = EXCLUDED.resulted_in_trade,
+                linked_trade_id = EXCLUDED.linked_trade_id
+        `, [
+            event.eventId,
+            event.timestampMs,
+            event.crypto,
+            event.windowEpoch,
+            event.direction,
+            event.lagMagnitude,
+            event.lagMagnitudePct,
+            event.spotBefore,
+            event.spotAfter,
+            event.spotChangePct,
+            event.upBidBefore,
+            event.upAskBefore,
+            event.upBidAfter,
+            event.upAskAfter,
+            event.bidChangeCents,
+            event.askChangeCents,
+            event.costToBuyDirection,
+            event.downBidBefore,
+            event.downAskBefore,
+            event.downBidAfter,
+            event.downAskAfter,
+            event.upBidSize,
+            event.upAskSize,
+            event.timeRemainingSec,
+            event.trackingDurationMs,
+            event.resultedInTrade || false,
+            event.linkedTradeId || null
+        ]);
+    } catch (error) {
+        console.error('Failed to save lag event:', error.message);
+    }
+}
+
+/**
+ * Get lag events with optional filtering
+ */
+export async function getLagEvents(options = {}) {
+    if (!USE_POSTGRES || !pgPool) return [];
+
+    const { hours = 24, crypto = null, minLag = 0, direction = null } = options;
+
+    try {
+        let query = `
+            SELECT * FROM oracle_lag_events
+            WHERE timestamp_ms > $1
+        `;
+        const params = [Date.now() - hours * 3600 * 1000];
+        let paramIdx = 2;
+
+        if (crypto) {
+            query += ` AND crypto = $${paramIdx++}`;
+            params.push(crypto);
+        }
+        if (minLag > 0) {
+            query += ` AND ABS(lag_magnitude_pct) >= $${paramIdx++}`;
+            params.push(minLag);
+        }
+        if (direction) {
+            query += ` AND direction = $${paramIdx++}`;
+            params.push(direction);
+        }
+
+        query += ' ORDER BY timestamp_ms DESC LIMIT 500';
+
+        const result = await pgPool.query(query, params);
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get lag events:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Save execution latency measurement
+ */
+export async function saveLatencyMeasurement(measurement) {
+    if (!USE_POSTGRES || !pgPool) return;
+
+    try {
+        await pgPool.query(`
+            INSERT INTO execution_latency (
+                signal_id, timestamp_ms, strategy_name, crypto, window_epoch, side,
+                signal_generated_ms, order_sent_ms, order_filled_ms,
+                signal_to_order_ms, order_to_fill_ms, total_latency_ms,
+                price_at_signal, price_at_order, price_at_fill, slippage_cents,
+                spot_at_signal, spot_at_fill,
+                requested_size, filled_size, fill_rate, was_retry, fill_status,
+                lag_event_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+            ON CONFLICT (signal_id) DO UPDATE SET
+                order_sent_ms = COALESCE(EXCLUDED.order_sent_ms, execution_latency.order_sent_ms),
+                order_filled_ms = COALESCE(EXCLUDED.order_filled_ms, execution_latency.order_filled_ms),
+                signal_to_order_ms = COALESCE(EXCLUDED.signal_to_order_ms, execution_latency.signal_to_order_ms),
+                order_to_fill_ms = COALESCE(EXCLUDED.order_to_fill_ms, execution_latency.order_to_fill_ms),
+                total_latency_ms = COALESCE(EXCLUDED.total_latency_ms, execution_latency.total_latency_ms),
+                price_at_order = COALESCE(EXCLUDED.price_at_order, execution_latency.price_at_order),
+                price_at_fill = COALESCE(EXCLUDED.price_at_fill, execution_latency.price_at_fill),
+                slippage_cents = COALESCE(EXCLUDED.slippage_cents, execution_latency.slippage_cents),
+                spot_at_fill = COALESCE(EXCLUDED.spot_at_fill, execution_latency.spot_at_fill),
+                filled_size = COALESCE(EXCLUDED.filled_size, execution_latency.filled_size),
+                fill_rate = COALESCE(EXCLUDED.fill_rate, execution_latency.fill_rate),
+                fill_status = COALESCE(EXCLUDED.fill_status, execution_latency.fill_status)
+        `, [
+            measurement.signalId,
+            measurement.timestampMs || Date.now(),
+            measurement.strategyName,
+            measurement.crypto,
+            measurement.windowEpoch,
+            measurement.side,
+            measurement.signalGeneratedMs,
+            measurement.orderSentMs,
+            measurement.orderFilledMs,
+            measurement.signalToOrderMs,
+            measurement.orderToFillMs,
+            measurement.totalLatencyMs,
+            measurement.priceAtSignal,
+            measurement.priceAtOrder,
+            measurement.priceAtFill,
+            measurement.slippageCents,
+            measurement.spotAtSignal,
+            measurement.spotAtFill,
+            measurement.requestedSize,
+            measurement.filledSize,
+            measurement.fillRate,
+            measurement.wasRetry || false,
+            measurement.fillStatus,
+            measurement.lagEventId
+        ]);
+    } catch (error) {
+        console.error('Failed to save latency measurement:', error.message);
+    }
+}
+
+/**
+ * Get latency statistics
+ */
+export async function getLatencyStats(options = {}) {
+    if (!USE_POSTGRES || !pgPool) return {};
+
+    const { hours = 24, strategy = null } = options;
+
+    try {
+        let whereClause = `timestamp_ms > ${Date.now() - hours * 3600 * 1000}`;
+        if (strategy) {
+            whereClause += ` AND strategy_name = '${strategy}'`;
+        }
+
+        const result = await pgPool.query(`
+            SELECT
+                strategy_name,
+                COUNT(*) as count,
+                AVG(total_latency_ms) as avg_latency_ms,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_latency_ms) as p50_latency_ms,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY total_latency_ms) as p90_latency_ms,
+                PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY total_latency_ms) as p99_latency_ms,
+                AVG(slippage_cents) as avg_slippage_cents,
+                AVG(fill_rate) as avg_fill_rate,
+                SUM(CASE WHEN fill_status = 'filled' THEN 1 ELSE 0 END)::FLOAT / COUNT(*) as success_rate
+            FROM execution_latency
+            WHERE ${whereClause} AND total_latency_ms IS NOT NULL
+            GROUP BY strategy_name
+            ORDER BY count DESC
+        `);
+
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get latency stats:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Save resolution snapshot
+ */
+export async function saveResolutionSnapshot(snapshot) {
+    if (!USE_POSTGRES || !pgPool) return;
+
+    try {
+        await pgPool.query(`
+            INSERT INTO resolution_snapshots (
+                timestamp_ms, crypto, window_epoch, seconds_to_resolution,
+                binance_price, chainlink_price, chainlink_staleness,
+                up_bid, up_ask, up_mid, down_bid, down_ask,
+                binance_chainlink_divergence, binance_chainlink_divergence_pct,
+                price_to_beat, binance_implies, chainlink_implies, market_implies,
+                is_divergence_opportunity
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            ON CONFLICT (crypto, window_epoch, seconds_to_resolution) DO UPDATE SET
+                binance_price = EXCLUDED.binance_price,
+                chainlink_price = EXCLUDED.chainlink_price,
+                chainlink_staleness = EXCLUDED.chainlink_staleness,
+                up_bid = EXCLUDED.up_bid,
+                up_ask = EXCLUDED.up_ask,
+                up_mid = EXCLUDED.up_mid,
+                is_divergence_opportunity = EXCLUDED.is_divergence_opportunity
+        `, [
+            snapshot.timestampMs,
+            snapshot.crypto,
+            snapshot.windowEpoch,
+            snapshot.secondsToResolution,
+            snapshot.binancePrice,
+            snapshot.chainlinkPrice,
+            snapshot.chainlinkStaleness,
+            snapshot.upBid,
+            snapshot.upAsk,
+            snapshot.upMid,
+            snapshot.downBid,
+            snapshot.downAsk,
+            snapshot.binanceChainlinkDivergence,
+            snapshot.binanceChainlinkDivergencePct,
+            snapshot.priceToBeat,
+            snapshot.binanceImplies,
+            snapshot.chainlinkImplies,
+            snapshot.marketImplies,
+            snapshot.isDivergenceOpportunity || false
+        ]);
+    } catch (error) {
+        // Ignore duplicate key errors (expected on upsert)
+        if (!error.message.includes('duplicate key')) {
+            console.error('Failed to save resolution snapshot:', error.message);
+        }
+    }
+}
+
+/**
+ * Save resolution outcome
+ */
+export async function saveResolutionOutcome(outcome) {
+    if (!USE_POSTGRES || !pgPool) return;
+
+    try {
+        await pgPool.query(`
+            INSERT INTO resolution_outcomes (
+                crypto, window_epoch,
+                final_binance, final_chainlink, final_market_up_mid, price_to_beat,
+                binance_predicted, chainlink_predicted, market_predicted,
+                actual_outcome,
+                chainlink_was_stale, chainlink_staleness_at_resolution,
+                had_divergence_opportunity, divergence_magnitude,
+                binance_was_correct, chainlink_was_correct, market_was_correct
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (crypto, window_epoch) DO UPDATE SET
+                actual_outcome = EXCLUDED.actual_outcome,
+                binance_was_correct = EXCLUDED.binance_was_correct,
+                chainlink_was_correct = EXCLUDED.chainlink_was_correct,
+                market_was_correct = EXCLUDED.market_was_correct
+        `, [
+            outcome.crypto,
+            outcome.windowEpoch,
+            outcome.finalBinance,
+            outcome.finalChainlink,
+            outcome.finalMarketUpMid,
+            outcome.priceToBeat,
+            outcome.binancePredicted,
+            outcome.chainlinkPredicted,
+            outcome.marketPredicted,
+            outcome.actualOutcome,
+            outcome.chainlinkWasStale || false,
+            outcome.chainlinkStalenessAtResolution,
+            outcome.hadDivergenceOpportunity || false,
+            outcome.divergenceMagnitude,
+            outcome.binanceWasCorrect,
+            outcome.chainlinkWasCorrect,
+            outcome.marketWasCorrect
+        ]);
+    } catch (error) {
+        console.error('Failed to save resolution outcome:', error.message);
+    }
+}
+
+/**
+ * Get resolution snapshots for a window
+ */
+export async function getResolutionSnapshots(crypto, windowEpoch) {
+    if (!USE_POSTGRES || !pgPool) return [];
+
+    try {
+        const result = await pgPool.query(`
+            SELECT * FROM resolution_snapshots
+            WHERE crypto = $1 AND window_epoch = $2
+            ORDER BY seconds_to_resolution DESC
+        `, [crypto, windowEpoch]);
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get resolution snapshots:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Get divergence opportunities
+ */
+export async function getDivergenceOpportunities(options = {}) {
+    if (!USE_POSTGRES || !pgPool) return [];
+
+    const { hours = 24 } = options;
+
+    try {
+        const result = await pgPool.query(`
+            SELECT
+                ro.*,
+                (SELECT COUNT(*) FROM resolution_snapshots rs
+                 WHERE rs.crypto = ro.crypto AND rs.window_epoch = ro.window_epoch
+                 AND rs.is_divergence_opportunity = true) as divergence_ticks
+            FROM resolution_outcomes ro
+            WHERE ro.resolved_at > NOW() - INTERVAL '${hours} hours'
+            AND ro.had_divergence_opportunity = true
+            ORDER BY ro.divergence_magnitude DESC
+            LIMIT 100
+        `);
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get divergence opportunities:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Get resolution accuracy stats
+ */
+export async function getResolutionAccuracyStats(options = {}) {
+    if (!USE_POSTGRES || !pgPool) return {};
+
+    const { hours = 168 } = options; // Default 1 week
+
+    try {
+        const result = await pgPool.query(`
+            SELECT
+                crypto,
+                COUNT(*) as total_windows,
+                SUM(CASE WHEN binance_was_correct THEN 1 ELSE 0 END) as binance_correct,
+                SUM(CASE WHEN chainlink_was_correct THEN 1 ELSE 0 END) as chainlink_correct,
+                SUM(CASE WHEN market_was_correct THEN 1 ELSE 0 END) as market_correct,
+                SUM(CASE WHEN had_divergence_opportunity THEN 1 ELSE 0 END) as divergence_windows,
+                AVG(CASE WHEN had_divergence_opportunity THEN divergence_magnitude ELSE NULL END) as avg_divergence,
+                SUM(CASE WHEN chainlink_was_stale THEN 1 ELSE 0 END) as stale_chainlink_windows,
+                AVG(chainlink_staleness_at_resolution) as avg_staleness
+            FROM resolution_outcomes
+            WHERE resolved_at > NOW() - INTERVAL '${hours} hours'
+            GROUP BY crypto
+            ORDER BY crypto
+        `);
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get resolution accuracy stats:', error.message);
+        return [];
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POSITION PATH TRACKER
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Initialize position path tracking table
+ */
+export async function initPositionPathTable() {
+    if (!USE_POSTGRES || !pgPool) return;
+
+    try {
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS position_path_summaries (
+                id SERIAL PRIMARY KEY,
+                position_id TEXT UNIQUE NOT NULL,
+                strategy_name TEXT NOT NULL,
+                crypto TEXT NOT NULL,
+                window_epoch BIGINT NOT NULL,
+                side TEXT NOT NULL,
+
+                -- Entry
+                entry_price REAL NOT NULL,
+                entry_timestamp_ms BIGINT,
+                entry_time_remaining_sec REAL,
+
+                -- Path stats
+                tick_count INTEGER,
+                path_point_count INTEGER,
+
+                -- Peak/trough
+                peak_price REAL,
+                peak_pnl_pct REAL,
+                trough_price REAL,
+                max_drawdown_pct REAL,
+
+                -- Milestones
+                hit_95 BOOLEAN DEFAULT FALSE,
+                hit_99 BOOLEAN DEFAULT FALSE,
+                hit_95_time_remaining REAL,
+                hit_99_time_remaining REAL,
+
+                -- Optimal exit analysis
+                optimal_exit_time_remaining REAL,
+                optimal_exit_pnl REAL,
+
+                -- Exit scenarios
+                pnl_hold_to_expiry REAL,
+                pnl_exit_at_95 REAL,
+                pnl_exit_at_99 REAL,
+                pnl_exit_at_peak REAL,
+
+                -- Resolution
+                outcome TEXT,
+                final_pnl_pct REAL,
+
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_path_summaries_strategy ON position_path_summaries(strategy_name);
+            CREATE INDEX IF NOT EXISTS idx_path_summaries_crypto ON position_path_summaries(crypto);
+            CREATE INDEX IF NOT EXISTS idx_path_summaries_created ON position_path_summaries(created_at);
+        `);
+        console.log('[DB] Position path summaries table ready');
+    } catch (error) {
+        console.error('Failed to create position path table:', error.message);
+    }
+}
+
+/**
+ * Save position path summary
+ */
+export async function savePositionPathSummary(summary) {
+    if (!USE_POSTGRES || !pgPool) return;
+
+    try {
+        await pgPool.query(`
+            INSERT INTO position_path_summaries (
+                position_id, strategy_name, crypto, window_epoch, side,
+                entry_price, entry_timestamp_ms, entry_time_remaining_sec,
+                tick_count, path_point_count,
+                peak_price, peak_pnl_pct, trough_price, max_drawdown_pct,
+                hit_95, hit_99, hit_95_time_remaining, hit_99_time_remaining,
+                optimal_exit_time_remaining, optimal_exit_pnl,
+                pnl_hold_to_expiry, pnl_exit_at_95, pnl_exit_at_99, pnl_exit_at_peak,
+                outcome, final_pnl_pct
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+            ON CONFLICT (position_id) DO UPDATE SET
+                peak_price = EXCLUDED.peak_price,
+                peak_pnl_pct = EXCLUDED.peak_pnl_pct,
+                outcome = EXCLUDED.outcome,
+                final_pnl_pct = EXCLUDED.final_pnl_pct
+        `, [
+            summary.positionId,
+            summary.strategyName,
+            summary.crypto,
+            summary.windowEpoch,
+            summary.side,
+            summary.entryPrice,
+            summary.entryTimestampMs,
+            summary.entryTimeRemainingSec,
+            summary.tickCount,
+            summary.pathPointCount,
+            summary.peakPrice,
+            summary.peakPnlPct,
+            summary.troughPrice,
+            summary.maxDrawdownPct,
+            summary.hit95 || false,
+            summary.hit99 || false,
+            summary.hit95TimeRemaining,
+            summary.hit99TimeRemaining,
+            summary.optimalExitTimeRemaining,
+            summary.optimalExitPnl,
+            summary.pnlHoldToExpiry,
+            summary.pnlExitAt95,
+            summary.pnlExitAt99,
+            summary.pnlExitAtPeak,
+            summary.outcome,
+            summary.finalPnlPct
+        ]);
+    } catch (error) {
+        if (!error.message?.includes('duplicate')) {
+            console.error('Failed to save position path summary:', error.message);
+        }
+    }
+}
+
+/**
+ * Get position path exit analysis
+ */
+export async function getPositionPathAnalysis(options = {}) {
+    if (!USE_POSTGRES || !pgPool) return {};
+
+    const { hours = 24, strategy } = options;
+
+    try {
+        let query = `
+            SELECT
+                strategy_name,
+                COUNT(*) as total_positions,
+                SUM(CASE WHEN hit_95 THEN 1 ELSE 0 END) as hit_95_count,
+                SUM(CASE WHEN hit_99 THEN 1 ELSE 0 END) as hit_99_count,
+                AVG(peak_pnl_pct) as avg_peak_pnl,
+                AVG(final_pnl_pct) as avg_final_pnl,
+                AVG(max_drawdown_pct) as avg_max_drawdown,
+                AVG(pnl_hold_to_expiry) as avg_pnl_hold,
+                AVG(pnl_exit_at_95) as avg_pnl_95,
+                AVG(pnl_exit_at_99) as avg_pnl_99,
+                AVG(pnl_exit_at_peak) as avg_pnl_peak,
+                AVG(optimal_exit_time_remaining) as avg_optimal_exit_time
+            FROM position_path_summaries
+            WHERE created_at > NOW() - INTERVAL '${hours} hours'
+        `;
+
+        const params = [];
+        if (strategy) {
+            params.push(strategy);
+            query += ` AND strategy_name = $1`;
+        }
+
+        query += ` GROUP BY strategy_name ORDER BY total_positions DESC`;
+
+        const result = await pgPool.query(query, params);
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get position path analysis:', error.message);
+        return [];
+    }
+}
+
 // Log which mode we're using
 console.log(`🗄️  Database mode: ${USE_POSTGRES ? 'PostgreSQL' : 'SQLite'}`);
 
@@ -911,5 +1683,20 @@ export default {
     getLiveEnabledStrategies,
     setLiveStrategyEnabled,
     saveLiveTrade,
-    getLiveTrades
+    getLiveTrades,
+    // OracleOverseer & Resolution
+    initOracleResolutionTables,
+    saveLagEvent,
+    getLagEvents,
+    saveLatencyMeasurement,
+    getLatencyStats,
+    saveResolutionSnapshot,
+    saveResolutionOutcome,
+    getResolutionSnapshots,
+    getDivergenceOpportunities,
+    getResolutionAccuracyStats,
+    // Position Path Tracker
+    initPositionPathTable,
+    savePositionPathSummary,
+    getPositionPathAnalysis
 };
