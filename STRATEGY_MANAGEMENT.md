@@ -35,6 +35,35 @@ Only these strategies should be live:
 
 **All other SpotLag strategies are DISABLED** - they don't incorporate time-aware logic.
 
+## Future Enhancement: Full Probabilistic Model
+
+**Status:** Planned (not yet implemented)
+
+The TimeAware strategies currently use a moneyness filter (added Jan 2026) to prevent trades when spot is too far from strike. This is a pragmatic approximation.
+
+A more rigorous approach would calculate the **theoretical probability impact** of any spot move using:
+
+```
+P(up) = Φ((S - K) / (σ√τ))
+```
+
+Where σ = window volatility, τ = time remaining as fraction.
+
+This would allow the strategy to:
+1. Calculate expected probability change from a spot move
+2. Compare to actual market price change
+3. Only trade when the gap exceeds a threshold (e.g., 3% probability edge)
+
+**Why we haven't done this yet:**
+- Adds model risk (what volatility to use?)
+- Makes TimeAware converge toward ProbEdge (reduces diversification)
+- Current moneyness filter captures 80% of the benefit with 20% complexity
+
+**When to revisit:**
+- If we see TimeAware taking bad trades that the filter doesn't catch
+- If we want to unify all SpotLag strategies into a single probabilistic framework
+- When we have enough data to estimate per-crypto, time-varying volatility reliably
+
 ### 4. How to Add a New Strategy
 
 1. Create the strategy class in `src/quant/strategies/`

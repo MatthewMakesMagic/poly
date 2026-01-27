@@ -2528,6 +2528,13 @@ export class SpotLag_TimeAwareStrategy {
             maxMarketProb: 0.92,  // Don't buy UP if market already >92%
             minMarketProb: 0.08,  // Don't buy DOWN if market already <8%
 
+            // MONEYNESS FILTER - max distance from strike by time window
+            // Beyond these thresholds, probability is too extreme for edge
+            // Based on: P(up) = Φ((S-K)/(σ√τ)), extreme when >2σ from strike
+            earlyWindowMaxSpotDelta: 0.40,   // >5min: still enough volatility
+            midWindowMaxSpotDelta: 0.30,     // 2-5min: tighter bound
+            lateWindowMaxSpotDelta: 0.20,    // <2min: probability extreme beyond this
+
             // Position sizing
             maxPosition: 100,
 
@@ -2667,26 +2674,41 @@ export class SpotLag_TimeAwareStrategy {
             ? ((tick.spot_price - tick.price_to_beat) / tick.price_to_beat) * 100
             : 0;
 
-        // Determine time window and required spot delta
+        // Determine time window and thresholds
         let requiredSpotDelta;
+        let maxSpotDelta;
         let timeWindow;
         if (timeRemaining > this.options.earlyWindowThreshold) {
             requiredSpotDelta = this.options.earlyWindowMinSpotDelta;
+            maxSpotDelta = this.options.earlyWindowMaxSpotDelta;
             timeWindow = 'early';
         } else if (timeRemaining > this.options.lateWindowThreshold) {
             requiredSpotDelta = this.options.midWindowMinSpotDelta;
+            maxSpotDelta = this.options.midWindowMaxSpotDelta;
             timeWindow = 'mid';
         } else {
             requiredSpotDelta = this.options.lateWindowMinSpotDelta;
+            maxSpotDelta = this.options.lateWindowMaxSpotDelta;
             timeWindow = 'late';
         }
 
-        // Check if spot delta is sufficient for this time window
+        // Check if spot delta is sufficient for this time window (minimum threshold)
         if (Math.abs(spotDeltaPct) < requiredSpotDelta) {
             return this.createSignal('hold', null, 'spot_delta_insufficient', {
                 spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
                 required: requiredSpotDelta + '%',
                 timeWindow
+            });
+        }
+
+        // MONEYNESS FILTER: Check if spot is TOO FAR from strike (probability too extreme)
+        // Beyond maxSpotDelta, the probability is so extreme there's no edge to capture
+        if (Math.abs(spotDeltaPct) > maxSpotDelta) {
+            return this.createSignal('hold', null, 'spot_too_far_from_strike', {
+                spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
+                maxAllowed: maxSpotDelta + '%',
+                timeWindow,
+                reason: 'probability_already_extreme'
             });
         }
 
@@ -2743,6 +2765,7 @@ export class SpotLag_TimeAwareStrategy {
 
 /**
  * Time-Aware Aggressive: Lower thresholds, more trades
+ * Wider moneyness bounds (accepts more extreme positions)
  */
 export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrategy {
     constructor(options = {}) {
@@ -2752,6 +2775,10 @@ export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrate
             earlyWindowMinSpotDelta: 0.10,
             midWindowMinSpotDelta: 0.07,
             lateWindowMinSpotDelta: 0.03,
+            // Wider max bounds - accepts trades further from strike
+            earlyWindowMaxSpotDelta: 0.50,
+            midWindowMaxSpotDelta: 0.40,
+            lateWindowMaxSpotDelta: 0.25,
             marketLagRatio: 0.6,
             ...options
         });
@@ -2760,6 +2787,7 @@ export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrate
 
 /**
  * Time-Aware Conservative: Higher thresholds, fewer but higher-conviction trades
+ * Tighter moneyness bounds (only near-the-money trades)
  */
 export class SpotLag_TimeAwareConservativeStrategy extends SpotLag_TimeAwareStrategy {
     constructor(options = {}) {
@@ -2769,6 +2797,10 @@ export class SpotLag_TimeAwareConservativeStrategy extends SpotLag_TimeAwareStra
             earlyWindowMinSpotDelta: 0.20,
             midWindowMinSpotDelta: 0.15,
             lateWindowMinSpotDelta: 0.08,
+            // Tighter max bounds - only trade near the money
+            earlyWindowMaxSpotDelta: 0.35,
+            midWindowMaxSpotDelta: 0.25,
+            lateWindowMaxSpotDelta: 0.15,
             marketLagRatio: 0.4,
             maxMarketProb: 0.88,
             minMarketProb: 0.12,
