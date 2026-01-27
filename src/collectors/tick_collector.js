@@ -10,7 +10,7 @@
  */
 
 import WebSocket from 'ws';
-import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats } from '../db/connection.js';
+import { initDatabase, insertTick, upsertWindow, setState, getState, saveResearchStats, initOracleResolutionTables, initPositionPathTable } from '../db/connection.js';
 import { getResearchEngine } from '../quant/research_engine.js';
 import { startDashboard, sendTick, sendStrategyComparison, sendMetrics } from '../dashboard/server.js';
 import { getChainlinkCollector } from './chainlink_prices.js';
@@ -95,7 +95,22 @@ class TickCollector {
         
         // Initialize database
         this.db = initDatabase();
-        
+
+        // Initialize additional tables (Oracle/Resolution tracking, Position paths)
+        try {
+            await initOracleResolutionTables();
+            console.log('✅ Oracle/Resolution tables initialized');
+        } catch (error) {
+            console.error('⚠️  Oracle/Resolution tables init failed:', error.message);
+        }
+
+        try {
+            await initPositionPathTable();
+            console.log('✅ Position path table initialized');
+        } catch (error) {
+            console.error('⚠️  Position path table init failed:', error.message);
+        }
+
         // Initialize research engine
         try {
             this.researchEngine = getResearchEngine({ 
