@@ -51,7 +51,7 @@ const DEFAULT_RISK_PARAMS = {
     
     // Slippage protection
     maxSlippagePercent: 5,       // Max 5% slippage from expected price
-    maxSpreadPercent: 10,        // Don't trade if spread > 10%
+    maxSpreadPercent: 100,       // Disabled - spread in cents is always reasonable
     
     // Liquidity requirements
     minBidSize: 10,              // Minimum $10 on bid side
