@@ -3161,6 +3161,11 @@ export class SpotLag_TrailStrategy {
             minProbability: 0.05,         // Don't trade below 5¢ (no liquidity)
             maxProbability: 0.95,         // Don't fight 95%+ consensus
 
+            // CONVICTION-BASED RISK MANAGEMENT
+            requireRightSide: false,      // If true, only trade when on right side of strike
+            wrongSideMinTime: 0,          // Min time remaining to allow wrong-side entry (0 = always allow)
+            wrongSideStopLoss: 0.30,      // Stop loss threshold for wrong-side entries (30% default)
+
             // Position sizing
             maxPosition: 100,
 
@@ -3172,11 +3177,14 @@ export class SpotLag_TrailStrategy {
 
         this.state = {};
         this.tradedThisWindow = {};
-        this.stats = { signals: 0, earlyEntries: 0, midEntries: 0, lateEntries: 0 };
+        this.stats = { signals: 0, earlyEntries: 0, midEntries: 0, lateEntries: 0, rightSideEntries: 0, wrongSideEntries: 0, stopLossExits: 0 };
 
         // Trailing stop state per crypto
         this.highWaterMark = {};
         this.trailingActive = {};
+
+        // Position metadata for conviction-based management
+        this.positionMeta = {};
     }
 
     getName() { return this.name; }
@@ -3214,11 +3222,32 @@ export class SpotLag_TrailStrategy {
             state.timestamps.shift();
         }
 
-        // POSITION MANAGEMENT WITH TRAILING STOP
+        // POSITION MANAGEMENT WITH TRAILING STOP + WRONG-SIDE STOP LOSS
         if (position) {
             const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
             const entryPrice = position.entryPrice;
             const pnlPct = (currentPrice - entryPrice) / entryPrice;
+
+            // WRONG-SIDE STOP LOSS: Cut losses early when on wrong side of strike
+            const posMeta = this.positionMeta[crypto];
+            if (posMeta && !posMeta.rightSideOfStrike) {
+                const stopLossThreshold = this.options.wrongSideStopLoss;
+                if (pnlPct < -stopLossThreshold) {
+                    console.log(`[${this.name}] ${crypto}: STOP LOSS at ${(pnlPct * 100).toFixed(1)}% (wrong side of strike)`);
+                    this.stats.stopLossExits++;
+                    delete this.highWaterMark[crypto];
+                    delete this.trailingActive[crypto];
+                    delete this.positionMeta[crypto];
+                    this.tradedThisWindow[crypto] = windowEpoch;
+
+                    return this.createSignal('sell', null, 'stop_loss_wrong_side', {
+                        entryPrice: entryPrice.toFixed(3),
+                        exitPrice: currentPrice.toFixed(3),
+                        pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                        stopLossThreshold: (stopLossThreshold * 100).toFixed(0) + '%'
+                    });
+                }
+            }
 
             // Update high-water mark
             if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
@@ -3311,6 +3340,38 @@ export class SpotLag_TrailStrategy {
         const marketProb = tick.up_mid || 0.5;
         const sideProb = side === 'up' ? marketProb : (1 - marketProb);
 
+        // STRIKE ALIGNMENT CHECK: Is spot on the RIGHT or WRONG side of strike?
+        const strike = tick.price_to_beat;
+        const spotPrice = newSpot;
+        const spotAboveStrike = spotPrice > strike;
+        const bettingUp = side === 'up';
+        // RIGHT SIDE: betting direction matches spot's position vs strike
+        // e.g., betting UP when spot is ABOVE strike, or betting DOWN when spot is BELOW strike
+        const rightSideOfStrike = (bettingUp && spotAboveStrike) || (!bettingUp && !spotAboveStrike);
+
+        // Calculate conviction score
+        const timeWeight = timeRemaining < 60 ? 1.0 : timeRemaining < 120 ? 0.8 : timeRemaining < 300 ? 0.5 : 0.3;
+        const strikeWeight = rightSideOfStrike ? 1.0 : 0.4;
+        const conviction = timeWeight * strikeWeight;
+
+        // CONVICTION-BASED ENTRY FILTER
+        if (this.options.requireRightSide && !rightSideOfStrike) {
+            return this.createSignal('hold', null, 'wrong_side_of_strike', {
+                side,
+                spotAboveStrike,
+                strike: strike?.toFixed(2),
+                spotPrice: spotPrice?.toFixed(2)
+            });
+        }
+
+        // Wrong-side entry time filter: only allow wrong-side entries late in window
+        if (!rightSideOfStrike && this.options.wrongSideMinTime > 0 && timeRemaining > this.options.wrongSideMinTime) {
+            return this.createSignal('hold', null, 'wrong_side_too_early', {
+                timeRemaining: timeRemaining.toFixed(0) + 's',
+                minTimeRequired: this.options.wrongSideMinTime + 's'
+            });
+        }
+
         // LIQUIDITY GUARD: Don't trade below minProbability (no liquidity)
         if (sideProb < this.options.minProbability) {
             return this.createSignal('hold', null, 'below_min_probability', {
@@ -3333,14 +3394,32 @@ export class SpotLag_TrailStrategy {
         else if (timeRemaining > 120) this.stats.midEntries++;
         else this.stats.lateEntries++;
 
+        // Track right/wrong side entries
+        if (rightSideOfStrike) {
+            this.stats.rightSideEntries++;
+        } else {
+            this.stats.wrongSideEntries++;
+        }
+
         this.tradedThisWindow[crypto] = windowEpoch;
 
+        // Store position metadata for conviction-based management
+        this.positionMeta[crypto] = {
+            rightSideOfStrike,
+            conviction,
+            entryTime: timeRemaining,
+            strike,
+            spotAtEntry: spotPrice
+        };
+
         const timeWindow = timeRemaining > 300 ? 'early' : timeRemaining > 120 ? 'mid' : 'late';
+        const sideLabel = rightSideOfStrike ? 'RIGHT' : 'WRONG';
 
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
             `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
             `spotMove=${(spotMove * 100).toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
-            `prob=${(sideProb * 100).toFixed(1)}%`);
+            `prob=${(sideProb * 100).toFixed(1)}% | ` +
+            `side=${sideLabel} conv=${conviction.toFixed(2)}`);
 
         return this.createSignal('buy', side, 'spotlag_trail_entry', {
             timeWindow,
@@ -3349,6 +3428,8 @@ export class SpotLag_TrailStrategy {
             lagRatio: lagRatio.toFixed(2),
             marketProb: (marketProb * 100).toFixed(1) + '%',
             sideProb: (sideProb * 100).toFixed(1) + '%',
+            rightSideOfStrike,
+            conviction: conviction.toFixed(2),
             crypto
         });
     }
@@ -3359,6 +3440,7 @@ export class SpotLag_TrailStrategy {
 
     onWindowStart(windowInfo) {
         this.tradedThisWindow = {};
+        this.positionMeta = {};  // Clear position metadata on window start
     }
 
     onWindowEnd(windowInfo, outcome) {}
@@ -3369,7 +3451,8 @@ export class SpotLag_TrailStrategy {
 }
 
 /**
- * V1: Ultra Conservative - Fewest trades, highest conviction
+ * V1: Safe - Only trade when on RIGHT side of strike
+ * Highest conviction, fewest trades, loose stop loss as safety net
  */
 export class SpotLag_Trail_V1Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
@@ -3381,13 +3464,17 @@ export class SpotLag_Trail_V1Strategy extends SpotLag_TrailStrategy {
             trailingStopPct: 0.30,        // 30% trailing
             minProbability: 0.10,         // 10% min (more liquidity)
             maxProbability: 0.90,         // 90% max (less consensus fighting)
+            // CONVICTION: Only trade right side of strike
+            requireRightSide: true,
+            wrongSideStopLoss: 0.40,      // 40% stop (safety net, shouldn't hit often)
             ...options
         });
     }
 }
 
 /**
- * V2: Conservative
+ * V2: Moderate - Allow wrong side late only (< 120s remaining)
+ * Good balance of conviction and opportunity, 30% stop on wrong side
  */
 export class SpotLag_Trail_V2Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
@@ -3399,26 +3486,35 @@ export class SpotLag_Trail_V2Strategy extends SpotLag_TrailStrategy {
             trailingStopPct: 0.28,
             minProbability: 0.08,
             maxProbability: 0.92,
+            // CONVICTION: Allow wrong side only in late window
+            requireRightSide: false,
+            wrongSideMinTime: 120,        // Only allow wrong side if < 120s remaining
+            wrongSideStopLoss: 0.30,      // 30% stop on wrong side entries
             ...options
         });
     }
 }
 
 /**
- * V3: Base/Moderate (same as SpotLag_Trail)
+ * V3: Base - Allow both sides with stop loss protection
+ * Standard thresholds, 25% stop on wrong side entries
  */
 export class SpotLag_Trail_V3Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
         super({
             name: 'SpotLag_Trail_V3',
             // Uses base defaults: 0.0002, 0.6, 0.10, 0.25, 0.05, 0.95
+            // CONVICTION: Allow both sides with stop loss
+            requireRightSide: false,
+            wrongSideStopLoss: 0.25,      // 25% stop on wrong side entries
             ...options
         });
     }
 }
 
 /**
- * V4: Aggressive - More trades
+ * V4: Aggressive - Tighter stop loss on wrong side
+ * More trades, but cut wrong-side losers quickly (20% stop)
  */
 export class SpotLag_Trail_V4Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
@@ -3430,13 +3526,18 @@ export class SpotLag_Trail_V4Strategy extends SpotLag_TrailStrategy {
             trailingStopPct: 0.20,        // 20% trailing (tighter)
             minProbability: 0.04,         // 4% min
             maxProbability: 0.96,
+            // CONVICTION: Tight stop loss on wrong side
+            requireRightSide: false,
+            wrongSideStopLoss: 0.20,      // 20% stop - cut losers quickly
             ...options
         });
     }
 }
 
 /**
- * V5: Ultra Aggressive - Most trades
+ * V5: DEPRECATED - Ultra Aggressive (consistently losing money)
+ * Kept for backtesting only - DISABLED from live trading
+ * Analysis: 4W/5L, -$1.06 P&L - too aggressive, enters wrong-side trades without protection
  */
 export class SpotLag_Trail_V5Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
@@ -3449,6 +3550,7 @@ export class SpotLag_Trail_V5Strategy extends SpotLag_TrailStrategy {
             minProbability: 0.03,         // 3% min
             maxProbability: 0.97,
             minTimeRemaining: 20,         // Can enter later
+            // No conviction-based protection - this is why it loses money
             ...options
         });
     }
@@ -3490,6 +3592,681 @@ export function createMicroLagConvergenceAggro(capital = 100) {
 
 export function createMicroLagConvergenceSafe(capital = 100) {
     return createSpotLagTrailV2(capital);
+}
+
+// =============================================================================
+// PROBABILITY MODEL UTILITIES (Jan 2026)
+// Used by both PureProb and enhanced Lag strategies for sizing and entry
+// =============================================================================
+
+/**
+ * Calculate expected probability given spot displacement and time remaining
+ * Based on empirical data: closer to expiry + larger displacement = more certain outcome
+ *
+ * @param {number} spotDeltaPct - Spot displacement from strike as percentage (e.g., 0.15 = 0.15%)
+ * @param {number} timeRemainingSec - Seconds remaining in window
+ * @returns {number} Expected probability [0.5, 0.95]
+ */
+function calculateExpectedProbability(spotDeltaPct, timeRemainingSec) {
+    // Base expected probabilities by time bucket (calibrated from data)
+    // When spot is displaced by ~0.2% from strike
+    const baseProbs = {
+        600: 0.80,  // 10min left: ~80%
+        300: 0.85,  // 5min left: ~85%
+        120: 0.89,  // 2min left: ~89%
+        60: 0.90,   // 1min left: ~90%
+        30: 0.91,   // 30s left: ~91%
+        15: 0.93,   // 15s left: ~93%
+        5: 0.95     // 5s left: ~95%
+    };
+
+    // Interpolate base probability by time
+    const times = Object.keys(baseProbs).map(Number).sort((a, b) => b - a);
+    let baseProb = 0.75;  // Default for very early
+    for (const t of times) {
+        if (timeRemainingSec <= t) {
+            baseProb = baseProbs[t];
+        }
+    }
+
+    // Adjust for displacement magnitude (larger delta = higher confidence)
+    // deltaMultiplier scales from 0.5 (tiny delta) to 1.5 (large delta)
+    const absDelta = Math.abs(spotDeltaPct);
+    const deltaMultiplier = Math.min(0.5 + (absDelta / 0.2), 1.5);
+
+    // Apply multiplier to edge over 50%
+    const adjusted = 0.5 + (baseProb - 0.5) * deltaMultiplier;
+
+    // Clamp to reasonable range
+    return Math.min(0.95, Math.max(0.50, adjusted));
+}
+
+/**
+ * Calculate dynamic position size based on edge, conviction, and liquidity
+ *
+ * @param {number} edge - Edge percentage (expected - market probability)
+ * @param {number} conviction - Conviction score [0, 1]
+ * @param {number} liquidityAvailable - Available liquidity on the side we're trading (in $)
+ * @param {number} baseSize - Base position size
+ * @returns {number} Adjusted position size
+ */
+function calculateDynamicSize(edge, conviction, liquidityAvailable, baseSize) {
+    // Edge multiplier: scale position by edge magnitude
+    // 5% edge = 1x, 10% edge = 2x, 15%+ edge = 3x (capped)
+    const edgeMultiplier = Math.min(Math.max(edge / 0.05, 0.5), 3.0);
+
+    // Conviction multiplier: scale by how confident we are
+    // High conviction (right side, late) = 1x, low conviction = 0.5x
+    const convictionMultiplier = 0.5 + (conviction * 0.5);
+
+    // Calculate desired size
+    let desiredSize = baseSize * edgeMultiplier * convictionMultiplier;
+
+    // Liquidity constraint: never take more than 10% of available book
+    const maxLiquiditySize = liquidityAvailable * 0.10;
+    desiredSize = Math.min(desiredSize, maxLiquiditySize);
+
+    // Floor and ceiling
+    const minSize = 10;    // Minimum $10 to be worth the effort
+    const maxSize = baseSize * 3;  // Never more than 3x base
+
+    return Math.max(minSize, Math.min(maxSize, desiredSize));
+}
+
+// =============================================================================
+// SET 1: PURE PROBABILISTIC STRATEGIES (PureProb_*)
+// Trade purely on probability edge - no lag detection required
+// When expected probability diverges from market price, take the trade
+// =============================================================================
+
+/**
+ * Pure Probability Edge Strategy
+ * Trades when market probability differs from expected by more than threshold
+ * Uses dynamic position sizing based on edge magnitude
+ */
+export class PureProb_BaseStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'PureProb_Base';
+        this.options = {
+            // Entry thresholds
+            minEdge: 0.05,              // Minimum 5% edge to trade
+            minSpotDeltaPct: 0.05,      // Minimum 0.05% spot displacement from strike
+
+            // Time constraints
+            minTimeRemaining: 30,       // Don't enter in final 30s
+            maxTimeRemaining: 600,      // Don't enter too early (before 10min mark)
+
+            // Liquidity guards
+            minProbability: 0.05,       // Don't trade below 5 cents
+            maxProbability: 0.95,       // Don't trade above 95 cents
+            minLiquidity: 50,           // Minimum $50 liquidity on our side
+
+            // Position sizing
+            basePosition: 100,          // Base position size
+            useDynamicSizing: true,     // Use edge-based sizing
+
+            // Risk management
+            stopLoss: 0.25,             // 25% stop loss
+
+            // Cryptos
+            enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
+
+            ...options
+        };
+
+        this.state = {};
+        this.tradedThisWindow = {};
+        this.positionMeta = {};
+        this.stats = { signals: 0, totalEdge: 0, avgEdge: 0 };
+    }
+
+    getName() { return this.name; }
+
+    initCrypto(crypto) {
+        if (!this.state[crypto]) {
+            this.state[crypto] = { lastSignalWindow: null };
+        }
+        return this.state[crypto];
+    }
+
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled', this.options.basePosition);
+        }
+
+        const state = this.initCrypto(crypto);
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+        const marketProb = tick.up_mid || 0.5;
+        const strike = tick.price_to_beat;
+        const spotPrice = tick.spot_price;
+
+        // Position management with stop loss
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const entryPrice = position.entryPrice;
+            const pnlPct = (currentPrice - entryPrice) / entryPrice;
+
+            // Stop loss
+            if (pnlPct < -this.options.stopLoss) {
+                delete this.positionMeta[crypto];
+                this.tradedThisWindow[crypto] = windowEpoch;
+                return this.createSignal('sell', null, 'stop_loss', this.options.basePosition, {
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%'
+                });
+            }
+
+            // Hold to expiry otherwise
+            return this.createSignal('hold', null, 'holding', this.options.basePosition, {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%'
+            });
+        }
+
+        // Already traded this window
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded', this.options.basePosition);
+        }
+
+        // Time filter
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_late', this.options.basePosition);
+        }
+        if (timeRemaining > this.options.maxTimeRemaining) {
+            return this.createSignal('hold', null, 'too_early', this.options.basePosition);
+        }
+
+        // Calculate spot delta from strike
+        const spotDeltaPct = strike > 0 ? ((spotPrice - strike) / strike) * 100 : 0;
+
+        if (Math.abs(spotDeltaPct) < this.options.minSpotDeltaPct) {
+            return this.createSignal('hold', null, 'spot_too_close', this.options.basePosition);
+        }
+
+        // Determine side based on spot position
+        const side = spotDeltaPct > 0 ? 'up' : 'down';
+        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
+
+        // Liquidity guards
+        if (sideProb < this.options.minProbability || sideProb > this.options.maxProbability) {
+            return this.createSignal('hold', null, 'probability_bounds', this.options.basePosition);
+        }
+
+        // Calculate expected probability
+        const expectedProb = calculateExpectedProbability(spotDeltaPct, timeRemaining);
+        const expectedSideProb = side === 'up' ? expectedProb : expectedProb;  // Same for the side we're betting
+
+        // Calculate edge
+        const edge = expectedSideProb - sideProb;
+
+        if (edge < this.options.minEdge) {
+            return this.createSignal('hold', null, 'insufficient_edge', this.options.basePosition, {
+                edge: (edge * 100).toFixed(1) + '%',
+                expected: (expectedSideProb * 100).toFixed(1) + '%',
+                market: (sideProb * 100).toFixed(1) + '%'
+            });
+        }
+
+        // Check liquidity
+        const liquidity = side === 'up' ? (tick.up_ask_size || 100) : (tick.down_ask_size || 100);
+        if (liquidity < this.options.minLiquidity) {
+            return this.createSignal('hold', null, 'insufficient_liquidity', this.options.basePosition);
+        }
+
+        // Calculate conviction (right side of strike always = high conviction for PureProb)
+        const conviction = 0.8 + (0.2 * Math.min(timeRemaining / 60, 1));  // Higher conviction later
+
+        // Calculate position size
+        let size = this.options.basePosition;
+        if (this.options.useDynamicSizing) {
+            size = calculateDynamicSize(edge, conviction, liquidity, this.options.basePosition);
+        }
+
+        // Store position metadata
+        this.positionMeta[crypto] = { edge, conviction, expectedProb: expectedSideProb };
+        this.tradedThisWindow[crypto] = windowEpoch;
+        this.stats.signals++;
+        this.stats.totalEdge += edge;
+        this.stats.avgEdge = this.stats.totalEdge / this.stats.signals;
+
+        console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
+            `edge=${(edge * 100).toFixed(1)}% expected=${(expectedSideProb * 100).toFixed(1)}% ` +
+            `market=${(sideProb * 100).toFixed(1)}% | size=$${size.toFixed(0)} | time=${timeRemaining.toFixed(0)}s`);
+
+        return this.createSignal('buy', side, 'probability_edge', size, {
+            edge: (edge * 100).toFixed(1) + '%',
+            expected: (expectedSideProb * 100).toFixed(1) + '%',
+            market: (sideProb * 100).toFixed(1) + '%',
+            spotDelta: spotDeltaPct.toFixed(3) + '%',
+            conviction: conviction.toFixed(2),
+            crypto
+        });
+    }
+
+    createSignal(action, side, reason, size, analysis = {}) {
+        return { action, side, reason, size, ...analysis };
+    }
+
+    onWindowStart(windowInfo) {
+        this.tradedThisWindow = {};
+        this.positionMeta = {};
+    }
+
+    onWindowEnd(windowInfo, outcome) {}
+
+    getStats() { return { name: this.name, ...this.stats }; }
+}
+
+/**
+ * PureProb Conservative - Higher edge requirement, more selective
+ */
+export class PureProb_ConservativeStrategy extends PureProb_BaseStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'PureProb_Conservative',
+            minEdge: 0.08,              // Need 8% edge
+            minSpotDeltaPct: 0.10,      // Need 0.1% spot delta
+            minTimeRemaining: 60,       // Don't enter too late
+            maxTimeRemaining: 300,      // Only trade in last 5 min
+            stopLoss: 0.30,             // 30% stop
+            ...options
+        });
+    }
+}
+
+/**
+ * PureProb Aggressive - Lower edge threshold, more trades
+ */
+export class PureProb_AggressiveStrategy extends PureProb_BaseStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'PureProb_Aggressive',
+            minEdge: 0.03,              // Accept 3% edge
+            minSpotDeltaPct: 0.03,      // Lower spot delta requirement
+            minTimeRemaining: 20,       // Can enter later
+            maxTimeRemaining: 600,      // Trade full window
+            stopLoss: 0.20,             // Tighter stop
+            basePosition: 150,          // Larger base position
+            ...options
+        });
+    }
+}
+
+/**
+ * PureProb Late - Only trade in final 2 minutes for highest conviction
+ */
+export class PureProb_LateStrategy extends PureProb_BaseStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'PureProb_Late',
+            minEdge: 0.04,              // Lower edge OK when late
+            minSpotDeltaPct: 0.05,
+            minTimeRemaining: 15,       // Can enter very late
+            maxTimeRemaining: 120,      // Only last 2 min
+            stopLoss: 0.20,
+            basePosition: 200,          // Larger position for high conviction
+            ...options
+        });
+    }
+}
+
+// Factory functions for PureProb
+export function createPureProbBase(capital = 100) {
+    return new PureProb_BaseStrategy({ basePosition: capital });
+}
+
+export function createPureProbConservative(capital = 100) {
+    return new PureProb_ConservativeStrategy({ basePosition: capital });
+}
+
+export function createPureProbAggressive(capital = 100) {
+    return new PureProb_AggressiveStrategy({ basePosition: capital });
+}
+
+export function createPureProbLate(capital = 100) {
+    return new PureProb_LateStrategy({ basePosition: capital });
+}
+
+// =============================================================================
+// SET 2: LAG + PROBABILISTIC STRATEGIES (LagProb_*)
+// Waits for lag signal, then uses probability model for entry validation and sizing
+// Combines the best of both approaches
+// =============================================================================
+
+/**
+ * Lag + Probability Strategy
+ * 1. Detects micro-lag (spot moved, market hasn't caught up)
+ * 2. Validates with probability model (expected vs market)
+ * 3. Sizes position dynamically based on edge and liquidity
+ */
+export class LagProb_BaseStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'LagProb_Base';
+        this.options = {
+            // Lag detection (from Trail strategies)
+            spotMoveThreshold: 0.0002,   // 0.02% spot move
+            lookbackTicks: 8,
+            marketLagRatio: 0.6,         // Market moved < 60% of expected
+
+            // Probability validation
+            minEdge: 0.03,               // Need at least 3% probability edge
+            useEdgeValidation: true,     // Validate with probability model
+
+            // Time constraints
+            minTimeRemaining: 30,
+
+            // Liquidity guards
+            minProbability: 0.05,
+            maxProbability: 0.95,
+            minLiquidity: 50,
+
+            // Conviction-based risk (from Trail)
+            requireRightSide: false,
+            wrongSideStopLoss: 0.25,
+
+            // Position sizing
+            basePosition: 100,
+            useDynamicSizing: true,
+
+            // Trailing stop (from Trail)
+            trailingActivationPct: 0.10,
+            trailingStopPct: 0.25,
+            minimumProfitFloor: 0.05,
+
+            enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
+            ...options
+        };
+
+        this.state = {};
+        this.tradedThisWindow = {};
+        this.positionMeta = {};
+        this.highWaterMark = {};
+        this.trailingActive = {};
+        this.stats = { signals: 0, rightSide: 0, wrongSide: 0, avgEdge: 0, totalEdge: 0 };
+    }
+
+    getName() { return this.name; }
+
+    initCrypto(crypto) {
+        if (!this.state[crypto]) {
+            this.state[crypto] = {
+                spotHistory: [],
+                marketHistory: [],
+                timestamps: []
+            };
+        }
+        return this.state[crypto];
+    }
+
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled', this.options.basePosition);
+        }
+
+        const state = this.initCrypto(crypto);
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+        const marketProb = tick.up_mid || 0.5;
+        const strike = tick.price_to_beat;
+
+        // Update history
+        state.spotHistory.push(tick.spot_price);
+        state.marketHistory.push(marketProb);
+        state.timestamps.push(Date.now());
+
+        const maxLen = this.options.lookbackTicks + 5;
+        while (state.spotHistory.length > maxLen) {
+            state.spotHistory.shift();
+            state.marketHistory.shift();
+            state.timestamps.shift();
+        }
+
+        // Position management
+        if (position) {
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const entryPrice = position.entryPrice;
+            const pnlPct = (currentPrice - entryPrice) / entryPrice;
+
+            // Wrong-side stop loss
+            const posMeta = this.positionMeta[crypto];
+            if (posMeta && !posMeta.rightSideOfStrike) {
+                if (pnlPct < -this.options.wrongSideStopLoss) {
+                    console.log(`[${this.name}] ${crypto}: STOP LOSS at ${(pnlPct * 100).toFixed(1)}% (wrong side)`);
+                    this.cleanup(crypto, windowEpoch);
+                    return this.createSignal('sell', null, 'stop_loss_wrong_side', this.options.basePosition, {
+                        pnlPct: (pnlPct * 100).toFixed(1) + '%'
+                    });
+                }
+            }
+
+            // Trailing stop logic
+            if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
+                this.highWaterMark[crypto] = currentPrice;
+            }
+            const hwm = this.highWaterMark[crypto];
+
+            if (!this.trailingActive[crypto] && pnlPct >= this.options.trailingActivationPct) {
+                this.trailingActive[crypto] = true;
+            }
+
+            if (this.trailingActive[crypto]) {
+                const trailingStop = hwm * (1 - this.options.trailingStopPct);
+                const floor = entryPrice * (1 + this.options.minimumProfitFloor);
+                const effectiveStop = Math.max(trailingStop, floor);
+
+                if (currentPrice <= effectiveStop) {
+                    this.cleanup(crypto, windowEpoch);
+                    return this.createSignal('sell', null, 'trailing_stop', this.options.basePosition, {
+                        pnlPct: (pnlPct * 100).toFixed(1) + '%'
+                    });
+                }
+            }
+
+            return this.createSignal('hold', null, 'holding', this.options.basePosition, {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%'
+            });
+        }
+
+        // Clean up if no position
+        delete this.highWaterMark[crypto];
+        delete this.trailingActive[crypto];
+
+        // Already traded this window
+        if (this.tradedThisWindow[crypto] === windowEpoch) {
+            return this.createSignal('hold', null, 'already_traded', this.options.basePosition);
+        }
+
+        // Time filter
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_late', this.options.basePosition);
+        }
+
+        // Need enough history
+        if (state.spotHistory.length < this.options.lookbackTicks) {
+            return this.createSignal('hold', null, 'insufficient_data', this.options.basePosition);
+        }
+
+        // Calculate spot movement (LAG DETECTION)
+        const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
+        const newSpot = state.spotHistory[state.spotHistory.length - 1];
+        const spotMove = (newSpot - oldSpot) / oldSpot;
+
+        if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
+            return this.createSignal('hold', null, 'spot_not_moving', this.options.basePosition);
+        }
+
+        // Calculate market lag
+        const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
+        const newMarket = state.marketHistory[state.marketHistory.length - 1];
+        const marketMove = newMarket - oldMarket;
+        const expectedMove = spotMove * 10;
+        const lagRatio = Math.abs(marketMove) / Math.abs(expectedMove);
+
+        if (lagRatio > this.options.marketLagRatio) {
+            return this.createSignal('hold', null, 'market_caught_up', this.options.basePosition);
+        }
+
+        // Determine side
+        const side = spotMove > 0 ? 'up' : 'down';
+        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
+
+        // Liquidity bounds
+        if (sideProb < this.options.minProbability || sideProb > this.options.maxProbability) {
+            return this.createSignal('hold', null, 'probability_bounds', this.options.basePosition);
+        }
+
+        // Calculate spot delta and expected probability
+        const spotDeltaPct = strike > 0 ? ((newSpot - strike) / strike) * 100 : 0;
+        const expectedProb = calculateExpectedProbability(spotDeltaPct, timeRemaining);
+        const expectedSideProb = side === 'up' ? expectedProb : expectedProb;
+        const edge = expectedSideProb - sideProb;
+
+        // Edge validation
+        if (this.options.useEdgeValidation && edge < this.options.minEdge) {
+            return this.createSignal('hold', null, 'insufficient_edge', this.options.basePosition, {
+                edge: (edge * 100).toFixed(1) + '%'
+            });
+        }
+
+        // Strike alignment check
+        const spotAboveStrike = newSpot > strike;
+        const bettingUp = side === 'up';
+        const rightSideOfStrike = (bettingUp && spotAboveStrike) || (!bettingUp && !spotAboveStrike);
+
+        if (this.options.requireRightSide && !rightSideOfStrike) {
+            return this.createSignal('hold', null, 'wrong_side', this.options.basePosition);
+        }
+
+        // Calculate conviction
+        const timeWeight = timeRemaining < 60 ? 1.0 : timeRemaining < 120 ? 0.8 : 0.6;
+        const strikeWeight = rightSideOfStrike ? 1.0 : 0.5;
+        const conviction = timeWeight * strikeWeight;
+
+        // Check liquidity
+        const liquidity = side === 'up' ? (tick.up_ask_size || 100) : (tick.down_ask_size || 100);
+
+        // Calculate position size
+        let size = this.options.basePosition;
+        if (this.options.useDynamicSizing) {
+            size = calculateDynamicSize(Math.max(edge, 0.03), conviction, liquidity, this.options.basePosition);
+        }
+
+        // Store metadata
+        this.positionMeta[crypto] = { rightSideOfStrike, conviction, edge, expectedProb: expectedSideProb };
+        this.tradedThisWindow[crypto] = windowEpoch;
+        this.stats.signals++;
+        this.stats.totalEdge += edge;
+        this.stats.avgEdge = this.stats.totalEdge / this.stats.signals;
+        if (rightSideOfStrike) this.stats.rightSide++; else this.stats.wrongSide++;
+
+        const sideLabel = rightSideOfStrike ? 'RIGHT' : 'WRONG';
+        console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
+            `lag=${lagRatio.toFixed(2)} edge=${(edge * 100).toFixed(1)}% | ` +
+            `side=${sideLabel} size=$${size.toFixed(0)} | time=${timeRemaining.toFixed(0)}s`);
+
+        return this.createSignal('buy', side, 'lag_prob_entry', size, {
+            lagRatio: lagRatio.toFixed(2),
+            edge: (edge * 100).toFixed(1) + '%',
+            expected: (expectedSideProb * 100).toFixed(1) + '%',
+            market: (sideProb * 100).toFixed(1) + '%',
+            rightSideOfStrike,
+            conviction: conviction.toFixed(2),
+            crypto
+        });
+    }
+
+    cleanup(crypto, windowEpoch) {
+        delete this.highWaterMark[crypto];
+        delete this.trailingActive[crypto];
+        delete this.positionMeta[crypto];
+        this.tradedThisWindow[crypto] = windowEpoch;
+    }
+
+    createSignal(action, side, reason, size, analysis = {}) {
+        return { action, side, reason, size, ...analysis };
+    }
+
+    onWindowStart(windowInfo) {
+        this.tradedThisWindow = {};
+        this.positionMeta = {};
+    }
+
+    onWindowEnd(windowInfo, outcome) {}
+
+    getStats() { return { name: this.name, ...this.stats }; }
+}
+
+/**
+ * LagProb Conservative - Higher thresholds, right side only
+ */
+export class LagProb_ConservativeStrategy extends LagProb_BaseStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'LagProb_Conservative',
+            spotMoveThreshold: 0.0003,   // Higher threshold
+            marketLagRatio: 0.5,         // Stricter lag
+            minEdge: 0.05,               // Higher edge requirement
+            requireRightSide: true,      // Only right side
+            wrongSideStopLoss: 0.30,
+            basePosition: 100,
+            ...options
+        });
+    }
+}
+
+/**
+ * LagProb Aggressive - Lower thresholds, more trades
+ */
+export class LagProb_AggressiveStrategy extends LagProb_BaseStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'LagProb_Aggressive',
+            spotMoveThreshold: 0.00015,  // Lower threshold
+            marketLagRatio: 0.7,         // Allow more catch-up
+            minEdge: 0.02,               // Lower edge OK
+            requireRightSide: false,
+            wrongSideStopLoss: 0.20,     // Tight stop on wrong side
+            basePosition: 150,           // Larger base
+            trailingActivationPct: 0.08,
+            ...options
+        });
+    }
+}
+
+/**
+ * LagProb RightSide - Only trades when on right side of strike
+ */
+export class LagProb_RightSideStrategy extends LagProb_BaseStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'LagProb_RightSide',
+            spotMoveThreshold: 0.0002,
+            marketLagRatio: 0.6,
+            minEdge: 0.03,
+            requireRightSide: true,      // ONLY right side
+            basePosition: 200,           // Higher conviction = larger size
+            trailingActivationPct: 0.12,
+            ...options
+        });
+    }
+}
+
+// Factory functions for LagProb
+export function createLagProbBase(capital = 100) {
+    return new LagProb_BaseStrategy({ basePosition: capital });
+}
+
+export function createLagProbConservative(capital = 100) {
+    return new LagProb_ConservativeStrategy({ basePosition: capital });
+}
+
+export function createLagProbAggressive(capital = 100) {
+    return new LagProb_AggressiveStrategy({ basePosition: capital });
+}
+
+export function createLagProbRightSide(capital = 100) {
+    return new LagProb_RightSideStrategy({ basePosition: capital });
 }
 
 export default SpotLagSimpleStrategy;

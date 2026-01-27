@@ -91,16 +91,29 @@ async function runMigrations() {
             'SpotLag_LateOnly',        // Late window only
             'SpotLag_ProbEdge',        // Probability edge based
 
-            // SPOTLAG TRAIL V1-V5 (Jan 2026) - Simplified micro-lag with trailing stops
-            // NO expected profit gate, simple momentum following with liquidity guards
-            // 5 variants with different aggression levels, all trade independently
-            'SpotLag_Trail_V1',  // Ultra Conservative: 0.04% threshold, strict guards
-            'SpotLag_Trail_V2',  // Conservative: 0.03% threshold
-            'SpotLag_Trail_V3',  // Base/Moderate: 0.02% threshold (proven)
-            'SpotLag_Trail_V4',  // Aggressive: 0.015% threshold
-            'SpotLag_Trail_V5',  // Ultra Aggressive: 0.01% threshold
+            // SPOTLAG TRAIL V1-V4 (Jan 2026) - Micro-lag with conviction-based risk management
+            // Now includes strike alignment check and stop loss for wrong-side entries
+            // V5 REMOVED - consistently losing money (4W/5L, -$1.06)
+            'SpotLag_Trail_V1',  // Safe: only RIGHT side, 40% stop
+            'SpotLag_Trail_V2',  // Moderate: wrong side only late (<120s), 30% stop
+            'SpotLag_Trail_V3',  // Base: both sides with 25% stop
+            'SpotLag_Trail_V4',  // Aggressive: both sides with 20% stop (cut losers fast)
 
-            // ENDGAME - near-resolution plays (proven safe)
+            // PURE PROBABILISTIC (Jan 2026) - Trade on probability edge alone
+            // Dynamic position sizing based on edge magnitude and liquidity
+            'PureProb_Base',         // Base: 5% min edge, dynamic sizing
+            'PureProb_Conservative', // Conservative: 8% min edge
+            'PureProb_Aggressive',   // Aggressive: 3% min edge, larger positions
+            'PureProb_Late',         // Late: Only last 2 min, highest conviction
+
+            // LAG + PROBABILISTIC (Jan 2026) - Lag detection + probability model
+            // Best of both: wait for lag signal, validate with prob edge, dynamic sizing
+            'LagProb_Base',          // Base: lag + 3% min edge
+            'LagProb_Conservative',  // Conservative: higher thresholds, right side only
+            'LagProb_Aggressive',    // Aggressive: lower thresholds, larger positions
+            'LagProb_RightSide',     // RightSide: ONLY trades right side of strike
+
+            // ENDGAME - near-resolution plays (killing it! 10x position size)
             'Endgame',
             'Endgame_Aggressive',
             'Endgame_Conservative',
@@ -118,10 +131,13 @@ async function runMigrations() {
         // Also disable Fair Value and Contrarian
         // =================================================================
         const toDisable = [
-            // OLD MICROLAG (replaced by SpotLag_Trail V1-V5)
+            // OLD MICROLAG (replaced by SpotLag_Trail V1-V4)
             'MicroLag_Convergence',
             'MicroLag_Convergence_Aggro',
             'MicroLag_Convergence_Safe',
+
+            // REMOVED - Too aggressive, consistently losing (4W/5L, -$1.06)
+            'SpotLag_Trail_V5',
 
             // OLD SPOTLAG - not time-aware, disable for live
             'SpotLag_Aggressive',

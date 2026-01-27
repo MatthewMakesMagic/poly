@@ -16,7 +16,6 @@ Strategy names must match EXACTLY between:
 - The migration enable/disable lists in `scripts/start_collector.js`
 
 ### 3. Currently Enabled (Jan 2026)
-Only these strategies should be live:
 
 **Time-Aware SpotLag (v2):**
 - `SpotLag_TimeAware`
@@ -26,43 +25,98 @@ Only these strategies should be live:
 - `SpotLag_LateOnly`
 - `SpotLag_ProbEdge`
 
-**Endgame:**
-- `Endgame`
-- `Endgame_Aggressive`
-- `Endgame_Conservative`
-- `Endgame_Safe`
-- `Endgame_Momentum`
+**SpotLag Trail V1-V4 (Conviction-Based):**
+- `SpotLag_Trail_V1` - Safe: only RIGHT side of strike, 40% stop
+- `SpotLag_Trail_V2` - Moderate: wrong side only late (<120s), 30% stop
+- `SpotLag_Trail_V3` - Base: both sides with 25% stop
+- `SpotLag_Trail_V4` - Aggressive: both sides with 20% stop
+- ~~`SpotLag_Trail_V5`~~ - **DISABLED** (too aggressive, -$1.06 P&L)
 
-**All other SpotLag strategies are DISABLED** - they don't incorporate time-aware logic.
+**Pure Probabilistic (NEW Jan 2026):**
+- `PureProb_Base` - 5% min edge, dynamic sizing
+- `PureProb_Conservative` - 8% min edge, selective
+- `PureProb_Aggressive` - 3% min edge, larger positions
+- `PureProb_Late` - Only last 2 min, highest conviction
 
-## Future Enhancement: Full Probabilistic Model
+**Lag + Probabilistic (NEW Jan 2026):**
+- `LagProb_Base` - Lag detection + 3% min edge
+- `LagProb_Conservative` - Higher thresholds, right side only
+- `LagProb_Aggressive` - Lower thresholds, larger positions
+- `LagProb_RightSide` - ONLY trades right side of strike
 
-**Status:** Planned (not yet implemented)
+**Endgame (10x position size - killing it!):**
+- `Endgame` - $1000 position, >90% prob in last 60s
+- `Endgame_Aggressive` - $1000 position, >85% prob in last 90s
+- `Endgame_Conservative` - $1000 position, >95% prob in last 30s
+- `Endgame_Safe` - $1000 position, >97% prob in last 20s
+- `Endgame_Momentum` - $1000 position, with momentum confirmation
 
-The TimeAware strategies currently use a moneyness filter (added Jan 2026) to prevent trades when spot is too far from strike. This is a pragmatic approximation.
+## Probability Model (IMPLEMENTED Jan 2026)
 
-A more rigorous approach would calculate the **theoretical probability impact** of any spot move using:
+### Core Formula
+```javascript
+// Expected probability based on spot displacement and time
+function calculateExpectedProbability(spotDeltaPct, timeRemainingSec) {
+    // Base probs calibrated from data
+    const baseProbs = {
+        600: 0.80,  // 10min: ~80%
+        300: 0.85,  // 5min: ~85%
+        120: 0.89,  // 2min: ~89%
+        60: 0.90,   // 1min: ~90%
+        30: 0.91,   // 30s: ~91%
+    };
 
+    // Adjust for delta magnitude (larger = more confident)
+    const deltaMultiplier = Math.min(0.5 + (|spotDeltaPct| / 0.2), 1.5);
+    return 0.5 + (baseProb - 0.5) * deltaMultiplier;
+}
 ```
-P(up) = Φ((S - K) / (σ√τ))
+
+### Dynamic Position Sizing
+```javascript
+function calculateDynamicSize(edge, conviction, liquidity, baseSize) {
+    // Edge multiplier: 5% edge = 1x, 10% = 2x, 15%+ = 3x
+    const edgeMultiplier = Math.min(Math.max(edge / 0.05, 0.5), 3.0);
+
+    // Conviction multiplier: high conviction = 1x, low = 0.5x
+    const convictionMultiplier = 0.5 + (conviction * 0.5);
+
+    // Size calculation
+    let size = baseSize * edgeMultiplier * convictionMultiplier;
+
+    // Liquidity cap: never take >10% of book
+    return Math.min(size, liquidity * 0.10, baseSize * 3);
+}
 ```
 
-Where σ = window volatility, τ = time remaining as fraction.
+### Conviction Score
+```javascript
+// Conviction = time_weight × strike_weight
+const timeWeight = timeRemaining < 60 ? 1.0 : timeRemaining < 120 ? 0.8 : 0.6;
+const strikeWeight = rightSideOfStrike ? 1.0 : 0.5;
+const conviction = timeWeight * strikeWeight;
+```
 
-This would allow the strategy to:
-1. Calculate expected probability change from a spot move
-2. Compare to actual market price change
-3. Only trade when the gap exceeds a threshold (e.g., 3% probability edge)
+### Strike Alignment (Right Side of Strike)
+- **RIGHT side**: Betting UP when spot > strike, or DOWN when spot < strike
+- **WRONG side**: Betting opposite to spot's position vs strike
+- **Key insight**: 65.4% WR when correct side vs 14.3% when wrong side
 
-**Why we haven't done this yet:**
-- Adds model risk (what volatility to use?)
-- Makes TimeAware converge toward ProbEdge (reduces diversification)
-- Current moneyness filter captures 80% of the benefit with 20% complexity
+## Strategy Sets
 
-**When to revisit:**
-- If we see TimeAware taking bad trades that the filter doesn't catch
-- If we want to unify all SpotLag strategies into a single probabilistic framework
-- When we have enough data to estimate per-crypto, time-varying volatility reliably
+### Set 1: Pure Probabilistic (PureProb_*)
+Trade purely on probability edge - **no lag detection required**.
+- Calculates expected prob from spot delta + time
+- Compares to market probability
+- Trades when edge exceeds threshold
+- Dynamic sizing based on edge magnitude
+
+### Set 2: Lag + Probabilistic (LagProb_*)
+Combines lag detection with probability model:
+1. Detect micro-lag (spot moved, market hasn't caught up)
+2. Validate with probability model (edge check)
+3. Size position dynamically based on edge + conviction
+4. Stop loss for wrong-side entries
 
 ### 4. How to Add a New Strategy
 

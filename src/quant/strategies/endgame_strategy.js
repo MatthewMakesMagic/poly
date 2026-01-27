@@ -23,13 +23,13 @@ export class EndgameStrategy {
             minProbability: 0.90,       // Only buy if probability > 90%
             maxTimeRemaining: 60,       // Only enter in last 60 seconds
             minTimeRemaining: 5,        // Don't enter in last 5s (execution risk)
-            
+
             // Safety checks
             minSpotBuffer: 0.001,       // Spot must be 0.1% above/below price_to_beat
             maxSpread: 0.05,            // Don't enter if spread > 5%
-            
-            // Position sizing
-            maxPosition: 100,
+
+            // Position sizing - 10x increase (Jan 2026) - Endgame is killing it!
+            maxPosition: 1000,
             
             // No exits needed - hold to expiry (that's the point!)
             // But have emergency stop for flash crash

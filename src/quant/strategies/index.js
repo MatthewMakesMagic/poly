@@ -22,7 +22,7 @@ export { MicrostructureStrategy } from './microstructure_strategy.js';
 export { CrossAssetStrategy } from './cross_asset_strategy.js';
 export { ContrarianStrategy, ContrarianSOLStrategy, ContrarianScalpStrategy, ContrarianStrongStrategy, createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 export { EndgameStrategy, EndgameConservativeStrategy, EndgameAggressiveStrategy, EndgameSafeStrategy, EndgameMomentumStrategy, createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
-export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, SpotLagChainlinkConfirmedStrategy, SpotLagAggressiveCLStrategy, MispricingChainlinkConfirmedStrategy, UpOnlyChainlinkStrategy, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, SpotLag_VolatilityAdaptiveStrategy, createSpotLagVolAdapt, SpotLag_TrailingStopStrategy, SpotLag_TrailingTightStrategy, SpotLag_TrailingWideStrategy, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, ChainlinkDivergenceStrategy, ChainlinkDivergenceAggressiveStrategy, ChainlinkDivergenceConservativeStrategy, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, ChainlinkFinalSecondsStrategy, ChainlinkFinalSecondsUltraStrategy, createCLFinalSeconds, createCLFinalSecondsUltra, SpotLag_LateValueStrategy, SpotLag_DeepValueStrategy, SpotLag_CorrectSideOnlyStrategy, SpotLag_ExtremeReversalStrategy, SpotLag_TP3_TrailingStrategy, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing, SpotLag_TimeAwareStrategy, SpotLag_TimeAwareAggressiveStrategy, SpotLag_TimeAwareConservativeStrategy, SpotLag_TimeAwareTPStrategy, SpotLag_LateWindowOnlyStrategy, SpotLag_ProbabilityEdgeStrategy, createSpotLagTimeAware, createSpotLagTimeAwareAggro, createSpotLagTimeAwareSafe, createSpotLagTimeAwareTP, createSpotLagLateOnly, createSpotLagProbEdge, SpotLag_TrailStrategy, SpotLag_Trail_V1Strategy, SpotLag_Trail_V2Strategy, SpotLag_Trail_V3Strategy, SpotLag_Trail_V4Strategy, SpotLag_Trail_V5Strategy, createSpotLagTrailV1, createSpotLagTrailV2, createSpotLagTrailV3, createSpotLagTrailV4, createSpotLagTrailV5, MicroLag_ConvergenceStrategy, MicroLag_ConvergenceAggroStrategy, MicroLag_ConvergenceSafeStrategy, createMicroLagConvergence, createMicroLagConvergenceAggro, createMicroLagConvergenceSafe } from './spot_lag_simple.js';
+export { SpotLagSimpleStrategy, SpotLagFastStrategy, SpotLagConfirmedStrategy, SpotLagAggressiveStrategy, createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, MispricingOnlyStrategy, MispricingStrictStrategy, MispricingLooseStrategy, MispricingExtremeStrategy, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, SpotLagChainlinkConfirmedStrategy, SpotLagAggressiveCLStrategy, MispricingChainlinkConfirmedStrategy, UpOnlyChainlinkStrategy, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, SpotLag_VolatilityAdaptiveStrategy, createSpotLagVolAdapt, SpotLag_TrailingStopStrategy, SpotLag_TrailingTightStrategy, SpotLag_TrailingWideStrategy, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, ChainlinkDivergenceStrategy, ChainlinkDivergenceAggressiveStrategy, ChainlinkDivergenceConservativeStrategy, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, ChainlinkFinalSecondsStrategy, ChainlinkFinalSecondsUltraStrategy, createCLFinalSeconds, createCLFinalSecondsUltra, SpotLag_LateValueStrategy, SpotLag_DeepValueStrategy, SpotLag_CorrectSideOnlyStrategy, SpotLag_ExtremeReversalStrategy, SpotLag_TP3_TrailingStrategy, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing, SpotLag_TimeAwareStrategy, SpotLag_TimeAwareAggressiveStrategy, SpotLag_TimeAwareConservativeStrategy, SpotLag_TimeAwareTPStrategy, SpotLag_LateWindowOnlyStrategy, SpotLag_ProbabilityEdgeStrategy, createSpotLagTimeAware, createSpotLagTimeAwareAggro, createSpotLagTimeAwareSafe, createSpotLagTimeAwareTP, createSpotLagLateOnly, createSpotLagProbEdge, SpotLag_TrailStrategy, SpotLag_Trail_V1Strategy, SpotLag_Trail_V2Strategy, SpotLag_Trail_V3Strategy, SpotLag_Trail_V4Strategy, SpotLag_Trail_V5Strategy, createSpotLagTrailV1, createSpotLagTrailV2, createSpotLagTrailV3, createSpotLagTrailV4, createSpotLagTrailV5, MicroLag_ConvergenceStrategy, MicroLag_ConvergenceAggroStrategy, MicroLag_ConvergenceSafeStrategy, createMicroLagConvergence, createMicroLagConvergenceAggro, createMicroLagConvergenceSafe, PureProb_BaseStrategy, PureProb_ConservativeStrategy, PureProb_AggressiveStrategy, PureProb_LateStrategy, createPureProbBase, createPureProbConservative, createPureProbAggressive, createPureProbLate, LagProb_BaseStrategy, LagProb_ConservativeStrategy, LagProb_AggressiveStrategy, LagProb_RightSideStrategy, createLagProbBase, createLagProbConservative, createLagProbAggressive, createLagProbRightSide } from './spot_lag_simple.js';
 
 // Import for factory
 import { FairValueStrategy, createFairValueRealizedVol, createFairValueEWMA, createFairValueWithDrift, createFairValueDrift1H, createFairValueDrift4H, createFairValueDrift24H, createFairValueUpOnly4H } from './fair_value_strategy.js';
@@ -33,7 +33,7 @@ import { MicrostructureStrategy } from './microstructure_strategy.js';
 import { CrossAssetStrategy } from './cross_asset_strategy.js';
 import { createContrarianBase, createContrarianSOL, createContrarianScalp, createContrarianStrong } from './contrarian_strategy.js';
 import { createEndgameBase, createEndgameConservative, createEndgameAggressive, createEndgameSafe, createEndgameMomentum } from './endgame_strategy.js';
-import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, createSpotLagVolAdapt, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, createCLFinalSeconds, createCLFinalSecondsUltra, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing, createSpotLagTimeAware, createSpotLagTimeAwareAggro, createSpotLagTimeAwareSafe, createSpotLagTimeAwareTP, createSpotLagLateOnly, createSpotLagProbEdge, createSpotLagTrailV1, createSpotLagTrailV2, createSpotLagTrailV3, createSpotLagTrailV4, createSpotLagTrailV5, createMicroLagConvergence, createMicroLagConvergenceAggro, createMicroLagConvergenceSafe } from './spot_lag_simple.js';
+import { createSpotLagSimple, createSpotLagFast, createSpotLagConfirmed, createSpotLagAggressive, createSpotLag5Sec, createSpotLag10Sec, createSpotLag30Sec, createSpotLag60Sec, createSpotLag120Sec, createSpotLag300Sec, createMispricingOnly, createMispricingStrict, createMispricingLoose, createMispricingExtreme, createSpotLagCLConfirmed, createSpotLagAggressiveCL, createMispricingCLConfirmed, createUpOnlyCLConfirmed, createSpotLagVolAdapt, createSpotLagTrailing, createSpotLagTrailTight, createSpotLagTrailWide, createCLDivergence, createCLDivergenceAggro, createCLDivergenceSafe, createCLFinalSeconds, createCLFinalSecondsUltra, createSpotLagLateValue, createSpotLagDeepValue, createSpotLagCorrectSide, createSpotLagExtremeReversal, createSpotLagTP3Trailing, createSpotLagTimeAware, createSpotLagTimeAwareAggro, createSpotLagTimeAwareSafe, createSpotLagTimeAwareTP, createSpotLagLateOnly, createSpotLagProbEdge, createSpotLagTrailV1, createSpotLagTrailV2, createSpotLagTrailV3, createSpotLagTrailV4, createSpotLagTrailV5, createMicroLagConvergence, createMicroLagConvergenceAggro, createMicroLagConvergenceSafe, createPureProbBase, createPureProbConservative, createPureProbAggressive, createPureProbLate, createLagProbBase, createLagProbConservative, createLagProbAggressive, createLagProbRightSide } from './spot_lag_simple.js';
 
 /**
  * Create all quant strategies
@@ -67,16 +67,35 @@ export function createAllQuantStrategies(capital = 100) {
         createSpotLagProbEdge(capital),        // Entry based on probability edge vs expected
 
         // ═══════════════════════════════════════════════════════════════════════
-        // SPOTLAG TRAIL STRATEGIES V1-V5 (Jan 2026 - Simplified)
-        // Proven micro-lag detection + trailing stops + liquidity guards
-        // NO expected profit gate - simple momentum following
-        // 5 variants with different aggression levels, all trade independently
+        // SPOTLAG TRAIL STRATEGIES V1-V4 (Jan 2026 - With Conviction-Based Risk)
+        // Conviction model + strike alignment + wrong-side stop loss
+        // V5 DISABLED - too aggressive, consistently losing
         // ═══════════════════════════════════════════════════════════════════════
-        createSpotLagTrailV1(capital),  // Ultra Conservative: 0.04% threshold, strict
-        createSpotLagTrailV2(capital),  // Conservative: 0.03% threshold
-        createSpotLagTrailV3(capital),  // Base/Moderate: 0.02% threshold (proven)
-        createSpotLagTrailV4(capital),  // Aggressive: 0.015% threshold
-        createSpotLagTrailV5(capital),  // Ultra Aggressive: 0.01% threshold
+        createSpotLagTrailV1(capital),  // Safe: only RIGHT side, 40% stop
+        createSpotLagTrailV2(capital),  // Moderate: wrong side only late, 30% stop
+        createSpotLagTrailV3(capital),  // Base: both sides with 25% stop
+        createSpotLagTrailV4(capital),  // Aggressive: both sides with 20% stop
+        // createSpotLagTrailV5(capital),  // DISABLED: too aggressive, losing money
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // PURE PROBABILISTIC STRATEGIES (Jan 2026 - NEW!)
+        // Trade purely on probability edge - no lag detection required
+        // Dynamic position sizing based on edge magnitude and liquidity
+        // ═══════════════════════════════════════════════════════════════════════
+        createPureProbBase(capital),        // Base: 5% min edge, dynamic sizing
+        createPureProbConservative(capital),// Conservative: 8% min edge, right side focus
+        createPureProbAggressive(capital),  // Aggressive: 3% min edge, larger positions
+        createPureProbLate(capital),        // Late: Only last 2 min, highest conviction
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // LAG + PROBABILISTIC STRATEGIES (Jan 2026 - NEW!)
+        // Combines lag detection with probability model for entry & sizing
+        // Best of both worlds: wait for lag signal, validate with prob edge
+        // ═══════════════════════════════════════════════════════════════════════
+        createLagProbBase(capital),         // Base: lag detection + 3% min edge
+        createLagProbConservative(capital), // Conservative: higher thresholds, right side only
+        createLagProbAggressive(capital),   // Aggressive: lower thresholds, larger positions
+        createLagProbRightSide(capital),    // RightSide: ONLY trades right side of strike
 
         // ═══════════════════════════════════════════════════════════════════════
         // PROVEN WINNERS - SpotLag strategies with positive PnL
