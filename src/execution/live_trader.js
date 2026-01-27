@@ -23,9 +23,10 @@ const Side = { BUY: 'BUY', SELL: 'SELL' };
 const OrderType = { FOK: 'FOK', GTC: 'GTC', GTD: 'GTD' };
 
 // Configuration
+// EMERGENCY STOP - 2026-01-27 - Opposite bets bug discovered
 const CONFIG = {
     POSITION_SIZE: parseFloat(process.env.LIVE_POSITION_SIZE || '1'),
-    ENABLED: process.env.LIVE_TRADING_ENABLED === 'true',
+    ENABLED: false,  // HARDCODED OFF - DO NOT CHANGE UNTIL BUGS FIXED
 };
 
 /**
@@ -270,15 +271,32 @@ export class LiveTrader extends EventEmitter {
         if (!this.isRunning || this.killSwitchActive) {
             return null;
         }
-        
+
         // Check if this strategy is enabled for live trading
         if (!this.isStrategyEnabled(strategyName)) {
             return null;
         }
-        
+
         // Only process buy/sell signals
         if (!signal || signal.action === 'hold') {
             return null;
+        }
+
+        // CRITICAL: Prevent opposite bets in the same window
+        // If we already have a position in this crypto/window, don't open opposite side
+        if (signal.action === 'buy') {
+            const crypto = tick.crypto;
+            const windowEpoch = tick.window_epoch;
+            const requestedSide = signal.side?.toUpperCase();
+
+            for (const [key, pos] of Object.entries(this.livePositions)) {
+                if (pos.crypto === crypto && pos.windowEpoch === windowEpoch) {
+                    if (pos.tokenSide !== requestedSide) {
+                        this.logger.log(`[LiveTrader] ⚠️ BLOCKED OPPOSITE BET: ${strategyName} wants ${requestedSide} but already have ${pos.tokenSide} for ${crypto}`);
+                        return null;
+                    }
+                }
+            }
         }
         
         const crypto = tick.crypto;
