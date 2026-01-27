@@ -79,26 +79,26 @@ async function runMigrations() {
         await initDatabase();
         
         // =================================================================
-        // TP/SL TESTING MODE - Only enable test strategy
-        // Once 10 successful TP/SL trades verified, re-enable production strategies
+        // PRODUCTION MODE - TP/SL validated Jan 2026
+        // All strategies now have trailing take profit protection
         // =================================================================
         const toEnable = [
-            // TEST STRATEGY ONLY - validates take profit and stop loss
-            'TP_SL_Test',  // $2 positions, 40-60% markets, 15% SL, 10% TP activation
-        ];
-
-        // PRODUCTION STRATEGIES - DISABLED DURING TESTING
-        // Uncomment these once TP/SL validation is complete (10 trades)
-        /*
-        const productionStrategies = [
+            // SPOTLAG TIME-AWARE - core strategies
             'SpotLag_TimeAware', 'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe',
             'SpotLag_TimeAwareTP', 'SpotLag_LateOnly', 'SpotLag_ProbEdge',
+
+            // SPOTLAG TRAIL - V1-V4 (V5 removed - too aggressive)
             'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4',
+
+            // PUREPROB - probability edge strategies
             'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive', 'PureProb_Late',
+
+            // LAGPROB - lag + probability
             'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
+
+            // ENDGAME - near-expiry strategies
             'Endgame', 'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
         ];
-        */
 
         for (const strat of toEnable) {
             await setLiveStrategyEnabled(strat, true);
@@ -106,19 +106,16 @@ async function runMigrations() {
         }
 
         // =================================================================
-        // DISABLE ALL PRODUCTION STRATEGIES DURING TP/SL TESTING
+        // DISABLED STRATEGIES
         // =================================================================
         const toDisable = [
-            // PRODUCTION STRATEGIES - DISABLED DURING TESTING
-            'SpotLag_TimeAware', 'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe',
-            'SpotLag_TimeAwareTP', 'SpotLag_LateOnly', 'SpotLag_ProbEdge',
-            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4',
-            'SpotLag_Trail_V5',
-            'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive', 'PureProb_Late',
-            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
-            'Endgame', 'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
+            // TEST STRATEGY - disable after validation
+            'TP_SL_Test',
 
-            // OLD STRATEGIES
+            // V5 too aggressive - consistently losing
+            'SpotLag_Trail_V5',
+
+            // OLD/DEPRECATED STRATEGIES
             'MicroLag_Convergence', 'MicroLag_Convergence_Aggro', 'MicroLag_Convergence_Safe',
             'SpotLag_Aggressive', 'SpotLag_Fast', 'SpotLagSimple', 'SpotLag_Confirmed',
             'SpotLag_TP3', 'SpotLag_TP3_Trailing', 'SpotLag_TP6',
