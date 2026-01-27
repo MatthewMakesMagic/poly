@@ -3557,24 +3557,25 @@ export class SpotLag_Trail_V5Strategy extends SpotLag_TrailStrategy {
 }
 
 // Factory functions
+// Use 2x capital to ensure $2 minimum in production (allows stop loss exits above $1 min)
 export function createSpotLagTrailV1(capital = 100) {
-    return new SpotLag_Trail_V1Strategy({ maxPosition: capital });
+    return new SpotLag_Trail_V1Strategy({ maxPosition: capital * 2 });
 }
 
 export function createSpotLagTrailV2(capital = 100) {
-    return new SpotLag_Trail_V2Strategy({ maxPosition: capital });
+    return new SpotLag_Trail_V2Strategy({ maxPosition: capital * 2 });
 }
 
 export function createSpotLagTrailV3(capital = 100) {
-    return new SpotLag_Trail_V3Strategy({ maxPosition: capital });
+    return new SpotLag_Trail_V3Strategy({ maxPosition: capital * 2 });
 }
 
 export function createSpotLagTrailV4(capital = 100) {
-    return new SpotLag_Trail_V4Strategy({ maxPosition: capital });
+    return new SpotLag_Trail_V4Strategy({ maxPosition: capital * 2 });
 }
 
 export function createSpotLagTrailV5(capital = 100) {
-    return new SpotLag_Trail_V5Strategy({ maxPosition: capital });
+    return new SpotLag_Trail_V5Strategy({ maxPosition: capital * 2 });
 }
 
 // Keep old names for backwards compatibility (map to V3 base)
@@ -3667,7 +3668,8 @@ function calculateDynamicSize(edge, conviction, liquidityAvailable, baseSize) {
     desiredSize = Math.min(desiredSize, maxLiquiditySize);
 
     // Floor and ceiling
-    const minSize = 10;    // Minimum $10 to be worth the effort
+    // Minimum $2 in production (200 strategy units) to allow stop loss exits above $1 minimum
+    const minSize = 200;
     const maxSize = baseSize * 3;  // Never more than 3x base
 
     return Math.max(minSize, Math.min(maxSize, desiredSize));
@@ -3701,8 +3703,8 @@ export class PureProb_BaseStrategy {
             maxProbability: 0.95,       // Don't trade above 95 cents
             minLiquidity: 50,           // Minimum $50 liquidity on our side
 
-            // Position sizing
-            basePosition: 100,          // Base position size
+            // Position sizing - $2 minimum in production to allow stop loss exits
+            basePosition: 200,          // 200 strategy units = $2 in production
             useDynamicSizing: true,     // Use edge-based sizing
 
             // Risk management
@@ -3911,20 +3913,21 @@ export class PureProb_LateStrategy extends PureProb_BaseStrategy {
 }
 
 // Factory functions for PureProb
+// Use 2x capital to ensure $2 minimum in production (allows stop loss exits above $1 min)
 export function createPureProbBase(capital = 100) {
-    return new PureProb_BaseStrategy({ basePosition: capital });
+    return new PureProb_BaseStrategy({ basePosition: capital * 2 });
 }
 
 export function createPureProbConservative(capital = 100) {
-    return new PureProb_ConservativeStrategy({ basePosition: capital });
+    return new PureProb_ConservativeStrategy({ basePosition: capital * 2 });
 }
 
 export function createPureProbAggressive(capital = 100) {
-    return new PureProb_AggressiveStrategy({ basePosition: capital });
+    return new PureProb_AggressiveStrategy({ basePosition: capital * 2 });
 }
 
 export function createPureProbLate(capital = 100) {
-    return new PureProb_LateStrategy({ basePosition: capital });
+    return new PureProb_LateStrategy({ basePosition: capital * 2 });
 }
 
 // =============================================================================
@@ -3964,8 +3967,8 @@ export class LagProb_BaseStrategy {
             requireRightSide: false,
             wrongSideStopLoss: 0.25,
 
-            // Position sizing
-            basePosition: 100,
+            // Position sizing - $2 minimum in production to allow stop loss exits
+            basePosition: 200,          // 200 strategy units = $2 in production
             useDynamicSizing: true,
 
             // Trailing stop (from Trail)
@@ -4253,20 +4256,22 @@ export class LagProb_RightSideStrategy extends LagProb_BaseStrategy {
 }
 
 // Factory functions for LagProb
+// Factory functions for LagProb
+// Use 2x capital to ensure $2 minimum in production (allows stop loss exits above $1 min)
 export function createLagProbBase(capital = 100) {
-    return new LagProb_BaseStrategy({ basePosition: capital });
+    return new LagProb_BaseStrategy({ basePosition: capital * 2 });
 }
 
 export function createLagProbConservative(capital = 100) {
-    return new LagProb_ConservativeStrategy({ basePosition: capital });
+    return new LagProb_ConservativeStrategy({ basePosition: capital * 2 });
 }
 
 export function createLagProbAggressive(capital = 100) {
-    return new LagProb_AggressiveStrategy({ basePosition: capital });
+    return new LagProb_AggressiveStrategy({ basePosition: capital * 2 });
 }
 
 export function createLagProbRightSide(capital = 100) {
-    return new LagProb_RightSideStrategy({ basePosition: capital });
+    return new LagProb_RightSideStrategy({ basePosition: capital * 2 });
 }
 
 export default SpotLagSimpleStrategy;
