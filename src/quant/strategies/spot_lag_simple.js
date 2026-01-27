@@ -3609,21 +3609,23 @@ export function createMicroLagConvergenceSafe(capital = 100) {
  * @returns {number} Expected probability [0.5, 0.95]
  */
 function calculateExpectedProbability(spotDeltaPct, timeRemainingSec) {
-    // Base expected probabilities by time bucket (calibrated from data)
-    // When spot is displaced by ~0.2% from strike
+    // Base expected probabilities by time bucket
+    // CONSERVATIVE calibration: early window = weak signal, late window = strong signal
+    // These assume spot is displaced ~0.2% from strike
     const baseProbs = {
-        600: 0.80,  // 10min left: ~80%
-        300: 0.85,  // 5min left: ~85%
-        120: 0.89,  // 2min left: ~89%
-        60: 0.90,   // 1min left: ~90%
-        30: 0.91,   // 30s left: ~91%
-        15: 0.93,   // 15s left: ~93%
-        5: 0.95     // 5s left: ~95%
+        600: 0.55,  // 10min left: barely better than 50% - spot can easily reverse
+        300: 0.58,  // 5min left: slight edge
+        180: 0.62,  // 3min left: moderate edge
+        120: 0.68,  // 2min left: decent edge
+        60: 0.78,   // 1min left: good edge - spot movement more predictive
+        30: 0.85,   // 30s left: strong edge
+        15: 0.90,   // 15s left: very strong
+        5: 0.95     // 5s left: near certain
     };
 
     // Interpolate base probability by time
     const times = Object.keys(baseProbs).map(Number).sort((a, b) => b - a);
-    let baseProb = 0.75;  // Default for very early
+    let baseProb = 0.52;  // Default for very early (>10min): almost no edge
     for (const t of times) {
         if (timeRemainingSec <= t) {
             baseProb = baseProbs[t];
@@ -3631,12 +3633,15 @@ function calculateExpectedProbability(spotDeltaPct, timeRemainingSec) {
     }
 
     // Adjust for displacement magnitude (larger delta = higher confidence)
-    // deltaMultiplier scales from 0.5 (tiny delta) to 1.5 (large delta)
+    // But scale this effect by time too - large delta matters more late in window
     const absDelta = Math.abs(spotDeltaPct);
-    const deltaMultiplier = Math.min(0.5 + (absDelta / 0.2), 1.5);
+    const timeWeight = Math.min(timeRemainingSec / 60, 1);  // 0-1 scale, maxes at 1min
+    const deltaMultiplier = 0.7 + (absDelta / 0.2) * (0.3 + 0.7 * (1 - timeWeight));
+    // Early: delta has small effect (0.7 to 1.0 range)
+    // Late: delta has large effect (0.7 to 1.7 range)
 
     // Apply multiplier to edge over 50%
-    const adjusted = 0.5 + (baseProb - 0.5) * deltaMultiplier;
+    const adjusted = 0.5 + (baseProb - 0.5) * Math.min(deltaMultiplier, 1.5);
 
     // Clamp to reasonable range
     return Math.min(0.95, Math.max(0.50, adjusted));
