@@ -4,26 +4,28 @@
  * PURPOSE: Validate that Take Profit and Stop Loss work correctly in LiveTrader
  *
  * BEHAVIOR:
- * - Enters markets near 50/50 (highest uncertainty = most movement)
+ * - Enters ANY market regardless of probability
+ * - Max 10 total trades then stops
  * - Uses $2 position size (above minimum for exits)
- * - Trades frequently to generate test data
  * - One trade per window per crypto max
  *
  * SUCCESS CRITERIA:
  * - Stop loss triggers at -15%
  * - Take profit activates at +10%, trails 10% from peak
- * - 10 successful exits (either TP or SL) = validation complete
+ * - 10 trades executed = validation complete
  */
+
+// Global trade counter (persists across instances)
+let globalTradeCount = 0;
+const MAX_TOTAL_TRADES = 10;
 
 export class TP_SL_TestStrategy {
     constructor(options = {}) {
         this.name = 'TP_SL_Test';
         this.options = {
-            // Entry conditions - trade near 50/50 for max movement
-            minProb: 0.40,              // Only enter if prob between 40-60%
-            maxProb: 0.60,
+            // Entry conditions - REMOVED probability filter, enter ANY market
             maxTimeRemaining: 600,       // Enter early to give time for TP/SL
-            minTimeRemaining: 120,       // Don't enter too late
+            minTimeRemaining: 60,        // Don't enter too late (need time for TP/SL)
 
             // Position sizing - $2 to ensure exits are above $1 minimum
             positionSize: 200,           // 200 units = $2 in production
@@ -37,9 +39,9 @@ export class TP_SL_TestStrategy {
         // Stats for monitoring
         this.stats = {
             signals: 0,
-            skippedProb: 0,
             skippedTime: 0,
-            skippedDuplicate: 0
+            skippedDuplicate: 0,
+            skippedMaxTrades: 0
         };
     }
 
@@ -67,13 +69,24 @@ export class TP_SL_TestStrategy {
             };
         }
 
+        // CHECK MAX TRADES FIRST
+        if (globalTradeCount >= MAX_TOTAL_TRADES) {
+            this.stats.skippedMaxTrades++;
+            return {
+                action: 'hold',
+                reason: 'max_trades_reached',
+                totalTrades: globalTradeCount,
+                maxTrades: MAX_TOTAL_TRADES
+            };
+        }
+
         // Check if already traded this window
         if (this.tradedThisWindow[crypto] === windowEpoch) {
             this.stats.skippedDuplicate++;
             return { action: 'hold', reason: 'already_traded_this_window' };
         }
 
-        // Time filter
+        // Time filter only - need enough time for TP/SL to trigger
         if (timeRemaining > this.options.maxTimeRemaining) {
             this.stats.skippedTime++;
             return { action: 'hold', reason: 'too_early', timeRemaining };
@@ -83,21 +96,16 @@ export class TP_SL_TestStrategy {
             return { action: 'hold', reason: 'too_late', timeRemaining };
         }
 
-        // Probability filter - want markets NEAR 50/50 for movement
-        if (marketProb < this.options.minProb || marketProb > this.options.maxProb) {
-            this.stats.skippedProb++;
-            return { action: 'hold', reason: 'prob_not_in_range', marketProb: (marketProb * 100).toFixed(1) + '%' };
-        }
-
-        // ENTRY SIGNAL: Pick the side with slightly better odds
+        // ENTRY SIGNAL: Pick the side with better odds (NO probability filter)
         const side = marketProb > 0.5 ? 'up' : 'down';
         const sideProb = side === 'up' ? marketProb : (1 - marketProb);
 
         // Mark as traded this window
         this.tradedThisWindow[crypto] = windowEpoch;
         this.stats.signals++;
+        globalTradeCount++;
 
-        console.log(`[TP_SL_Test] 🧪 TEST ENTRY: ${crypto} | ${side.toUpperCase()} @ ${(sideProb * 100).toFixed(1)}% | time=${timeRemaining.toFixed(0)}s | This is a TP/SL validation trade`);
+        console.log(`[TP_SL_Test] 🧪 TEST ENTRY #${globalTradeCount}/${MAX_TOTAL_TRADES}: ${crypto} | ${side.toUpperCase()} @ ${(sideProb * 100).toFixed(1)}% | time=${timeRemaining.toFixed(0)}s`);
 
         return {
             action: 'buy',
@@ -106,7 +114,8 @@ export class TP_SL_TestStrategy {
             reason: 'tp_sl_test_entry',
             confidence: sideProb,
             marketProb: (marketProb * 100).toFixed(1) + '%',
-            timeRemaining: timeRemaining.toFixed(0) + 's'
+            timeRemaining: timeRemaining.toFixed(0) + 's',
+            tradeNumber: globalTradeCount
         };
     }
 
@@ -118,12 +127,14 @@ export class TP_SL_TestStrategy {
 
     onWindowEnd(windowInfo, outcome) {
         // Log for analysis
-        console.log(`[TP_SL_Test] Window ended: ${windowInfo.crypto} | outcome=${outcome}`);
+        console.log(`[TP_SL_Test] Window ended: ${windowInfo.crypto} | outcome=${outcome} | Total trades: ${globalTradeCount}/${MAX_TOTAL_TRADES}`);
     }
 
     getStats() {
         return {
             name: this.name,
+            totalTrades: globalTradeCount,
+            maxTrades: MAX_TOTAL_TRADES,
             ...this.stats
         };
     }
