@@ -2528,12 +2528,12 @@ export class SpotLag_TimeAwareStrategy {
             maxMarketProb: 0.92,  // Don't buy UP if market already >92%
             minMarketProb: 0.08,  // Don't buy DOWN if market already <8%
 
-            // MONEYNESS FILTER - max distance from strike by time window
-            // Beyond these thresholds, probability is too extreme for edge
-            // Based on: P(up) = Φ((S-K)/(σ√τ)), extreme when >2σ from strike
-            earlyWindowMaxSpotDelta: 0.40,   // >5min: still enough volatility
-            midWindowMaxSpotDelta: 0.30,     // 2-5min: tighter bound
-            lateWindowMaxSpotDelta: 0.20,    // <2min: probability extreme beyond this
+            // UNDERDOG CONVICTION CHECK
+            // When buying a significant underdog (<25% probability), require stronger signal
+            // Either: large spot move (real reversal) OR enough time for it to play out
+            underdogThreshold: 0.25,          // Below 25% = underdog
+            underdogMinTime: 180,             // Underdog needs >3min OR large move
+            underdogMoveMultiplier: 2.5,      // Underdog needs 2.5x normal spot move
 
             // Position sizing
             maxPosition: 100,
@@ -2674,21 +2674,17 @@ export class SpotLag_TimeAwareStrategy {
             ? ((tick.spot_price - tick.price_to_beat) / tick.price_to_beat) * 100
             : 0;
 
-        // Determine time window and thresholds
+        // Determine time window and minimum spot delta thresholds
         let requiredSpotDelta;
-        let maxSpotDelta;
         let timeWindow;
         if (timeRemaining > this.options.earlyWindowThreshold) {
             requiredSpotDelta = this.options.earlyWindowMinSpotDelta;
-            maxSpotDelta = this.options.earlyWindowMaxSpotDelta;
             timeWindow = 'early';
         } else if (timeRemaining > this.options.lateWindowThreshold) {
             requiredSpotDelta = this.options.midWindowMinSpotDelta;
-            maxSpotDelta = this.options.midWindowMaxSpotDelta;
             timeWindow = 'mid';
         } else {
             requiredSpotDelta = this.options.lateWindowMinSpotDelta;
-            maxSpotDelta = this.options.lateWindowMaxSpotDelta;
             timeWindow = 'late';
         }
 
@@ -2698,17 +2694,6 @@ export class SpotLag_TimeAwareStrategy {
                 spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
                 required: requiredSpotDelta + '%',
                 timeWindow
-            });
-        }
-
-        // MONEYNESS FILTER: Check if spot is TOO FAR from strike (probability too extreme)
-        // Beyond maxSpotDelta, the probability is so extreme there's no edge to capture
-        if (Math.abs(spotDeltaPct) > maxSpotDelta) {
-            return this.createSignal('hold', null, 'spot_too_far_from_strike', {
-                spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
-                maxAllowed: maxSpotDelta + '%',
-                timeWindow,
-                reason: 'probability_already_extreme'
             });
         }
 
@@ -2727,6 +2712,31 @@ export class SpotLag_TimeAwareStrategy {
         }
         if (side === 'down' && marketProb < this.options.minMarketProb) {
             return this.createSignal('hold', null, 'market_already_low', { marketProb });
+        }
+
+        // UNDERDOG CONVICTION CHECK
+        // When buying a significant underdog (<25% probability), require stronger signal:
+        // Either a large spot move (real reversal) OR enough time for it to play out
+        // This prevents buying cheap losers on small immaterial lags
+        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
+        if (sideProb < this.options.underdogThreshold) {
+            const isLargeMove = Math.abs(spotMove) > this.options.spotMoveThreshold * this.options.underdogMoveMultiplier;
+            const hasTimeToPlay = timeRemaining > this.options.underdogMinTime;
+
+            if (!isLargeMove && !hasTimeToPlay) {
+                console.log(`[${this.name}] ${crypto}: UNDERDOG BLOCKED - ${side} at ${(sideProb * 100).toFixed(1)}%, move=${(Math.abs(spotMove) * 100).toFixed(3)}%, time=${timeRemaining.toFixed(0)}s (needs ${(this.options.spotMoveThreshold * this.options.underdogMoveMultiplier * 100).toFixed(3)}% OR ${this.options.underdogMinTime}s)`);
+                return this.createSignal('hold', null, 'underdog_insufficient_conviction', {
+                    sideProb: (sideProb * 100).toFixed(1) + '%',
+                    spotMove: (Math.abs(spotMove) * 100).toFixed(3) + '%',
+                    timeRemaining: timeRemaining.toFixed(0) + 's',
+                    requiredMove: (this.options.spotMoveThreshold * this.options.underdogMoveMultiplier * 100).toFixed(3) + '%',
+                    requiredTime: this.options.underdogMinTime + 's',
+                    needsLargerMove: !isLargeMove,
+                    needsMoreTime: !hasTimeToPlay
+                });
+            }
+            // Log when we DO allow an underdog trade
+            console.log(`[${this.name}] ${crypto}: UNDERDOG ALLOWED - ${side} at ${(sideProb * 100).toFixed(1)}%, largeMove=${isLargeMove}, hasTime=${hasTimeToPlay}`);
         }
 
         // Check market lag
@@ -2748,11 +2758,19 @@ export class SpotLag_TimeAwareStrategy {
 
         this.tradedThisWindow[crypto] = windowEpoch;
 
+        // Log trade signal clearly
+        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
+        console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
+            `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
+            `spotDelta=${spotDeltaPct.toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
+            `prob=${(sideProb * 100).toFixed(1)}%`);
+
         return this.createSignal('buy', side, 'time_aware_entry', {
             timeWindow,
             timeRemaining: timeRemaining.toFixed(0) + 's',
             spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
             marketProb: (marketProb * 100).toFixed(1) + '%',
+            sideProb: (sideProb * 100).toFixed(1) + '%',
             lagRatio: lagRatio.toFixed(2),
             crypto
         });
@@ -2765,7 +2783,7 @@ export class SpotLag_TimeAwareStrategy {
 
 /**
  * Time-Aware Aggressive: Lower thresholds, more trades
- * Wider moneyness bounds (accepts more extreme positions)
+ * More lenient underdog conviction - willing to take more reversal bets
  */
 export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrategy {
     constructor(options = {}) {
@@ -2775,11 +2793,11 @@ export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrate
             earlyWindowMinSpotDelta: 0.10,
             midWindowMinSpotDelta: 0.07,
             lateWindowMinSpotDelta: 0.03,
-            // Wider max bounds - accepts trades further from strike
-            earlyWindowMaxSpotDelta: 0.50,
-            midWindowMaxSpotDelta: 0.40,
-            lateWindowMaxSpotDelta: 0.25,
             marketLagRatio: 0.6,
+            // More lenient underdog conviction - will take riskier reversal bets
+            underdogThreshold: 0.20,       // Only 20% and below = underdog
+            underdogMinTime: 120,          // Only need 2 min
+            underdogMoveMultiplier: 2.0,   // Only need 2x normal move
             ...options
         });
     }
@@ -2787,7 +2805,7 @@ export class SpotLag_TimeAwareAggressiveStrategy extends SpotLag_TimeAwareStrate
 
 /**
  * Time-Aware Conservative: Higher thresholds, fewer but higher-conviction trades
- * Tighter moneyness bounds (only near-the-money trades)
+ * Stricter underdog conviction - only takes reversal bets with strong signals
  */
 export class SpotLag_TimeAwareConservativeStrategy extends SpotLag_TimeAwareStrategy {
     constructor(options = {}) {
@@ -2797,13 +2815,13 @@ export class SpotLag_TimeAwareConservativeStrategy extends SpotLag_TimeAwareStra
             earlyWindowMinSpotDelta: 0.20,
             midWindowMinSpotDelta: 0.15,
             lateWindowMinSpotDelta: 0.08,
-            // Tighter max bounds - only trade near the money
-            earlyWindowMaxSpotDelta: 0.35,
-            midWindowMaxSpotDelta: 0.25,
-            lateWindowMaxSpotDelta: 0.15,
             marketLagRatio: 0.4,
             maxMarketProb: 0.88,
             minMarketProb: 0.12,
+            // Stricter underdog conviction - only strong reversal signals
+            underdogThreshold: 0.30,       // 30% and below = underdog
+            underdogMinTime: 240,          // Need 4 min
+            underdogMoveMultiplier: 3.0,   // Need 3x normal move
             ...options
         });
     }
