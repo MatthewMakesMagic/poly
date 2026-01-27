@@ -263,8 +263,12 @@ export class SDKClient {
                 orderId: order?.orderID,
                 status: order?.status || 'killed',
                 shares: filled ? shares : 0,
+                sharesRequested: shares,  // What we calculated and sent
                 price: price,
+                priceRequested: price,    // What price we used
                 cost: filled ? actualCost : 0,
+                value: filled ? actualCost : 0,  // Alias for compatibility
+                avgPrice: price,          // Use requested price (no slippage data from API)
                 filled: filled,
                 tx: order?.transactionsHashes?.[0] || null,
                 txHashes: order?.transactionsHashes || [],

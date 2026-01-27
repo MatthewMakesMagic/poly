@@ -15,6 +15,7 @@ import { getResearchEngine } from '../quant/research_engine.js';
 import { startDashboard, sendTick, sendStrategyComparison, sendMetrics } from '../dashboard/server.js';
 import { getChainlinkCollector } from './chainlink_prices.js';
 import { getMultiSourcePriceCollector } from './multi_source_prices.js';
+import { getResolutionService } from '../services/resolution_service.js';
 
 // Configuration
 const CONFIG = {
@@ -78,6 +79,9 @@ class TickCollector {
 
         // Multi-source price collector (Pyth, Coinbase, Kraken, OKX, CoinCap, CoinGecko, RedStone)
         this.multiSourceCollector = null;
+
+        // Resolution service for Binance vs Chainlink vs Pyth accuracy tracking
+        this.resolutionService = null;
     }
     
     /**
@@ -146,7 +150,23 @@ class TickCollector {
             console.log('   Will continue without multi-source prices');
             this.multiSourceCollector = null;
         }
-        
+
+        // Initialize resolution service and link price collectors
+        // Captures final-minute snapshots and compares Binance/Chainlink/Pyth accuracy
+        try {
+            this.resolutionService = getResolutionService();
+            if (this.chainlinkCollector) {
+                this.resolutionService.setChainlinkCollector(this.chainlinkCollector);
+            }
+            if (this.multiSourceCollector) {
+                this.resolutionService.setMultiSourceCollector(this.multiSourceCollector);
+            }
+            console.log('✅ Resolution service initialized (Binance vs Chainlink vs Pyth tracking)');
+        } catch (error) {
+            console.error('⚠️  Resolution service initialization failed:', error.message);
+            this.resolutionService = null;
+        }
+
         // Set up periodic tasks
         this.setupPeriodicTasks();
         
@@ -768,7 +788,16 @@ class TickCollector {
             } catch (error) {
                 // Dashboard might not be connected
             }
-            
+
+            // Send tick to resolution service for final-minute capture
+            if (this.resolutionService) {
+                try {
+                    this.resolutionService.processTick(tick);
+                } catch (error) {
+                    // Resolution service errors shouldn't crash collector
+                }
+            }
+
             this.tickBuffer.push(tick);
             this.lastTickTime[crypto] = now;
             this.stats.ticksCollected++;
@@ -826,7 +855,22 @@ class TickCollector {
                     } catch (error) {
                         console.error('⚠️  Live trader window end error:', error.message);
                     }
-                    
+
+                    // Notify resolution service for Binance vs Chainlink vs Pyth accuracy tracking
+                    if (this.resolutionService) {
+                        try {
+                            await this.resolutionService.onWindowEnd({
+                                crypto,
+                                epoch: market.epoch,
+                                outcome,
+                                finalPrice: spotPrice,
+                                priceToBeat
+                            });
+                        } catch (error) {
+                            console.error('⚠️  Resolution service window end error:', error.message);
+                        }
+                    }
+
                     // Save window summary for old epoch
                     try {
                         await this.saveWindowSummary(crypto, market.epoch);

@@ -64,7 +64,11 @@ export class LiveTrader extends EventEmitter {
         
         // Live positions: strategyName -> crypto -> position
         this.livePositions = {};
-        
+
+        // Pending entries: positionKey -> timestamp
+        // Prevents race condition where multiple signals try to enter same position simultaneously
+        this.pendingEntries = new Map();
+
         // Stats
         this.stats = {
             tradesExecuted: 0,
@@ -215,15 +219,42 @@ export class LiveTrader extends EventEmitter {
         const crypto = tick.crypto;
         const windowEpoch = tick.window_epoch;
         const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
-        
+
         try {
             if (signal.action === 'buy') {
                 // Check if we already have a position
                 if (this.livePositions[positionKey]) {
                     return null; // Already in position
                 }
-                
-                return await this.executeEntry(strategyName, signal, tick, market);
+
+                // RACE CONDITION PREVENTION: Check if entry is already being processed
+                // This prevents multiple signals from the same strategy+crypto+window
+                // from triggering duplicate orders before the first one completes
+                if (this.pendingEntries.has(positionKey)) {
+                    const pendingTime = Date.now() - this.pendingEntries.get(positionKey);
+                    if (pendingTime < 30000) { // 30 second timeout for pending entries
+                        this.logger.log(`[LiveTrader] Skipping duplicate signal for ${positionKey} (entry pending for ${(pendingTime/1000).toFixed(1)}s)`);
+                        return null;
+                    } else {
+                        // Stale pending entry, clear it
+                        this.pendingEntries.delete(positionKey);
+                    }
+                }
+
+                // Mark as pending BEFORE executing (prevents race condition)
+                this.pendingEntries.set(positionKey, Date.now());
+
+                try {
+                    const result = await this.executeEntry(strategyName, signal, tick, market);
+                    // If entry failed, clear pending flag
+                    if (!result) {
+                        this.pendingEntries.delete(positionKey);
+                    }
+                    return result;
+                } catch (error) {
+                    this.pendingEntries.delete(positionKey);
+                    throw error;
+                }
                 
             } else if (signal.action === 'sell') {
                 // Check if we have a position to exit
@@ -388,7 +419,10 @@ export class LiveTrader extends EventEmitter {
                     txHash: response.tx,  // Store tx hash for audit
                     balanceVerified: true
                 };
-                
+
+                // Clear pending entry now that position is recorded
+                this.pendingEntries.delete(positionKey);
+
                 // Update risk manager
                 this.riskManager.recordTradeOpen({
                     crypto,

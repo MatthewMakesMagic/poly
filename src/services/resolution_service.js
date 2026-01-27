@@ -63,6 +63,9 @@ export class ResolutionService {
         // Chainlink collector reference (set externally)
         this.chainlinkCollector = null;
 
+        // Multi-source price collector reference (set externally)
+        this.multiSourceCollector = null;
+
         // Stats
         this.stats = {
             sessionsStarted: 0,
@@ -83,6 +86,14 @@ export class ResolutionService {
     setChainlinkCollector(collector) {
         this.chainlinkCollector = collector;
         console.log('[ResolutionService] Chainlink collector linked');
+    }
+
+    /**
+     * Set reference to multi-source price collector (for Pyth, etc.)
+     */
+    setMultiSourceCollector(collector) {
+        this.multiSourceCollector = collector;
+        console.log('[ResolutionService] Multi-source price collector linked');
     }
 
     /**
@@ -244,8 +255,10 @@ export class ResolutionService {
         // Get final snapshot data (most recent tick before resolution)
         let finalBinance = finalPrice;
         let finalChainlink = null;
+        let finalPyth = null;
         let finalMarketUpMid = null;
         let chainlinkStalenessAtResolution = null;
+        let pythStalenessAtResolution = null;
 
         if (session && session.snapshots.length > 0) {
             const lastSnapshot = session.snapshots[session.snapshots.length - 1];
@@ -261,10 +274,22 @@ export class ResolutionService {
             }
         }
 
+        // Get Pyth price from multi-source collector
+        if (this.multiSourceCollector) {
+            const pythData = this.multiSourceCollector.getPrice('pyth', crypto);
+            if (pythData) {
+                finalPyth = pythData.price;
+                pythStalenessAtResolution = pythData.staleness;
+            }
+        }
+
         // Determine predictions
         const binancePredicted = finalBinance >= priceToBeat ? 'up' : 'down';
         const chainlinkPredicted = finalChainlink && priceToBeat
             ? (finalChainlink >= priceToBeat ? 'up' : 'down')
+            : null;
+        const pythPredicted = finalPyth && priceToBeat
+            ? (finalPyth >= priceToBeat ? 'up' : 'down')
             : null;
         const marketPredicted = finalMarketUpMid !== null
             ? (finalMarketUpMid >= 0.5 ? 'up' : 'down')
@@ -273,16 +298,21 @@ export class ResolutionService {
         // Check accuracy
         const binanceWasCorrect = binancePredicted === outcome;
         const chainlinkWasCorrect = chainlinkPredicted ? chainlinkPredicted === outcome : null;
+        const pythWasCorrect = pythPredicted ? pythPredicted === outcome : null;
         const marketWasCorrect = marketPredicted ? marketPredicted === outcome : null;
 
         // Check staleness
         const chainlinkWasStale = chainlinkStalenessAtResolution !== null &&
                                   chainlinkStalenessAtResolution > this.options.stalenessThresholdSec;
 
-        // Calculate divergence
+        // Calculate divergences
         let divergenceMagnitude = null;
+        let binancePythDivergence = null;
         if (finalBinance && finalChainlink) {
             divergenceMagnitude = ((finalBinance - finalChainlink) / finalChainlink) * 100;
+        }
+        if (finalBinance && finalPyth) {
+            binancePythDivergence = ((finalBinance - finalPyth) / finalPyth) * 100;
         }
 
         const hadDivergenceOpportunity = session?.hadDivergence || false;
@@ -295,18 +325,23 @@ export class ResolutionService {
             windowEpoch: epoch,
             finalBinance,
             finalChainlink,
+            finalPyth,
             finalMarketUpMid,
             priceToBeat,
             binancePredicted,
             chainlinkPredicted,
+            pythPredicted,
             marketPredicted,
             actualOutcome: outcome,
             chainlinkWasStale,
             chainlinkStalenessAtResolution,
+            pythStalenessAtResolution,
             hadDivergenceOpportunity,
             divergenceMagnitude,
+            binancePythDivergence,
             binanceWasCorrect,
             chainlinkWasCorrect,
+            pythWasCorrect,
             marketWasCorrect
         };
 
@@ -315,12 +350,20 @@ export class ResolutionService {
             await saveResolutionOutcome(outcomeData);
             this.stats.outcomesRecorded++;
 
-            // Log interesting cases
+            // Log interesting cases - when sources disagree
+            const disagreements = [];
             if (binanceWasCorrect !== chainlinkWasCorrect && chainlinkWasCorrect !== null) {
-                console.log(`[ResolutionService] DISAGREEMENT: ${crypto} epoch=${epoch} | ` +
-                            `Binance=${binancePredicted}(${binanceWasCorrect ? 'RIGHT' : 'WRONG'}) ` +
-                            `Chainlink=${chainlinkPredicted}(${chainlinkWasCorrect ? 'RIGHT' : 'WRONG'}) | ` +
-                            `outcome=${outcome}`);
+                disagreements.push(`Binance=${binancePredicted}(${binanceWasCorrect ? '✓' : '✗'}) vs Chainlink=${chainlinkPredicted}(${chainlinkWasCorrect ? '✓' : '✗'})`);
+            }
+            if (binanceWasCorrect !== pythWasCorrect && pythWasCorrect !== null) {
+                disagreements.push(`Binance=${binancePredicted}(${binanceWasCorrect ? '✓' : '✗'}) vs Pyth=${pythPredicted}(${pythWasCorrect ? '✓' : '✗'})`);
+            }
+            if (pythWasCorrect !== chainlinkWasCorrect && pythWasCorrect !== null && chainlinkWasCorrect !== null) {
+                disagreements.push(`Pyth=${pythPredicted}(${pythWasCorrect ? '✓' : '✗'}) vs Chainlink=${chainlinkPredicted}(${chainlinkWasCorrect ? '✓' : '✗'})`);
+            }
+
+            if (disagreements.length > 0) {
+                console.log(`[ResolutionService] DISAGREEMENT: ${crypto} epoch=${epoch} | ${disagreements.join(' | ')} | actual=${outcome}`);
             }
         } catch (error) {
             console.error('[ResolutionService] Failed to save outcome:', error.message);

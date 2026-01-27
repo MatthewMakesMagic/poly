@@ -1097,12 +1097,14 @@ export async function initOracleResolutionTables() {
                 -- Final prices
                 final_binance REAL,
                 final_chainlink REAL,
+                final_pyth REAL,
                 final_market_up_mid REAL,
                 price_to_beat REAL,
 
                 -- Predictions
                 binance_predicted TEXT,
                 chainlink_predicted TEXT,
+                pyth_predicted TEXT,
                 market_predicted TEXT,
 
                 -- Outcome
@@ -1111,18 +1113,33 @@ export async function initOracleResolutionTables() {
                 -- Analysis
                 chainlink_was_stale BOOLEAN,
                 chainlink_staleness_at_resolution INTEGER,
+                pyth_staleness_at_resolution INTEGER,
                 had_divergence_opportunity BOOLEAN,
                 divergence_magnitude REAL,
+                binance_pyth_divergence REAL,
 
                 -- Accuracy
                 binance_was_correct BOOLEAN,
                 chainlink_was_correct BOOLEAN,
+                pyth_was_correct BOOLEAN,
                 market_was_correct BOOLEAN,
 
                 resolved_at TIMESTAMPTZ DEFAULT NOW(),
 
                 UNIQUE(crypto, window_epoch)
             )
+        `);
+
+        // Add Pyth columns if table exists but columns don't
+        await pgPool.query(`
+            DO $$ BEGIN
+                ALTER TABLE resolution_outcomes ADD COLUMN IF NOT EXISTS final_pyth REAL;
+                ALTER TABLE resolution_outcomes ADD COLUMN IF NOT EXISTS pyth_predicted TEXT;
+                ALTER TABLE resolution_outcomes ADD COLUMN IF NOT EXISTS pyth_staleness_at_resolution INTEGER;
+                ALTER TABLE resolution_outcomes ADD COLUMN IF NOT EXISTS pyth_was_correct BOOLEAN;
+                ALTER TABLE resolution_outcomes ADD COLUMN IF NOT EXISTS binance_pyth_divergence REAL;
+            EXCEPTION WHEN OTHERS THEN NULL;
+            END $$;
         `);
 
         await pgPool.query(`
@@ -1402,35 +1419,45 @@ export async function saveResolutionOutcome(outcome) {
         await pgPool.query(`
             INSERT INTO resolution_outcomes (
                 crypto, window_epoch,
-                final_binance, final_chainlink, final_market_up_mid, price_to_beat,
-                binance_predicted, chainlink_predicted, market_predicted,
+                final_binance, final_chainlink, final_pyth, final_market_up_mid, price_to_beat,
+                binance_predicted, chainlink_predicted, pyth_predicted, market_predicted,
                 actual_outcome,
-                chainlink_was_stale, chainlink_staleness_at_resolution,
-                had_divergence_opportunity, divergence_magnitude,
-                binance_was_correct, chainlink_was_correct, market_was_correct
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                chainlink_was_stale, chainlink_staleness_at_resolution, pyth_staleness_at_resolution,
+                had_divergence_opportunity, divergence_magnitude, binance_pyth_divergence,
+                binance_was_correct, chainlink_was_correct, pyth_was_correct, market_was_correct
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             ON CONFLICT (crypto, window_epoch) DO UPDATE SET
                 actual_outcome = EXCLUDED.actual_outcome,
+                final_pyth = EXCLUDED.final_pyth,
+                pyth_predicted = EXCLUDED.pyth_predicted,
+                pyth_staleness_at_resolution = EXCLUDED.pyth_staleness_at_resolution,
+                binance_pyth_divergence = EXCLUDED.binance_pyth_divergence,
                 binance_was_correct = EXCLUDED.binance_was_correct,
                 chainlink_was_correct = EXCLUDED.chainlink_was_correct,
+                pyth_was_correct = EXCLUDED.pyth_was_correct,
                 market_was_correct = EXCLUDED.market_was_correct
         `, [
             outcome.crypto,
             outcome.windowEpoch,
             outcome.finalBinance,
             outcome.finalChainlink,
+            outcome.finalPyth,
             outcome.finalMarketUpMid,
             outcome.priceToBeat,
             outcome.binancePredicted,
             outcome.chainlinkPredicted,
+            outcome.pythPredicted,
             outcome.marketPredicted,
             outcome.actualOutcome,
             outcome.chainlinkWasStale || false,
             outcome.chainlinkStalenessAtResolution,
+            outcome.pythStalenessAtResolution,
             outcome.hadDivergenceOpportunity || false,
             outcome.divergenceMagnitude,
+            outcome.binancePythDivergence,
             outcome.binanceWasCorrect,
             outcome.chainlinkWasCorrect,
+            outcome.pythWasCorrect,
             outcome.marketWasCorrect
         ]);
     } catch (error) {
@@ -1500,11 +1527,19 @@ export async function getResolutionAccuracyStats(options = {}) {
                 COUNT(*) as total_windows,
                 SUM(CASE WHEN binance_was_correct THEN 1 ELSE 0 END) as binance_correct,
                 SUM(CASE WHEN chainlink_was_correct THEN 1 ELSE 0 END) as chainlink_correct,
+                SUM(CASE WHEN pyth_was_correct THEN 1 ELSE 0 END) as pyth_correct,
                 SUM(CASE WHEN market_was_correct THEN 1 ELSE 0 END) as market_correct,
                 SUM(CASE WHEN had_divergence_opportunity THEN 1 ELSE 0 END) as divergence_windows,
                 AVG(CASE WHEN had_divergence_opportunity THEN divergence_magnitude ELSE NULL END) as avg_divergence,
+                AVG(binance_pyth_divergence) as avg_binance_pyth_divergence,
                 SUM(CASE WHEN chainlink_was_stale THEN 1 ELSE 0 END) as stale_chainlink_windows,
-                AVG(chainlink_staleness_at_resolution) as avg_staleness
+                AVG(chainlink_staleness_at_resolution) as avg_chainlink_staleness,
+                AVG(pyth_staleness_at_resolution) as avg_pyth_staleness,
+                -- Calculate accuracy percentages
+                ROUND(100.0 * SUM(CASE WHEN binance_was_correct THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as binance_accuracy_pct,
+                ROUND(100.0 * SUM(CASE WHEN chainlink_was_correct THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as chainlink_accuracy_pct,
+                ROUND(100.0 * SUM(CASE WHEN pyth_was_correct THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as pyth_accuracy_pct,
+                ROUND(100.0 * SUM(CASE WHEN market_was_correct THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as market_accuracy_pct
             FROM resolution_outcomes
             WHERE resolved_at > NOW() - INTERVAL '${hours} hours'
             GROUP BY crypto

@@ -1351,177 +1351,10 @@ export function createUpOnlyCLConfirmed(capital = 100) {
 }
 
 // ================================================================
-// TAKE-PROFIT STRATEGIES
-// Exit early when price moves in our favor, capturing lag resolution alpha
-// Backtest shows 3% TP improves P&L by ~32% vs hold-to-expiry
+// REMOVED: SpotLag_TP3 and SpotLag_TP6 (Jan 2026)
+// These fixed take-profit strategies were too rigid.
+// Trailing stop logic added to TimeAware and ProbEdge strategies instead.
 // ================================================================
-
-/**
- * SpotLag with 3% Take-Profit
- * 
- * THESIS: After SpotLag entry, market "catches up" quickly.
- * Instead of holding to binary expiry (risky), exit at +3% gain.
- * 
- * Key insight: At cheap prices (e.g., 7c), we get MORE shares for $1.
- * A 3% price move from 7c to 7.2c gives same % return,
- * but if it moves to 20c (186% gain), we capture massive profit.
- * 
- * The 3% threshold ensures we lock in gains without waiting for binary.
- */
-export class SpotLag_TakeProfit3Strategy extends SpotLagSimpleStrategy {
-    constructor(options = {}) {
-        super({
-            name: 'SpotLag_TP3',
-            lookbackTicks: 8,
-            spotMoveThreshold: 0.0002,  // Aggressive entry like SpotLag_Aggressive
-            marketLagRatio: 0.6,
-            takeProfitThreshold: 0.03,  // 3% take-profit
-            ...options
-        });
-    }
-    
-    onTick(tick, position = null, context = {}) {
-        const crypto = tick.crypto;
-        
-        // Check if this crypto is enabled
-        if (!this.options.enabledCryptos.includes(crypto)) {
-            return this.createSignal('hold', null, 'crypto_disabled');
-        }
-        
-        const state = this.initCrypto(crypto);
-        const timeRemaining = tick.time_remaining_sec || 0;
-        const windowEpoch = tick.window_epoch;
-        
-        // Update history (same as parent)
-        state.spotHistory.push(tick.spot_price);
-        state.marketHistory.push(tick.up_mid);
-        state.timestamps.push(Date.now());
-        
-        const maxLen = this.options.lookbackTicks + 5;
-        while (state.spotHistory.length > maxLen) {
-            state.spotHistory.shift();
-            state.marketHistory.shift();
-            state.timestamps.shift();
-        }
-        
-        // POSITION MANAGEMENT WITH TAKE-PROFIT
-        if (position) {
-            // Get current price we could sell at (bid price for our side)
-            const currentPrice = position.side === 'up' 
-                ? tick.up_bid   // Sell UP at bid
-                : tick.down_bid; // Sell DOWN at bid
-            
-            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
-            
-            // 1. TAKE-PROFIT - exit when we hit threshold
-            if (pnlPct >= this.options.takeProfitThreshold) {
-                this.tradedThisWindow[crypto] = windowEpoch;
-                return this.createSignal('sell', null, 'take_profit', { 
-                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
-                    entryPrice: position.entryPrice.toFixed(2),
-                    exitPrice: currentPrice.toFixed(2),
-                    threshold: (this.options.takeProfitThreshold * 100) + '%'
-                });
-            }
-            
-            // 2. EXTREME STOP - cut losses if way underwater
-            if (pnlPct <= -this.options.extremeStopLoss) {
-                this.tradedThisWindow[crypto] = windowEpoch;
-                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
-            }
-            
-            // 3. HOLD - waiting for take-profit or expiry
-            return this.createSignal('hold', null, 'waiting_for_tp', { 
-                pnlPct: (pnlPct * 100).toFixed(1) + '%',
-                target: (this.options.takeProfitThreshold * 100) + '%'
-            });
-        }
-        
-        // Entry logic - delegate to parent
-        return super.onTick(tick, position, context);
-    }
-}
-
-/**
- * SpotLag with 6% Take-Profit
- * 
- * Higher threshold - lets winners run more before exiting.
- * Better for cheap entries where big moves are possible.
- */
-export class SpotLag_TakeProfit6Strategy extends SpotLagSimpleStrategy {
-    constructor(options = {}) {
-        super({
-            name: 'SpotLag_TP6',
-            lookbackTicks: 8,
-            spotMoveThreshold: 0.0002,
-            marketLagRatio: 0.6,
-            takeProfitThreshold: 0.06,  // 6% take-profit
-            ...options
-        });
-    }
-    
-    onTick(tick, position = null, context = {}) {
-        const crypto = tick.crypto;
-        
-        if (!this.options.enabledCryptos.includes(crypto)) {
-            return this.createSignal('hold', null, 'crypto_disabled');
-        }
-        
-        const state = this.initCrypto(crypto);
-        const timeRemaining = tick.time_remaining_sec || 0;
-        const windowEpoch = tick.window_epoch;
-        
-        state.spotHistory.push(tick.spot_price);
-        state.marketHistory.push(tick.up_mid);
-        state.timestamps.push(Date.now());
-        
-        const maxLen = this.options.lookbackTicks + 5;
-        while (state.spotHistory.length > maxLen) {
-            state.spotHistory.shift();
-            state.marketHistory.shift();
-            state.timestamps.shift();
-        }
-        
-        // POSITION MANAGEMENT WITH TAKE-PROFIT
-        if (position) {
-            const currentPrice = position.side === 'up' 
-                ? tick.up_bid 
-                : tick.down_bid;
-            
-            const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
-            
-            if (pnlPct >= this.options.takeProfitThreshold) {
-                this.tradedThisWindow[crypto] = windowEpoch;
-                return this.createSignal('sell', null, 'take_profit', { 
-                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
-                    entryPrice: position.entryPrice.toFixed(2),
-                    exitPrice: currentPrice.toFixed(2),
-                    threshold: (this.options.takeProfitThreshold * 100) + '%'
-                });
-            }
-            
-            if (pnlPct <= -this.options.extremeStopLoss) {
-                this.tradedThisWindow[crypto] = windowEpoch;
-                return this.createSignal('sell', null, 'extreme_stop', { pnlPct });
-            }
-            
-            return this.createSignal('hold', null, 'waiting_for_tp', { 
-                pnlPct: (pnlPct * 100).toFixed(1) + '%',
-                target: (this.options.takeProfitThreshold * 100) + '%'
-            });
-        }
-        
-        return super.onTick(tick, position, context);
-    }
-}
-
-export function createSpotLagTP3(capital = 100) {
-    return new SpotLag_TakeProfit3Strategy({ maxPosition: capital });
-}
-
-export function createSpotLagTP6(capital = 100) {
-    return new SpotLag_TakeProfit6Strategy({ maxPosition: capital });
-}
 
 // ================================================================
 // TP3 + TRAILING HYBRID STRATEGY
@@ -2657,6 +2490,16 @@ export function createSpotLagExtremeReversal(capital = 100) {
  * Key insight: Early in window, small displacements create smaller edges.
  * Late in window, same displacement = near-certain outcome.
  */
+/**
+ * Time-Aware SpotLag Strategy
+ *
+ * TRAILING STOP LOGIC (Jan 2026):
+ * - Tracks high-water mark (peak price reached)
+ * - Activates trailing after 15% profit (avoids noise exits)
+ * - Exits if price drops 30% below peak
+ * - Maintains minimum 5% profit floor once trailing active
+ * - Otherwise holds to expiry (preserves original behavior for small moves)
+ */
 export class SpotLag_TimeAwareStrategy {
     constructor(options = {}) {
         this.name = options.name || 'SpotLag_TimeAware';
@@ -2691,12 +2534,21 @@ export class SpotLag_TimeAwareStrategy {
             // Enabled cryptos
             enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
 
+            // TRAILING STOP PARAMETERS
+            trailingActivationPct: 0.15,  // Activate trailing after 15% profit
+            trailingStopPct: 0.30,        // Exit if price drops 30% from peak
+            minimumProfitFloor: 0.05,     // Never exit below 5% profit once trailing active
+
             ...options
         };
 
         this.state = {};
         this.tradedThisWindow = {};
         this.stats = { signals: 0, earlyEntries: 0, midEntries: 0, lateEntries: 0 };
+
+        // Trailing stop state per crypto
+        this.highWaterMark = {};
+        this.trailingActive = {};
     }
 
     getName() { return this.name; }
@@ -2734,10 +2586,62 @@ export class SpotLag_TimeAwareStrategy {
             state.timestamps.shift();
         }
 
-        // Position management - HOLD TO EXPIRY
+        // POSITION MANAGEMENT WITH TRAILING STOP
         if (position) {
-            return this.createSignal('hold', null, 'holding_to_expiry');
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const entryPrice = position.entryPrice;
+            const pnlPct = (currentPrice - entryPrice) / entryPrice;
+
+            // Update high-water mark
+            if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
+                this.highWaterMark[crypto] = currentPrice;
+            }
+            const hwm = this.highWaterMark[crypto];
+            const hwmPnlPct = (hwm - entryPrice) / entryPrice;
+
+            // Check if trailing should activate
+            if (!this.trailingActive[crypto] && pnlPct >= this.options.trailingActivationPct) {
+                this.trailingActive[crypto] = true;
+                console.log(`[${this.name}] ${crypto}: TRAILING ACTIVATED at ${(pnlPct * 100).toFixed(1)}% profit`);
+            }
+
+            // TRAILING STOP LOGIC
+            if (this.trailingActive[crypto]) {
+                const trailingStopPrice = hwm * (1 - this.options.trailingStopPct);
+                const floorPrice = entryPrice * (1 + this.options.minimumProfitFloor);
+                const effectiveStop = Math.max(trailingStopPrice, floorPrice);
+
+                if (currentPrice <= effectiveStop) {
+                    delete this.highWaterMark[crypto];
+                    delete this.trailingActive[crypto];
+                    this.tradedThisWindow[crypto] = windowEpoch;
+
+                    return this.createSignal('sell', null, 'trailing_stop', {
+                        entryPrice: entryPrice.toFixed(3),
+                        exitPrice: currentPrice.toFixed(3),
+                        highWaterMark: hwm.toFixed(3),
+                        peakPnlPct: (hwmPnlPct * 100).toFixed(1) + '%',
+                        exitPnlPct: (pnlPct * 100).toFixed(1) + '%'
+                    });
+                }
+
+                return this.createSignal('hold', null, 'trailing_active', {
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    peakPnlPct: (hwmPnlPct * 100).toFixed(1) + '%',
+                    trailingStop: effectiveStop.toFixed(3)
+                });
+            }
+
+            // Trailing not yet activated - hold
+            return this.createSignal('hold', null, 'holding_pre_trail', {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                activationThreshold: (this.options.trailingActivationPct * 100) + '%'
+            });
         }
+
+        // Clean up trailing state if no position
+        delete this.highWaterMark[crypto];
+        delete this.trailingActive[crypto];
 
         // Block re-entry
         if (this.tradedThisWindow[crypto] === windowEpoch) {
@@ -2926,6 +2830,13 @@ export class SpotLag_LateWindowOnlyStrategy extends SpotLag_TimeAwareStrategy {
 /**
  * Probability Edge: Only enters when there's a clear gap between
  * where market IS and where it SHOULD BE given spot position and time
+ *
+ * TRAILING STOP LOGIC (Jan 2026):
+ * - Tracks high-water mark (peak price reached)
+ * - Activates trailing after 15% profit (avoids noise exits)
+ * - Exits if price drops 30% below peak
+ * - Maintains minimum 5% profit floor once trailing active
+ * - Otherwise holds to expiry (preserves original behavior for small moves)
  */
 export class SpotLag_ProbabilityEdgeStrategy {
     constructor(options = {}) {
@@ -2952,12 +2863,22 @@ export class SpotLag_ProbabilityEdgeStrategy {
             minTimeRemaining: 30,
             enabledCryptos: ['btc', 'eth', 'sol', 'xrp'],
 
+            // TRAILING STOP PARAMETERS
+            // Only activates after significant profit to avoid noise exits
+            trailingActivationPct: 0.15,  // Activate trailing after 15% profit
+            trailingStopPct: 0.30,        // Exit if price drops 30% from peak
+            minimumProfitFloor: 0.05,     // Never exit below 5% profit once trailing active
+
             ...options
         };
 
         this.state = {};
         this.tradedThisWindow = {};
         this.stats = { signals: 0, avgEdge: 0 };
+
+        // Trailing stop state per crypto
+        this.highWaterMark = {};      // crypto -> highest price seen
+        this.trailingActive = {};     // crypto -> boolean
     }
 
     getName() { return this.name; }
@@ -2999,9 +2920,75 @@ export class SpotLag_ProbabilityEdgeStrategy {
         const timeRemaining = tick.time_remaining_sec || 0;
         const windowEpoch = tick.window_epoch;
 
+        // POSITION MANAGEMENT WITH TRAILING STOP
         if (position) {
-            return this.createSignal('hold', null, 'holding_to_expiry');
+            // Get current position value (bid price for selling)
+            const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
+            const entryPrice = position.entryPrice;
+            const pnlPct = (currentPrice - entryPrice) / entryPrice;
+
+            // Update high-water mark
+            if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
+                this.highWaterMark[crypto] = currentPrice;
+            }
+            const hwm = this.highWaterMark[crypto];
+            const hwmPnlPct = (hwm - entryPrice) / entryPrice;
+
+            // Check if trailing should activate (after significant profit)
+            if (!this.trailingActive[crypto] && pnlPct >= this.options.trailingActivationPct) {
+                this.trailingActive[crypto] = true;
+                console.log(`[${this.name}] ${crypto}: TRAILING ACTIVATED at ${(pnlPct * 100).toFixed(1)}% profit (entry=${entryPrice.toFixed(3)}, current=${currentPrice.toFixed(3)})`);
+            }
+
+            // TRAILING STOP LOGIC (only if activated)
+            if (this.trailingActive[crypto]) {
+                // Calculate trailing stop level (X% below high-water mark)
+                const trailingStopPrice = hwm * (1 - this.options.trailingStopPct);
+
+                // Calculate minimum floor (entry + minimum profit)
+                const floorPrice = entryPrice * (1 + this.options.minimumProfitFloor);
+
+                // Effective stop is the higher of trailing stop and floor
+                const effectiveStop = Math.max(trailingStopPrice, floorPrice);
+
+                // Check if we've hit the trailing stop
+                if (currentPrice <= effectiveStop) {
+                    // Clean up trailing state
+                    delete this.highWaterMark[crypto];
+                    delete this.trailingActive[crypto];
+                    this.tradedThisWindow[crypto] = windowEpoch;
+
+                    return this.createSignal('sell', null, 'trailing_stop', {
+                        entryPrice: entryPrice.toFixed(3),
+                        exitPrice: currentPrice.toFixed(3),
+                        highWaterMark: hwm.toFixed(3),
+                        peakPnlPct: (hwmPnlPct * 100).toFixed(1) + '%',
+                        exitPnlPct: (pnlPct * 100).toFixed(1) + '%',
+                        trailingStopPrice: trailingStopPrice.toFixed(3),
+                        floorPrice: floorPrice.toFixed(3)
+                    });
+                }
+
+                // Still above trailing stop, continue holding
+                return this.createSignal('hold', null, 'trailing_active', {
+                    pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                    highWaterMark: hwm.toFixed(3),
+                    peakPnlPct: (hwmPnlPct * 100).toFixed(1) + '%',
+                    trailingStop: effectiveStop.toFixed(3),
+                    currentPrice: currentPrice.toFixed(3)
+                });
+            }
+
+            // Trailing not yet activated - hold to expiry (original behavior)
+            return this.createSignal('hold', null, 'holding_pre_trail', {
+                pnlPct: (pnlPct * 100).toFixed(1) + '%',
+                activationThreshold: (this.options.trailingActivationPct * 100) + '%'
+            });
         }
+
+        // Clean up trailing state if no position
+        delete this.highWaterMark[crypto];
+        delete this.trailingActive[crypto];
 
         if (this.tradedThisWindow[crypto] === windowEpoch) {
             return this.createSignal('hold', null, 'already_traded');

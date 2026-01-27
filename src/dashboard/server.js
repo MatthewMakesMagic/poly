@@ -288,6 +288,8 @@ async function handleAPI(req, res) {
                 return apiResolutionAccuracy(req, res);
             case '/api/resolution/staleness':
                 return apiResolutionStaleness(req, res);
+            case '/api/resolution/source-comparison':
+                return apiSourceComparison(req, res);
 
             // Position path endpoints
             case '/api/paths/active':
@@ -1291,6 +1293,153 @@ async function apiResolutionStaleness(req, res) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
     }
+}
+
+// Price source comparison - detailed head-to-head accuracy
+// GET /api/resolution/source-comparison?hours=24
+async function apiSourceComparison(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+
+        const db = getDatabase();
+        if (!db || !db.query) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Database not available' }));
+            return;
+        }
+
+        const cutoffMs = Date.now() - (hours * 60 * 60 * 1000);
+
+        // Overall accuracy comparison
+        const accuracyResult = await db.query(`
+            SELECT
+                COUNT(*) as total_windows,
+                SUM(CASE WHEN binance_was_correct THEN 1 ELSE 0 END) as binance_correct,
+                SUM(CASE WHEN chainlink_was_correct THEN 1 ELSE 0 END) as chainlink_correct,
+                SUM(CASE WHEN pyth_was_correct THEN 1 ELSE 0 END) as pyth_correct,
+                SUM(CASE WHEN market_was_correct THEN 1 ELSE 0 END) as market_correct,
+                ROUND(100.0 * SUM(CASE WHEN binance_was_correct THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 2) as binance_accuracy_pct,
+                ROUND(100.0 * SUM(CASE WHEN chainlink_was_correct THEN 1 ELSE 0 END) /
+                      NULLIF(SUM(CASE WHEN chainlink_was_correct IS NOT NULL THEN 1 ELSE 0 END), 0), 2) as chainlink_accuracy_pct,
+                ROUND(100.0 * SUM(CASE WHEN pyth_was_correct THEN 1 ELSE 0 END) /
+                      NULLIF(SUM(CASE WHEN pyth_was_correct IS NOT NULL THEN 1 ELSE 0 END), 0), 2) as pyth_accuracy_pct,
+                ROUND(100.0 * SUM(CASE WHEN market_was_correct THEN 1 ELSE 0 END) /
+                      NULLIF(SUM(CASE WHEN market_was_correct IS NOT NULL THEN 1 ELSE 0 END), 0), 2) as market_accuracy_pct
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+        `, [cutoffMs]);
+
+        // Head-to-head: When Binance and Pyth disagree, who's right?
+        const headToHeadResult = await db.query(`
+            SELECT
+                'binance_vs_pyth' as comparison,
+                COUNT(*) as disagreements,
+                SUM(CASE WHEN binance_was_correct AND NOT pyth_was_correct THEN 1 ELSE 0 END) as binance_wins,
+                SUM(CASE WHEN pyth_was_correct AND NOT binance_was_correct THEN 1 ELSE 0 END) as pyth_wins
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+              AND binance_predicted != pyth_predicted
+              AND pyth_predicted IS NOT NULL
+            UNION ALL
+            SELECT
+                'binance_vs_chainlink' as comparison,
+                COUNT(*) as disagreements,
+                SUM(CASE WHEN binance_was_correct AND NOT chainlink_was_correct THEN 1 ELSE 0 END) as binance_wins,
+                SUM(CASE WHEN chainlink_was_correct AND NOT binance_was_correct THEN 1 ELSE 0 END) as chainlink_wins
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+              AND binance_predicted != chainlink_predicted
+              AND chainlink_predicted IS NOT NULL
+            UNION ALL
+            SELECT
+                'pyth_vs_chainlink' as comparison,
+                COUNT(*) as disagreements,
+                SUM(CASE WHEN pyth_was_correct AND NOT chainlink_was_correct THEN 1 ELSE 0 END) as pyth_wins,
+                SUM(CASE WHEN chainlink_was_correct AND NOT pyth_was_correct THEN 1 ELSE 0 END) as chainlink_wins
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+              AND pyth_predicted != chainlink_predicted
+              AND pyth_predicted IS NOT NULL
+              AND chainlink_predicted IS NOT NULL
+        `, [cutoffMs]);
+
+        // Recent disagreements with details
+        const recentDisagreements = await db.query(`
+            SELECT
+                crypto,
+                window_epoch,
+                final_binance,
+                final_chainlink,
+                final_pyth,
+                price_to_beat,
+                binance_predicted,
+                chainlink_predicted,
+                pyth_predicted,
+                actual_outcome,
+                binance_was_correct,
+                chainlink_was_correct,
+                pyth_was_correct,
+                binance_pyth_divergence,
+                divergence_magnitude,
+                resolved_at
+            FROM resolution_outcomes
+            WHERE resolved_at > to_timestamp($1 / 1000.0)
+              AND (
+                  (binance_predicted != pyth_predicted AND pyth_predicted IS NOT NULL)
+                  OR (binance_predicted != chainlink_predicted AND chainlink_predicted IS NOT NULL)
+              )
+            ORDER BY resolved_at DESC
+            LIMIT 50
+        `, [cutoffMs]);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            summary: accuracyResult.rows[0],
+            headToHead: headToHeadResult.rows,
+            recentDisagreements: recentDisagreements.rows,
+            hours,
+            timestamp: Date.now(),
+            recommendation: generateSourceRecommendation(accuracyResult.rows[0], headToHeadResult.rows)
+        }));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// Generate a recommendation based on accuracy data
+function generateSourceRecommendation(summary, headToHead) {
+    if (!summary) return 'Insufficient data';
+
+    const binanceAcc = parseFloat(summary.binance_accuracy_pct) || 0;
+    const pythAcc = parseFloat(summary.pyth_accuracy_pct) || 0;
+    const chainlinkAcc = parseFloat(summary.chainlink_accuracy_pct) || 0;
+
+    const sources = [
+        { name: 'binance', accuracy: binanceAcc },
+        { name: 'pyth', accuracy: pythAcc },
+        { name: 'chainlink', accuracy: chainlinkAcc }
+    ].filter(s => s.accuracy > 0).sort((a, b) => b.accuracy - a.accuracy);
+
+    if (sources.length === 0) return 'No accuracy data available';
+
+    const best = sources[0];
+    const pythVsBinance = headToHead?.find(h => h.comparison === 'binance_vs_pyth');
+
+    let recommendation = `Best overall: ${best.name} (${best.accuracy}%)`;
+
+    if (pythVsBinance && parseInt(pythVsBinance.disagreements) > 5) {
+        const pythWins = parseInt(pythVsBinance.pyth_wins) || 0;
+        const binanceWins = parseInt(pythVsBinance.binance_wins) || 0;
+        if (pythWins > binanceWins) {
+            recommendation += `. When Pyth and Binance disagree, Pyth is correct ${pythWins}/${pythWins + binanceWins} times.`;
+        } else if (binanceWins > pythWins) {
+            recommendation += `. When Pyth and Binance disagree, Binance is correct ${binanceWins}/${pythWins + binanceWins} times.`;
+        }
+    }
+
+    return recommendation;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

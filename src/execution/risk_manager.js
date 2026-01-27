@@ -59,12 +59,12 @@ const DEFAULT_RISK_PARAMS = {
     minBookDepth: 50,            // Minimum $50 total book depth
     
     // Time restrictions
-    minTimeRemainingSeconds: 30,   // Don't enter with < 30s remaining
+    minTimeRemainingSeconds: 5,    // Reduced to 5s to allow Endgame strategies (was 30s)
     maxTimeRemainingSeconds: 870,  // Don't enter in first 30s of window
     
     // Cooldowns
-    minSecondsBetweenTrades: 5,    // 5 second cooldown between trades
-    cooldownAfterLoss: 10,         // 10 second cooldown after a loss
+    minSecondsBetweenTrades: 0,    // No global cooldown - strategies trade independently
+    cooldownAfterLoss: 5,          // 5 second cooldown after a loss (reduced from 10)
     
     // Circuit breakers
     circuitBreakerLossThreshold: 10, // Trip if $10 lost in circuit breaker window
