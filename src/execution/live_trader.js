@@ -158,7 +158,12 @@ export class LiveTrader extends EventEmitter {
      * Initialize the live trader
      */
     async initialize() {
-        if (!this.options.enabled) {
+        // Check env var at RUNTIME, not module load time
+        // (Static imports hoist before env var is set in start_collector.js)
+        const isEnabled = process.env.LIVE_TRADING_ENABLED === 'true';
+        this.options.enabled = isEnabled;
+
+        if (!isEnabled) {
             this.logger.log('[LiveTrader] Live trading is DISABLED (set LIVE_TRADING_ENABLED=true to enable)');
             return false;
         }
