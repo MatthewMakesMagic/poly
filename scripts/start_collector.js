@@ -79,47 +79,26 @@ async function runMigrations() {
         await initDatabase();
         
         // =================================================================
-        // ENABLE - ONLY new time-aware SpotLag strategies + Endgame
-        // All other SpotLag strategies are DISABLED for live trading
+        // TP/SL TESTING MODE - Only enable test strategy
+        // Once 10 successful TP/SL trades verified, re-enable production strategies
         // =================================================================
         const toEnable = [
-            // NEW TIME-AWARE STRATEGIES (v2) - the only SpotLag we should trade live
-            'SpotLag_TimeAware',       // Base time-aware strategy
-            'SpotLag_TimeAwareAggro',  // Aggressive variant
-            'SpotLag_TimeAwareSafe',   // Conservative variant
-            'SpotLag_TimeAwareTP',     // With take-profit
-            'SpotLag_LateOnly',        // Late window only
-            'SpotLag_ProbEdge',        // Probability edge based
-
-            // SPOTLAG TRAIL V1-V4 (Jan 2026) - Micro-lag with conviction-based risk management
-            // Now includes strike alignment check and stop loss for wrong-side entries
-            // V5 REMOVED - consistently losing money (4W/5L, -$1.06)
-            'SpotLag_Trail_V1',  // Safe: only RIGHT side, 40% stop
-            'SpotLag_Trail_V2',  // Moderate: wrong side only late (<120s), 30% stop
-            'SpotLag_Trail_V3',  // Base: both sides with 25% stop
-            'SpotLag_Trail_V4',  // Aggressive: both sides with 20% stop (cut losers fast)
-
-            // PURE PROBABILISTIC (Jan 2026) - Trade on probability edge alone
-            // Dynamic position sizing based on edge magnitude and liquidity
-            'PureProb_Base',         // Base: 5% min edge, dynamic sizing
-            'PureProb_Conservative', // Conservative: 8% min edge
-            'PureProb_Aggressive',   // Aggressive: 3% min edge, larger positions
-            'PureProb_Late',         // Late: Only last 2 min, highest conviction
-
-            // LAG + PROBABILISTIC (Jan 2026) - Lag detection + probability model
-            // Best of both: wait for lag signal, validate with prob edge, dynamic sizing
-            'LagProb_Base',          // Base: lag + 3% min edge
-            'LagProb_Conservative',  // Conservative: higher thresholds, right side only
-            'LagProb_Aggressive',    // Aggressive: lower thresholds, larger positions
-            'LagProb_RightSide',     // RightSide: ONLY trades right side of strike
-
-            // ENDGAME - near-resolution plays (killing it! 10x position size)
-            'Endgame',
-            'Endgame_Aggressive',
-            'Endgame_Conservative',
-            'Endgame_Safe',
-            'Endgame_Momentum',
+            // TEST STRATEGY ONLY - validates take profit and stop loss
+            'TP_SL_Test',  // $2 positions, 40-60% markets, 15% SL, 10% TP activation
         ];
+
+        // PRODUCTION STRATEGIES - DISABLED DURING TESTING
+        // Uncomment these once TP/SL validation is complete (10 trades)
+        /*
+        const productionStrategies = [
+            'SpotLag_TimeAware', 'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe',
+            'SpotLag_TimeAwareTP', 'SpotLag_LateOnly', 'SpotLag_ProbEdge',
+            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4',
+            'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive', 'PureProb_Late',
+            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
+            'Endgame', 'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
+        ];
+        */
 
         for (const strat of toEnable) {
             await setLiveStrategyEnabled(strat, true);
@@ -127,71 +106,31 @@ async function runMigrations() {
         }
 
         // =================================================================
-        // DISABLE - ALL old SpotLag strategies (not time-aware)
-        // Also disable Fair Value and Contrarian
+        // DISABLE ALL PRODUCTION STRATEGIES DURING TP/SL TESTING
         // =================================================================
         const toDisable = [
-            // OLD MICROLAG (replaced by SpotLag_Trail V1-V4)
-            'MicroLag_Convergence',
-            'MicroLag_Convergence_Aggro',
-            'MicroLag_Convergence_Safe',
-
-            // REMOVED - Too aggressive, consistently losing (4W/5L, -$1.06)
+            // PRODUCTION STRATEGIES - DISABLED DURING TESTING
+            'SpotLag_TimeAware', 'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe',
+            'SpotLag_TimeAwareTP', 'SpotLag_LateOnly', 'SpotLag_ProbEdge',
+            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4',
             'SpotLag_Trail_V5',
+            'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive', 'PureProb_Late',
+            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
+            'Endgame', 'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
 
-            // OLD SPOTLAG - not time-aware, disable for live
-            'SpotLag_Aggressive',
-            'SpotLag_Fast',
-            'SpotLagSimple',
-            'SpotLag_Confirmed',
-            'SpotLag_TP3',
-            'SpotLag_TP3_Trailing',
-            'SpotLag_TP6',
-            'SpotLag_VolAdapt',
-            'SpotLag_Trailing',
-            'SpotLag_TrailTight',
-            'SpotLag_TrailWide',
-            'SpotLag_LateValue',
-            'SpotLag_DeepValue',
-            'SpotLag_CorrectSide',
-            'SpotLag_ExtremeReversal',
-            'SpotLag_CLConfirmed',
-            'SpotLag_Aggressive_CL',
-
-            // Mispricing
-            'MispricingOnly',
-            'Mispricing_Strict',
-            'Mispricing_Loose',
-            'Mispricing_CLConfirmed',
-            'UpOnly_CLConfirmed',
-
-            // Chainlink divergence
-            'CL_Divergence',
-            'CL_Divergence_Aggro',
-            'CL_Divergence_Safe',
-            'CL_FinalSeconds',
-            'CL_FinalSeconds_Ultra',
-
-            // Fair Value - proven losers
-            'FairValue_RealizedVol',
-            'FairValue_EWMA',
-            'FairValue_WithDrift',
-            'FV_Drift_1H',
-            'FV_Drift_4H',
-            'FV_Drift_24H',
-            'FV_UpOnly_4H',
-
-            // Contrarian - losing money
-            'Contrarian',
-            'Contrarian_SOL',
-            'Contrarian_Scalp',
-            'Contrarian_Strong',
-
-            // Other
-            'TimeConditional',
-            'Microstructure',
-            'CrossAsset',
-            'Regime',
+            // OLD STRATEGIES
+            'MicroLag_Convergence', 'MicroLag_Convergence_Aggro', 'MicroLag_Convergence_Safe',
+            'SpotLag_Aggressive', 'SpotLag_Fast', 'SpotLagSimple', 'SpotLag_Confirmed',
+            'SpotLag_TP3', 'SpotLag_TP3_Trailing', 'SpotLag_TP6',
+            'SpotLag_VolAdapt', 'SpotLag_Trailing', 'SpotLag_TrailTight', 'SpotLag_TrailWide',
+            'SpotLag_LateValue', 'SpotLag_DeepValue', 'SpotLag_CorrectSide', 'SpotLag_ExtremeReversal',
+            'SpotLag_CLConfirmed', 'SpotLag_Aggressive_CL',
+            'MispricingOnly', 'Mispricing_Strict', 'Mispricing_Loose', 'Mispricing_CLConfirmed', 'UpOnly_CLConfirmed',
+            'CL_Divergence', 'CL_Divergence_Aggro', 'CL_Divergence_Safe', 'CL_FinalSeconds', 'CL_FinalSeconds_Ultra',
+            'FairValue_RealizedVol', 'FairValue_EWMA', 'FairValue_WithDrift',
+            'FV_Drift_1H', 'FV_Drift_4H', 'FV_Drift_24H', 'FV_UpOnly_4H',
+            'Contrarian', 'Contrarian_SOL', 'Contrarian_Scalp', 'Contrarian_Strong',
+            'TimeConditional', 'Microstructure', 'CrossAsset', 'Regime',
         ];
 
         for (const strat of toDisable) {
