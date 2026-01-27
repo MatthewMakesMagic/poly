@@ -48,6 +48,7 @@ export class LiveTrader extends EventEmitter {
         this.riskManager = new RiskManager({
             logger: this.logger,
             maxPositionPerTrade: 15,  // Allow up to $15 for dynamic sizing (Endgame 10x = $10)
+            maxPositionPerWindow: 30, // Allow multiple $2-$10 trades per window (was $5)
             maxTotalExposure: 50,     // Increased for larger Endgame positions
             maxLossPerDay: 30,        // Increased to accommodate larger positions
             minBidSize: 2,            // Lower threshold for thin markets
