@@ -91,12 +91,14 @@ async function runMigrations() {
             'SpotLag_LateOnly',        // Late window only
             'SpotLag_ProbEdge',        // Probability edge based
 
-            // MICROLAG CONVERGENCE (Jan 2026) - Expected profit model with proven thresholds
-            // Uses 0.0002 spotMoveThreshold (proven 87.7% WR), convergence-based entry,
-            // uniform trailing stops (10% activation, 25% from peak)
-            'MicroLag_Convergence',         // Base: 5% expected profit
-            'MicroLag_Convergence_Aggro',   // Aggressive: 3% expected profit
-            'MicroLag_Convergence_Safe',    // Safe: 8% expected profit
+            // SPOTLAG TRAIL V1-V5 (Jan 2026) - Simplified micro-lag with trailing stops
+            // NO expected profit gate, simple momentum following with liquidity guards
+            // 5 variants with different aggression levels, all trade independently
+            'SpotLag_Trail_V1',  // Ultra Conservative: 0.04% threshold, strict guards
+            'SpotLag_Trail_V2',  // Conservative: 0.03% threshold
+            'SpotLag_Trail_V3',  // Base/Moderate: 0.02% threshold (proven)
+            'SpotLag_Trail_V4',  // Aggressive: 0.015% threshold
+            'SpotLag_Trail_V5',  // Ultra Aggressive: 0.01% threshold
 
             // ENDGAME - near-resolution plays (proven safe)
             'Endgame',
@@ -116,6 +118,11 @@ async function runMigrations() {
         // Also disable Fair Value and Contrarian
         // =================================================================
         const toDisable = [
+            // OLD MICROLAG (replaced by SpotLag_Trail V1-V5)
+            'MicroLag_Convergence',
+            'MicroLag_Convergence_Aggro',
+            'MicroLag_Convergence_Safe',
+
             // OLD SPOTLAG - not time-aware, disable for live
             'SpotLag_Aggressive',
             'SpotLag_Fast',

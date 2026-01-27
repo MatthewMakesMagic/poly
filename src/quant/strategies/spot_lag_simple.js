@@ -3123,62 +3123,43 @@ export function createSpotLagProbEdge(capital = 100) {
 }
 
 // ================================================================
-// MICROLAG CONVERGENCE STRATEGY (Jan 2026)
+// SPOTLAG TRAILING STRATEGIES (Jan 2026 - Simplified)
 //
-// Key insight: TimeAware strategies have ZERO signals because thresholds
-// are 5-7x too high. SpotLag_Aggressive with 0.0002 threshold has 87.7% WR.
+// Based on proven SpotLag_Aggressive (87.7% WR) with added trailing stops.
+// NO expected profit gate (was causing only illiquid underdog signals).
+// Simple: spot moves → follow momentum → trail stop or hold to expiry.
 //
-// Instead of threshold scaling, use expected profit model:
-// "Given this lag and time remaining, what's my expected profit from convergence?"
-//
-// ALL exits are trailing stops - no fixed TP, no hold-to-expiry default.
+// 5 VARIANTS with different aggression levels, all trade independently.
 // ================================================================
 
 /**
- * MicroLag_Convergence Strategy
+ * SpotLag_Trail Strategy (Base)
  *
- * THESIS: Market prices converge to spot with half-life of ~3.5 seconds.
- * Enter when expected profit from convergence exceeds threshold.
- * Exit via uniform trailing stop (captures gains, naturally holds to expiry if rising).
- *
- * Key differences from TimeAware:
- * - spotMoveThreshold: 0.0002 (proven to generate signals) vs 0.0008
- * - NO spotDelta requirement - use expected profit model instead
- * - Entry: "Is expected profit > 5%?" not "Is lag big enough?"
- * - Trailing: 10% activation, 25% from peak (vs 15%/30%)
- * - Underdogs: ALLOWED early (time for reversal) vs BLOCKED
+ * THESIS: Follow spot momentum with trailing stops.
+ * - Proven 0.0002 spotMoveThreshold
+ * - Trailing stop captures gains, holds to expiry if momentum continues
+ * - Min/max probability guards for liquidity and consensus
  */
-export class MicroLag_ConvergenceStrategy {
+export class SpotLag_TrailStrategy {
     constructor(options = {}) {
-        this.name = options.name || 'MicroLag_Convergence';
+        this.name = options.name || 'SpotLag_Trail';
         this.options = {
-            // MICRO-LAG DETECTION (proven thresholds from SpotLag_Aggressive)
-            spotMoveThreshold: 0.0002,   // 0.02% - GENERATES SIGNALS
+            // MICRO-LAG DETECTION (proven thresholds)
+            spotMoveThreshold: 0.0002,   // 0.02% - proven to generate signals
             lookbackTicks: 8,
             marketLagRatio: 0.6,         // Market should have moved < 60% of expected
 
-            // CONVERGENCE MODEL
-            convergenceHalfLifeSec: 3.5,  // Market prices 50% in 3.5s
-            minExpectedProfit: 0.05,      // 5% minimum expected profit to enter
-
-            // UNIFORM TRAILING STOP (all time windows)
+            // TRAILING STOP
             trailingActivationPct: 0.10,  // Activate after 10% profit
             trailingStopPct: 0.25,        // 25% trailing from peak
-            minimumProfitFloor: 0.05,     // 5% floor (never exit below once activated)
+            minimumProfitFloor: 0.05,     // 5% floor once trailing active
 
             // Time constraints
             minTimeRemaining: 30,         // Don't enter in final 30s
 
-            // Market probability constraints
-            maxMarketProb: 0.92,          // Don't buy UP if market already >92%
-            minMarketProb: 0.08,          // Don't buy DOWN if market already <8%
-
-            // UNDERDOG BONUS (inverted logic from TimeAware)
-            // Early underdogs = GOOD (time for reversal)
-            // Only block underdogs in final seconds when no time to recover
-            enableUnderdogBonus: true,
-            underdogThreshold: 0.25,      // Below 25% = underdog
-            underdogBlockTime: 60,        // Only block underdogs in final 60s
+            // LIQUIDITY & CONSENSUS GUARDS (key fix!)
+            minProbability: 0.05,         // Don't trade below 5¢ (no liquidity)
+            maxProbability: 0.95,         // Don't fight 95%+ consensus
 
             // Position sizing
             maxPosition: 100,
@@ -3191,14 +3172,7 @@ export class MicroLag_ConvergenceStrategy {
 
         this.state = {};
         this.tradedThisWindow = {};
-        this.stats = {
-            signals: 0,
-            earlyEntries: 0,
-            midEntries: 0,
-            lateEntries: 0,
-            underdogEntries: 0,
-            avgExpectedProfit: 0
-        };
+        this.stats = { signals: 0, earlyEntries: 0, midEntries: 0, lateEntries: 0 };
 
         // Trailing stop state per crypto
         this.highWaterMark = {};
@@ -3216,29 +3190,6 @@ export class MicroLag_ConvergenceStrategy {
             };
         }
         return this.state[crypto];
-    }
-
-    /**
-     * Calculate expected profit from convergence
-     * Based on exponential convergence model: price gap closes with half-life
-     *
-     * @param {number} lagSize - Current price gap (absolute value)
-     * @param {number} timeRemaining - Seconds until expiry
-     * @param {number} entryPrice - Price we'd pay to enter
-     * @returns {number} Expected profit as percentage of entry price
-     */
-    calculateExpectedProfit(lagSize, timeRemaining, entryPrice) {
-        // Convergence: 1 - e^(-t/halfLife)
-        // At t=halfLife: 1 - e^(-1) = 0.632 (63.2% convergence)
-        // At t=2*halfLife: 1 - e^(-2) = 0.865 (86.5% convergence)
-        const halfLife = this.options.convergenceHalfLifeSec;
-        const convergencePct = 1 - Math.exp(-timeRemaining / halfLife);
-
-        // Expected move = lag size * convergence percentage
-        const expectedMove = lagSize * convergencePct;
-
-        // Return as percentage of entry price
-        return expectedMove / entryPrice;
     }
 
     onTick(tick, position = null, context = {}) {
@@ -3309,7 +3260,7 @@ export class MicroLag_ConvergenceStrategy {
                 });
             }
 
-            // Trailing not yet activated - hold (naturally holds to expiry if price keeps rising)
+            // Trailing not yet activated - hold to expiry
             return this.createSignal('hold', null, 'holding_pre_trail', {
                 pnlPct: (pnlPct * 100).toFixed(1) + '%',
                 activationThreshold: (this.options.trailingActivationPct * 100) + '%'
@@ -3320,7 +3271,7 @@ export class MicroLag_ConvergenceStrategy {
         delete this.highWaterMark[crypto];
         delete this.trailingActive[crypto];
 
-        // Block re-entry
+        // Block re-entry this window
         if (this.tradedThisWindow[crypto] === windowEpoch) {
             return this.createSignal('hold', null, 'already_traded_this_window');
         }
@@ -3334,111 +3285,70 @@ export class MicroLag_ConvergenceStrategy {
             return this.createSignal('hold', null, 'insufficient_data');
         }
 
-        // Calculate spot movement (micro-lag detection)
+        // Calculate spot movement
         const oldSpot = state.spotHistory[state.spotHistory.length - this.options.lookbackTicks];
         const newSpot = state.spotHistory[state.spotHistory.length - 1];
         const spotMove = (newSpot - oldSpot) / oldSpot;
 
-        // Check for spot movement (using PROVEN micro-lag threshold)
+        // Check for spot movement
         if (Math.abs(spotMove) < this.options.spotMoveThreshold) {
-            return this.createSignal('hold', null, 'spot_not_moving', {
-                spotMove: (spotMove * 100).toFixed(4) + '%',
-                threshold: (this.options.spotMoveThreshold * 100).toFixed(4) + '%'
-            });
+            return this.createSignal('hold', null, 'spot_not_moving');
         }
 
         // Calculate market movement (lag detection)
         const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
         const newMarket = state.marketHistory[state.marketHistory.length - 1];
         const marketMove = newMarket - oldMarket;
-        const expectedMarketMove = spotMove * 10;  // Rough multiplier
+        const expectedMarketMove = spotMove * 10;
         const lagRatio = Math.abs(marketMove) / Math.abs(expectedMarketMove);
 
         if (lagRatio > this.options.marketLagRatio) {
-            return this.createSignal('hold', null, 'market_caught_up', {
-                lagRatio: lagRatio.toFixed(2)
-            });
+            return this.createSignal('hold', null, 'market_caught_up');
         }
 
         // Determine trade side based on spot movement
         const side = spotMove > 0 ? 'up' : 'down';
         const marketProb = tick.up_mid || 0.5;
+        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
 
-        // Avoid fighting strong consensus
-        if (side === 'up' && marketProb > this.options.maxMarketProb) {
-            return this.createSignal('hold', null, 'market_already_high', { marketProb });
-        }
-        if (side === 'down' && marketProb < this.options.minMarketProb) {
-            return this.createSignal('hold', null, 'market_already_low', { marketProb });
-        }
-
-        // Calculate expected profit from convergence
-        const entryPrice = side === 'up' ? tick.up_ask : tick.down_ask;
-        const lagSize = Math.abs(expectedMarketMove - marketMove);  // Remaining gap
-        const expectedProfit = this.calculateExpectedProfit(lagSize, timeRemaining, entryPrice);
-
-        // ENTRY DECISION: Is expected profit worth it?
-        if (expectedProfit < this.options.minExpectedProfit) {
-            return this.createSignal('hold', null, 'expected_profit_too_low', {
-                expectedProfit: (expectedProfit * 100).toFixed(2) + '%',
-                required: (this.options.minExpectedProfit * 100) + '%',
-                lagSize: lagSize.toFixed(4),
-                timeRemaining: timeRemaining.toFixed(0) + 's'
+        // LIQUIDITY GUARD: Don't trade below minProbability (no liquidity)
+        if (sideProb < this.options.minProbability) {
+            return this.createSignal('hold', null, 'below_min_probability', {
+                sideProb: (sideProb * 100).toFixed(1) + '%',
+                minRequired: (this.options.minProbability * 100) + '%'
             });
         }
 
-        // UNDERDOG HANDLING (inverted from TimeAware)
-        // Early underdogs = GOOD (time for reversal)
-        // Only block underdogs in final seconds
-        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
-        const isUnderdog = sideProb < this.options.underdogThreshold;
-
-        if (isUnderdog && this.options.enableUnderdogBonus) {
-            // Only block underdogs in final seconds (no time to recover)
-            if (timeRemaining < this.options.underdogBlockTime) {
-                console.log(`[${this.name}] ${crypto}: UNDERDOG BLOCKED - ${side} at ${(sideProb * 100).toFixed(1)}%, only ${timeRemaining.toFixed(0)}s left (needs >${this.options.underdogBlockTime}s)`);
-                return this.createSignal('hold', null, 'underdog_blocked_late', {
-                    sideProb: (sideProb * 100).toFixed(1) + '%',
-                    timeRemaining: timeRemaining.toFixed(0) + 's',
-                    minTimeRequired: this.options.underdogBlockTime + 's'
-                });
-            }
-            // Early underdog - ALLOW (time for reversal)
-            console.log(`[${this.name}] ${crypto}: UNDERDOG ALLOWED - ${side} at ${(sideProb * 100).toFixed(1)}%, ${timeRemaining.toFixed(0)}s left (enough time for reversal)`);
-            this.stats.underdogEntries++;
+        // CONSENSUS GUARD: Don't fight strong consensus
+        if (sideProb > this.options.maxProbability) {
+            return this.createSignal('hold', null, 'above_max_probability', {
+                sideProb: (sideProb * 100).toFixed(1) + '%',
+                maxAllowed: (this.options.maxProbability * 100) + '%'
+            });
         }
 
         // ALL CONDITIONS MET - TRADE
         this.stats.signals++;
-
-        // Track time window for stats
         if (timeRemaining > 300) this.stats.earlyEntries++;
         else if (timeRemaining > 120) this.stats.midEntries++;
         else this.stats.lateEntries++;
 
-        // Update average expected profit stat
-        this.stats.avgExpectedProfit =
-            (this.stats.avgExpectedProfit * (this.stats.signals - 1) + expectedProfit) / this.stats.signals;
-
         this.tradedThisWindow[crypto] = windowEpoch;
 
-        // Determine time window for logging
         const timeWindow = timeRemaining > 300 ? 'early' : timeRemaining > 120 ? 'mid' : 'late';
 
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
             `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
-            `expectedProfit=${(expectedProfit * 100).toFixed(2)}% lag=${lagRatio.toFixed(2)} | ` +
-            `prob=${(sideProb * 100).toFixed(1)}%${isUnderdog ? ' (UNDERDOG)' : ''}`);
+            `spotMove=${(spotMove * 100).toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
+            `prob=${(sideProb * 100).toFixed(1)}%`);
 
-        return this.createSignal('buy', side, 'convergence_entry', {
+        return this.createSignal('buy', side, 'spotlag_trail_entry', {
             timeWindow,
             timeRemaining: timeRemaining.toFixed(0) + 's',
-            expectedProfit: (expectedProfit * 100).toFixed(2) + '%',
             spotMove: (spotMove * 100).toFixed(4) + '%',
             lagRatio: lagRatio.toFixed(2),
             marketProb: (marketProb * 100).toFixed(1) + '%',
             sideProb: (sideProb * 100).toFixed(1) + '%',
-            isUnderdog,
             crypto
         });
     }
@@ -3459,53 +3369,127 @@ export class MicroLag_ConvergenceStrategy {
 }
 
 /**
- * MicroLag_Convergence_Aggro: More trades
- * - 3% expected profit threshold (vs 5%)
- * - 8% trailing activation (vs 10%)
+ * V1: Ultra Conservative - Fewest trades, highest conviction
  */
-export class MicroLag_ConvergenceAggroStrategy extends MicroLag_ConvergenceStrategy {
+export class SpotLag_Trail_V1Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
         super({
-            name: 'MicroLag_Convergence_Aggro',
-            minExpectedProfit: 0.03,       // 3% expected profit (lower bar)
-            trailingActivationPct: 0.08,   // 8% trailing activation (earlier)
-            trailingStopPct: 0.20,         // 20% trailing (tighter)
-            marketLagRatio: 0.7,           // Allow more market catch-up
+            name: 'SpotLag_Trail_V1',
+            spotMoveThreshold: 0.0004,    // 0.04% - higher bar
+            marketLagRatio: 0.4,          // Stricter lag requirement
+            trailingActivationPct: 0.15,  // 15% to activate trailing
+            trailingStopPct: 0.30,        // 30% trailing
+            minProbability: 0.10,         // 10% min (more liquidity)
+            maxProbability: 0.90,         // 90% max (less consensus fighting)
             ...options
         });
     }
 }
 
 /**
- * MicroLag_Convergence_Safe: Fewer, higher-conviction trades
- * - 8% expected profit threshold (vs 5%)
- * - 12% trailing activation (vs 10%)
+ * V2: Conservative
  */
-export class MicroLag_ConvergenceSafeStrategy extends MicroLag_ConvergenceStrategy {
+export class SpotLag_Trail_V2Strategy extends SpotLag_TrailStrategy {
     constructor(options = {}) {
         super({
-            name: 'MicroLag_Convergence_Safe',
-            minExpectedProfit: 0.08,       // 8% expected profit (higher bar)
-            trailingActivationPct: 0.12,   // 12% trailing activation (later)
-            trailingStopPct: 0.30,         // 30% trailing (wider)
-            marketLagRatio: 0.5,           // Stricter lag detection
-            spotMoveThreshold: 0.0003,     // Slightly higher spot threshold
+            name: 'SpotLag_Trail_V2',
+            spotMoveThreshold: 0.0003,    // 0.03%
+            marketLagRatio: 0.5,
+            trailingActivationPct: 0.12,
+            trailingStopPct: 0.28,
+            minProbability: 0.08,
+            maxProbability: 0.92,
             ...options
         });
     }
 }
 
-// Factory functions for MicroLag_Convergence strategies
+/**
+ * V3: Base/Moderate (same as SpotLag_Trail)
+ */
+export class SpotLag_Trail_V3Strategy extends SpotLag_TrailStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_Trail_V3',
+            // Uses base defaults: 0.0002, 0.6, 0.10, 0.25, 0.05, 0.95
+            ...options
+        });
+    }
+}
+
+/**
+ * V4: Aggressive - More trades
+ */
+export class SpotLag_Trail_V4Strategy extends SpotLag_TrailStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_Trail_V4',
+            spotMoveThreshold: 0.00015,   // 0.015% - lower bar
+            marketLagRatio: 0.7,          // Allow more catch-up
+            trailingActivationPct: 0.08,  // 8% to activate
+            trailingStopPct: 0.20,        // 20% trailing (tighter)
+            minProbability: 0.04,         // 4% min
+            maxProbability: 0.96,
+            ...options
+        });
+    }
+}
+
+/**
+ * V5: Ultra Aggressive - Most trades
+ */
+export class SpotLag_Trail_V5Strategy extends SpotLag_TrailStrategy {
+    constructor(options = {}) {
+        super({
+            name: 'SpotLag_Trail_V5',
+            spotMoveThreshold: 0.0001,    // 0.01% - very low bar
+            marketLagRatio: 0.8,          // Allow significant catch-up
+            trailingActivationPct: 0.06,  // 6% to activate
+            trailingStopPct: 0.15,        // 15% trailing (very tight)
+            minProbability: 0.03,         // 3% min
+            maxProbability: 0.97,
+            minTimeRemaining: 20,         // Can enter later
+            ...options
+        });
+    }
+}
+
+// Factory functions
+export function createSpotLagTrailV1(capital = 100) {
+    return new SpotLag_Trail_V1Strategy({ maxPosition: capital });
+}
+
+export function createSpotLagTrailV2(capital = 100) {
+    return new SpotLag_Trail_V2Strategy({ maxPosition: capital });
+}
+
+export function createSpotLagTrailV3(capital = 100) {
+    return new SpotLag_Trail_V3Strategy({ maxPosition: capital });
+}
+
+export function createSpotLagTrailV4(capital = 100) {
+    return new SpotLag_Trail_V4Strategy({ maxPosition: capital });
+}
+
+export function createSpotLagTrailV5(capital = 100) {
+    return new SpotLag_Trail_V5Strategy({ maxPosition: capital });
+}
+
+// Keep old names for backwards compatibility (map to V3 base)
+export const MicroLag_ConvergenceStrategy = SpotLag_Trail_V3Strategy;
+export const MicroLag_ConvergenceAggroStrategy = SpotLag_Trail_V4Strategy;
+export const MicroLag_ConvergenceSafeStrategy = SpotLag_Trail_V2Strategy;
+
 export function createMicroLagConvergence(capital = 100) {
-    return new MicroLag_ConvergenceStrategy({ maxPosition: capital });
+    return createSpotLagTrailV3(capital);
 }
 
 export function createMicroLagConvergenceAggro(capital = 100) {
-    return new MicroLag_ConvergenceAggroStrategy({ maxPosition: capital });
+    return createSpotLagTrailV4(capital);
 }
 
 export function createMicroLagConvergenceSafe(capital = 100) {
-    return new MicroLag_ConvergenceSafeStrategy({ maxPosition: capital });
+    return createSpotLagTrailV2(capital);
 }
 
 export default SpotLagSimpleStrategy;
