@@ -18,6 +18,8 @@ import {
     getLiveEnabledStrategies,
     setLiveStrategyEnabled,
     getLiveTrades,
+    getStrategyPerformanceStats,
+    getRunningPnL,
     // OracleOverseer & Resolution imports
     getLagEvents,
     getLatencyStats,
@@ -264,6 +266,10 @@ async function handleAPI(req, res) {
                 return apiLiveStrategyToggle(req, res);
             case '/api/live/trades':
                 return apiLiveTrades(req, res);
+            case '/api/live/performance':
+                return apiLivePerformance(req, res);
+            case '/api/live/pnl':
+                return apiLivePnL(req, res);
             case '/api/live/reset-orders':
                 return apiLiveResetOrders(req, res);
             case '/api/live/reconcile':
@@ -923,9 +929,38 @@ async function apiLiveTrades(req, res) {
         const url = new URL(req.url, `http://${req.headers.host}`);
         const hours = parseInt(url.searchParams.get('hours') || '24');
         const strategy = url.searchParams.get('strategy');
-        
+
         const result = await getLiveTrades({ hours, strategy });
-        
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// GET /api/live/performance - Comprehensive strategy performance stats
+async function apiLivePerformance(req, res) {
+    try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const hours = parseInt(url.searchParams.get('hours') || '24');
+
+        const result = await getStrategyPerformanceStats({ hours });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+    } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// GET /api/live/pnl - Running P&L by strategy (all-time)
+async function apiLivePnL(req, res) {
+    try {
+        const result = await getRunningPnL();
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
     } catch (error) {

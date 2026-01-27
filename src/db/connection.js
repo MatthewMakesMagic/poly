@@ -914,6 +914,176 @@ export async function getLiveTrades(options = {}) {
     }
 }
 
+/**
+ * Get comprehensive strategy performance stats for live trading
+ * Returns detailed P&L, win rates, drawdown, and per-trade metrics
+ */
+export async function getStrategyPerformanceStats(options = {}) {
+    if (!USE_POSTGRES || !pgPool) {
+        return { strategies: [], summary: {}, error: 'PostgreSQL not available' };
+    }
+
+    try {
+        const { hours = 24 } = options;
+
+        // Comprehensive per-strategy stats
+        const strategyStats = await pgPool.query(`
+            WITH exit_trades AS (
+                SELECT
+                    strategy_name,
+                    pnl,
+                    price as exit_price,
+                    entry_price,
+                    timestamp,
+                    crypto,
+                    side,
+                    reason,
+                    CASE WHEN pnl > 0 THEN 1 ELSE 0 END as is_win,
+                    CASE WHEN pnl < 0 THEN 1 ELSE 0 END as is_loss
+                FROM live_trades
+                WHERE type = 'exit'
+                AND timestamp > NOW() - INTERVAL '${hours} hours'
+            ),
+            strategy_agg AS (
+                SELECT
+                    strategy_name,
+                    COUNT(*) as total_trades,
+                    SUM(is_win) as wins,
+                    SUM(is_loss) as losses,
+                    SUM(pnl) as net_pnl,
+                    SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END) as gross_profit,
+                    SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END) as gross_loss,
+                    AVG(CASE WHEN pnl > 0 THEN pnl END) as avg_win,
+                    AVG(CASE WHEN pnl < 0 THEN pnl END) as avg_loss,
+                    AVG(pnl) as avg_trade,
+                    MAX(pnl) as best_trade,
+                    MIN(pnl) as worst_trade,
+                    STDDEV(pnl) as pnl_stddev
+                FROM exit_trades
+                GROUP BY strategy_name
+            )
+            SELECT
+                strategy_name,
+                total_trades,
+                wins,
+                losses,
+                ROUND((wins::decimal / NULLIF(total_trades, 0) * 100)::numeric, 1) as win_rate,
+                ROUND(net_pnl::numeric, 2) as net_pnl,
+                ROUND(gross_profit::numeric, 2) as gross_profit,
+                ROUND(gross_loss::numeric, 2) as gross_loss,
+                ROUND((gross_profit / NULLIF(ABS(gross_loss), 0))::numeric, 2) as profit_factor,
+                ROUND(avg_win::numeric, 3) as avg_win,
+                ROUND(avg_loss::numeric, 3) as avg_loss,
+                ROUND(avg_trade::numeric, 3) as avg_trade,
+                ROUND(best_trade::numeric, 2) as best_trade,
+                ROUND(worst_trade::numeric, 2) as worst_trade,
+                ROUND(pnl_stddev::numeric, 3) as pnl_stddev
+            FROM strategy_agg
+            ORDER BY net_pnl DESC
+        `);
+
+        // Overall summary
+        const summary = await pgPool.query(`
+            SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as total_wins,
+                SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as total_losses,
+                ROUND(SUM(pnl)::numeric, 2) as total_pnl,
+                ROUND(AVG(pnl)::numeric, 3) as avg_pnl,
+                COUNT(DISTINCT strategy_name) as active_strategies
+            FROM live_trades
+            WHERE type = 'exit'
+            AND timestamp > NOW() - INTERVAL '${hours} hours'
+        `);
+
+        // Hourly breakdown
+        const hourly = await pgPool.query(`
+            SELECT
+                DATE_TRUNC('hour', timestamp) as hour,
+                COUNT(*) as trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                ROUND(SUM(pnl)::numeric, 2) as pnl
+            FROM live_trades
+            WHERE type = 'exit'
+            AND timestamp > NOW() - INTERVAL '${hours} hours'
+            GROUP BY DATE_TRUNC('hour', timestamp)
+            ORDER BY hour DESC
+            LIMIT 24
+        `);
+
+        // Recent trades (last 10)
+        const recent = await pgPool.query(`
+            SELECT
+                strategy_name,
+                crypto,
+                side,
+                ROUND(entry_price::numeric, 3) as entry,
+                ROUND(price::numeric, 3) as exit,
+                ROUND(pnl::numeric, 2) as pnl,
+                reason,
+                timestamp
+            FROM live_trades
+            WHERE type = 'exit'
+            AND timestamp > NOW() - INTERVAL '${hours} hours'
+            ORDER BY timestamp DESC
+            LIMIT 10
+        `);
+
+        return {
+            strategies: strategyStats.rows,
+            summary: summary.rows[0] || {},
+            hourly: hourly.rows,
+            recent: recent.rows,
+            generated_at: new Date().toISOString(),
+            period_hours: hours
+        };
+    } catch (error) {
+        console.error('Failed to get strategy performance stats:', error.message);
+        return { strategies: [], summary: {}, error: error.message };
+    }
+}
+
+/**
+ * Get running P&L for all strategies (for real-time display)
+ */
+export async function getRunningPnL() {
+    if (!USE_POSTGRES || !pgPool) {
+        return { total: 0, byStrategy: {} };
+    }
+
+    try {
+        // All-time P&L by strategy
+        const result = await pgPool.query(`
+            SELECT
+                strategy_name,
+                COUNT(*) as trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                ROUND(SUM(pnl)::numeric, 2) as pnl
+            FROM live_trades
+            WHERE type = 'exit'
+            GROUP BY strategy_name
+            ORDER BY pnl DESC
+        `);
+
+        const byStrategy = {};
+        let total = 0;
+
+        for (const row of result.rows) {
+            byStrategy[row.strategy_name] = {
+                trades: parseInt(row.trades),
+                wins: parseInt(row.wins),
+                pnl: parseFloat(row.pnl)
+            };
+            total += parseFloat(row.pnl);
+        }
+
+        return { total: Math.round(total * 100) / 100, byStrategy };
+    } catch (error) {
+        console.error('Failed to get running P&L:', error.message);
+        return { total: 0, byStrategy: {}, error: error.message };
+    }
+}
+
 // ============================================================================
 // ORACLE OVERSEER & RESOLUTION SERVICE TABLES
 // ============================================================================
@@ -1743,6 +1913,8 @@ export default {
     setLiveStrategyEnabled,
     saveLiveTrade,
     getLiveTrades,
+    getStrategyPerformanceStats,
+    getRunningPnL,
     // OracleOverseer & Resolution
     initOracleResolutionTables,
     saveLagEvent,
