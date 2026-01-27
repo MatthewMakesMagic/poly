@@ -47,11 +47,11 @@ export class LiveTrader extends EventEmitter {
         this.client = null;
         this.riskManager = new RiskManager({
             logger: this.logger,
-            maxPositionPerTrade: 3,  // Allow up to $3 to accommodate minimum order adjustments
-            maxTotalExposure: 20,
-            maxLossPerDay: 20,
-            minBidSize: 2,           // Lower threshold for thin markets
-            minAskSize: 2,           // Lower threshold for thin markets
+            maxPositionPerTrade: 15,  // Allow up to $15 for dynamic sizing (Endgame 10x = $10)
+            maxTotalExposure: 50,     // Increased for larger Endgame positions
+            maxLossPerDay: 30,        // Increased to accommodate larger positions
+            minBidSize: 2,            // Lower threshold for thin markets
+            minAskSize: 2,            // Lower threshold for thin markets
             stopTradingAfterConsecutiveLosses: 50,  // Effectively disabled - let strategies run, we have other risk controls
         });
         
@@ -323,9 +323,22 @@ export class LiveTrader extends EventEmitter {
         
         // DEBUG: Log actual prices from tick vs what we're using
         this.logger.log(`[LiveTrader] DEBUG PRICES: ${crypto} | up_bid=${tick.up_bid?.toFixed(3)} up_ask=${tick.up_ask?.toFixed(3)} | using=${entryPrice.toFixed(2)}`);
-        
+
+        // Determine requested position size:
+        // Strategy signal.size is in "strategy units" (capitalPerTrade = 100)
+        // Production uses LIVE_POSITION_SIZE (default $1)
+        // Scale factor: $1 / 100 = 0.01
+        const STRATEGY_CAPITAL_BASE = 100;  // Strategies are created with capital=100
+        const SCALE_FACTOR = this.options.positionSize / STRATEGY_CAPITAL_BASE;
+        const MAX_POSITION_SIZE = 15;  // Max $15 per trade for safety
+
+        // Use signal.size (scaled) if provided, otherwise use default
+        const requestedSize = signal.size && signal.size > 0
+            ? Math.min(signal.size * SCALE_FACTOR, MAX_POSITION_SIZE)
+            : this.options.positionSize;
+
         // Calculate actual position size (ensure minimum 5 shares for Polymarket)
-        const actualSize = this.calculateMinimumSize(entryPrice, this.options.positionSize);
+        const actualSize = this.calculateMinimumSize(entryPrice, requestedSize);
         
         // Validate with risk manager
         const validation = this.riskManager.validateTrade({

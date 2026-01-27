@@ -254,24 +254,26 @@ export class EndgameMomentumStrategy extends EndgameStrategy {
 }
 
 // Factory functions
+// Endgame strategies use 10x position size (they're killing it!)
+// If base capital is $1, Endgame trades at $10
 export function createEndgameBase(capital = 100) {
-    return new EndgameStrategy({ maxPosition: capital });
+    return new EndgameStrategy({ maxPosition: capital * 10 });
 }
 
 export function createEndgameConservative(capital = 100) {
-    return new EndgameConservativeStrategy({ maxPosition: capital });
+    return new EndgameConservativeStrategy({ maxPosition: capital * 10 });
 }
 
 export function createEndgameAggressive(capital = 100) {
-    return new EndgameAggressiveStrategy({ maxPosition: capital });
+    return new EndgameAggressiveStrategy({ maxPosition: capital * 10 });
 }
 
 export function createEndgameSafe(capital = 100) {
-    return new EndgameSafeStrategy({ maxPosition: capital });
+    return new EndgameSafeStrategy({ maxPosition: capital * 10 });
 }
 
 export function createEndgameMomentum(capital = 100) {
-    return new EndgameMomentumStrategy({ maxPosition: capital });
+    return new EndgameMomentumStrategy({ maxPosition: capital * 10 });
 }
 
 export default EndgameStrategy;
