@@ -171,9 +171,15 @@ export class ResearchEngine {
                     const market = this.currentMarkets?.[crypto];
 
                     if (!market) {
-                        // Market not available yet - skip silently
+                        // Market not available - log for Endgame strategies to debug
+                        if (strategy.getName().includes('Endgame')) {
+                            console.log(`[LiveSignal] ${strategy.getName()} | ${crypto} | BLOCKED: no market data`);
+                        }
                     } else if (!liveTrader.isRunning) {
-                        // LiveTrader not running - skip silently
+                        // LiveTrader not running - log for Endgame to debug
+                        if (strategy.getName().includes('Endgame')) {
+                            console.log(`[LiveSignal] ${strategy.getName()} | ${crypto} | BLOCKED: LiveTrader not running`);
+                        }
                     } else {
                         // Log signal being sent to live trader
                         console.log(`[LiveSignal] ${strategy.getName()} | ${crypto} | ${signal.action} ${signal.side} | enabled: ${liveTrader.enabledStrategies?.has(strategy.getName())}`);

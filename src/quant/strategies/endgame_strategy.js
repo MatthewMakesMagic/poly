@@ -112,9 +112,12 @@ export class EndgameStrategy {
         
         // All conditions met - BUY the favorite!
         this.stats.signals++;
-        
+
         const expectedProfit = (1 - favoriteProb) * 100; // e.g., 97% prob = 3% profit
-        
+
+        // LOG ENDGAME ENTRY SIGNAL
+        console.log(`[${this.name}] 🎯 ENTRY SIGNAL: ${tick.crypto} | ${favoriteSide.toUpperCase()} | prob=${(favoriteProb * 100).toFixed(1)}% | time=${timeRemaining.toFixed(0)}s | expectedProfit=${expectedProfit.toFixed(1)}%`);
+
         return this.createSignal('buy', favoriteSide, 'endgame_entry', {
             favoriteProb: favoriteProb * 100,
             expectedProfit,
