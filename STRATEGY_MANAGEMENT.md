@@ -174,3 +174,42 @@ FROM live_strategies ls
 WHERE ls.enabled = true
 ORDER BY trades_1h ASC;
 ```
+
+## Stop Loss Architecture (Jan 2026 Fix)
+
+### Critical Understanding: Paper vs Live Positions
+
+**Problem:** Strategies only see PAPER positions, not LIVE positions!
+
+- `ResearchEngine.processTick()` calls `strategy.onTick(tick, position, {})`
+- The `position` argument comes from `ResearchEngine.positions` (paper trading)
+- LiveTrader has its own `livePositions` that strategies NEVER see
+- Strategy stop loss logic evaluates paper PnL, NOT live PnL
+
+**Solution:** LiveTrader monitors its own positions directly
+
+```javascript
+// LiveTrader.monitorPositions() - called on EVERY tick
+for (const position of livePositions) {
+    const pnlPct = (currentPrice - entryPrice) / entryPrice;
+    if (pnlPct < -stopLossThreshold) {
+        executeExit(); // Direct exit, no strategy involvement
+    }
+}
+```
+
+### Strategy-Specific Stop Losses
+| Strategy | Stop Loss | Notes |
+|----------|-----------|-------|
+| SpotLag_Trail_V1 | 40% | Safe |
+| SpotLag_Trail_V2 | 30% | Moderate |
+| SpotLag_Trail_V3 | 25% | Base |
+| SpotLag_Trail_V4 | 20% | Aggressive |
+| PureProb_* | 20-30% | Varies |
+| LagProb_* | 20-30% | Varies |
+| Default | 25% | All others |
+
+### Verify Stop Loss is Working
+```bash
+railway logs | grep "STOP LOSS TRIGGERED"
+```

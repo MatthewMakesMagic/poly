@@ -169,7 +169,7 @@ export class ResearchEngine {
                     const liveTrader = getLiveTrader();
                     // Get market info for this crypto (need tokenIds)
                     const market = this.currentMarkets?.[crypto];
-                    
+
                     if (!market) {
                         // Market not available yet - skip silently
                     } else if (!liveTrader.isRunning) {
@@ -183,13 +183,26 @@ export class ResearchEngine {
                     console.error(`[LiveSignal] Error: ${e.message}`);
                 }
             }
-            
+
             strategySignals.push({
                 strategy: strategy.getName(),
                 signal
             });
         }
-        
+
+        // CRITICAL: Monitor live positions for stop loss on EVERY tick
+        // This must run AFTER strategy signals are processed
+        // Strategies only see PAPER positions - LiveTrader needs to monitor its own LIVE positions
+        try {
+            const liveTrader = getLiveTrader();
+            const market = this.currentMarkets?.[crypto];
+            if (liveTrader.isRunning && market) {
+                liveTrader.monitorPositions(tick, market);
+            }
+        } catch (e) {
+            // Silently ignore monitoring errors
+        }
+
         return {
             tick,
             fairValue: fairValueAnalysis,

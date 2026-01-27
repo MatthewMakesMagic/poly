@@ -198,6 +198,70 @@ export class LiveTrader extends EventEmitter {
     }
     
     /**
+     * Monitor live positions for stop loss - called on every tick
+     * This is critical because strategies only see PAPER positions, not LIVE ones
+     */
+    async monitorPositions(tick, market) {
+        if (!this.isRunning || this.killSwitchActive) return;
+
+        const crypto = tick.crypto;
+        const windowEpoch = tick.window_epoch;
+
+        // Check all positions for this crypto
+        for (const [positionKey, position] of Object.entries(this.livePositions)) {
+            if (position.crypto !== crypto) continue;
+            if (position.windowEpoch !== windowEpoch) continue;
+
+            // Calculate current price and PnL
+            const currentPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
+            const entryPrice = position.entryPrice;
+            const pnlPct = (currentPrice - entryPrice) / entryPrice;
+
+            // Get strategy-specific stop loss threshold (default 25%)
+            const stopLossThreshold = this.getStopLossThreshold(position.strategyName);
+
+            // CHECK STOP LOSS
+            if (pnlPct < -stopLossThreshold) {
+                this.logger.log(`[LiveTrader] 🛑 STOP LOSS TRIGGERED: ${position.strategyName} | ${crypto} | ${position.tokenSide} | PnL: ${(pnlPct * 100).toFixed(1)}% < -${(stopLossThreshold * 100).toFixed(0)}%`);
+
+                // Execute exit
+                const exitSignal = {
+                    action: 'sell',
+                    side: position.tokenSide.toLowerCase(),
+                    reason: 'live_stop_loss'
+                };
+
+                await this.executeExit(position.strategyName, exitSignal, tick, market);
+            }
+        }
+    }
+
+    /**
+     * Get stop loss threshold for a strategy
+     * Different strategies may have different risk tolerances
+     */
+    getStopLossThreshold(strategyName) {
+        // Strategy-specific thresholds based on the plan
+        const thresholds = {
+            'SpotLag_Trail_V1': 0.40,  // Safe: 40% stop
+            'SpotLag_Trail_V2': 0.30,  // Moderate: 30% stop
+            'SpotLag_Trail_V3': 0.25,  // Base: 25% stop
+            'SpotLag_Trail_V4': 0.20,  // Aggressive: 20% stop
+            'PureProb_Base': 0.25,
+            'PureProb_Conservative': 0.20,
+            'PureProb_Aggressive': 0.30,
+            'PureProb_Late': 0.25,
+            'LagProb_Base': 0.25,
+            'LagProb_Conservative': 0.20,
+            'LagProb_Aggressive': 0.30,
+            'LagProb_RightSide': 0.25,
+        };
+
+        // Default 25% stop loss if not specified
+        return thresholds[strategyName] || 0.25;
+    }
+
+    /**
      * Process a strategy signal - execute if enabled for live
      * Called by ResearchEngine when a strategy signals
      */
