@@ -91,6 +91,13 @@ async function runMigrations() {
             'SpotLag_LateOnly',        // Late window only
             'SpotLag_ProbEdge',        // Probability edge based
 
+            // MICROLAG CONVERGENCE (Jan 2026) - Expected profit model with proven thresholds
+            // Uses 0.0002 spotMoveThreshold (proven 87.7% WR), convergence-based entry,
+            // uniform trailing stops (10% activation, 25% from peak)
+            'MicroLag_Convergence',         // Base: 5% expected profit
+            'MicroLag_Convergence_Aggro',   // Aggressive: 3% expected profit
+            'MicroLag_Convergence_Safe',    // Safe: 8% expected profit
+
             // ENDGAME - near-resolution plays (proven safe)
             'Endgame',
             'Endgame_Aggressive',
