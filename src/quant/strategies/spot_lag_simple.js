@@ -2758,8 +2758,7 @@ export class SpotLag_TimeAwareStrategy {
 
         this.tradedThisWindow[crypto] = windowEpoch;
 
-        // Log trade signal clearly
-        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
+        // Log trade signal clearly (sideProb already calculated above in underdog check)
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
             `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
             `spotDelta=${spotDeltaPct.toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
