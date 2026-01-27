@@ -35,11 +35,51 @@ const PositionState = {
     CLOSED: 'closed'
 };
 
-// Take Profit Configuration
+// Take Profit Configuration (defaults)
 const TP_CONFIG = {
-    TRAILING_ACTIVATION_PCT: 0.10,   // Activate trailing at +10%
-    TRAILING_STOP_PCT: 0.10,         // Trail 10% below HWM
-    MIN_PROFIT_FLOOR_PCT: 0.03,      // Never exit below +3% profit
+    DEFAULT_ACTIVATION_PCT: 0.15,    // Activate trailing at +15%
+    DEFAULT_TRAIL_PCT: 0.10,         // Trail 10% below HWM
+    DEFAULT_FLOOR_PCT: 0.05,         // Never exit below +5% profit
+};
+
+// Strategy-specific Take Profit settings
+// Format: { activation, trail, floor }
+const TP_STRATEGY_CONFIG = {
+    // TEST STRATEGY - tight for validation
+    'TP_SL_Test': { activation: 0.10, trail: 0.10, floor: 0.03 },
+
+    // SPOTLAG TRAIL - varies by aggressiveness
+    'SpotLag_Trail_V1': { activation: 0.20, trail: 0.15, floor: 0.08 },  // Safe: higher activation, wider trail
+    'SpotLag_Trail_V2': { activation: 0.15, trail: 0.12, floor: 0.06 },  // Moderate
+    'SpotLag_Trail_V3': { activation: 0.15, trail: 0.10, floor: 0.05 },  // Base
+    'SpotLag_Trail_V4': { activation: 0.12, trail: 0.08, floor: 0.04 },  // Aggressive: tighter trail
+
+    // PUREPROB - probabilistic strategies
+    'PureProb_Base': { activation: 0.15, trail: 0.10, floor: 0.05 },
+    'PureProb_Conservative': { activation: 0.20, trail: 0.12, floor: 0.08 },  // More patient
+    'PureProb_Aggressive': { activation: 0.10, trail: 0.08, floor: 0.03 },    // Quick profits
+    'PureProb_Late': { activation: 0.12, trail: 0.08, floor: 0.04 },          // Late window, tighter
+
+    // LAGPROB - lag + probabilistic
+    'LagProb_Base': { activation: 0.15, trail: 0.10, floor: 0.05 },
+    'LagProb_Conservative': { activation: 0.20, trail: 0.12, floor: 0.08 },
+    'LagProb_Aggressive': { activation: 0.10, trail: 0.08, floor: 0.03 },
+    'LagProb_RightSide': { activation: 0.15, trail: 0.10, floor: 0.05 },
+
+    // TIMEAWARE - time-based strategies
+    'SpotLag_TimeAware': { activation: 0.15, trail: 0.10, floor: 0.05 },
+    'SpotLag_TimeAwareAggro': { activation: 0.10, trail: 0.08, floor: 0.03 },
+    'SpotLag_TimeAwareSafe': { activation: 0.20, trail: 0.12, floor: 0.08 },
+    'SpotLag_TimeAwareTP': { activation: 0.12, trail: 0.08, floor: 0.04 },   // Built for TP
+    'SpotLag_LateOnly': { activation: 0.12, trail: 0.08, floor: 0.04 },      // Late window
+    'SpotLag_ProbEdge': { activation: 0.15, trail: 0.10, floor: 0.05 },
+
+    // ENDGAME - near-expiry, hold longer
+    'Endgame': { activation: 0.08, trail: 0.05, floor: 0.02 },               // Very tight - near expiry
+    'Endgame_Aggressive': { activation: 0.06, trail: 0.04, floor: 0.02 },
+    'Endgame_Conservative': { activation: 0.10, trail: 0.06, floor: 0.03 },
+    'Endgame_Safe': { activation: 0.05, trail: 0.03, floor: 0.01 },          // Tightest - very near expiry
+    'Endgame_Momentum': { activation: 0.08, trail: 0.05, floor: 0.02 },
 };
 
 // Stop Loss Configuration
@@ -250,7 +290,11 @@ export class LiveTrader extends EventEmitter {
 
             // ═══════════════════════════════════════════════════════════════
             // TAKE PROFIT LOGIC (check first - we prefer taking profit!)
+            // Strategy-specific activation, trail, and floor percentages
             // ═══════════════════════════════════════════════════════════════
+
+            // Get strategy-specific TP config
+            const tpConfig = this.getTakeProfitConfig(position.strategyName);
 
             // Update high water mark
             if (currentPrice > position.highWaterMark) {
@@ -260,17 +304,17 @@ export class LiveTrader extends EventEmitter {
                 this.logger.log(`[LiveTrader] 📈 NEW HWM: ${position.strategyName} | ${crypto} ${position.tokenSide} | ${oldHWM.toFixed(3)} → ${currentPrice.toFixed(3)} | Peak: +${(pnlPct * 100).toFixed(1)}%`);
             }
 
-            // Check if trailing should activate
-            if (!position.trailingActive && pnlPct >= TP_CONFIG.TRAILING_ACTIVATION_PCT) {
+            // Check if trailing should activate (strategy-specific threshold)
+            if (!position.trailingActive && pnlPct >= tpConfig.activation) {
                 position.trailingActive = true;
                 position.trailingActivatedAt = currentPrice;
-                this.logger.log(`[LiveTrader] 🎯 TRAILING ACTIVATED: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}%`);
+                this.logger.log(`[LiveTrader] 🎯 TRAILING ACTIVATED: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}% (threshold: ${(tpConfig.activation * 100)}%)`);
             }
 
-            // Execute trailing stop if active
+            // Execute trailing stop if active (strategy-specific trail and floor)
             if (position.trailingActive) {
-                const trailingStopPrice = position.highWaterMark * (1 - TP_CONFIG.TRAILING_STOP_PCT);
-                const profitFloorPrice = entryPrice * (1 + TP_CONFIG.MIN_PROFIT_FLOOR_PCT);
+                const trailingStopPrice = position.highWaterMark * (1 - tpConfig.trail);
+                const profitFloorPrice = entryPrice * (1 + tpConfig.floor);
                 const effectiveStopPrice = Math.max(trailingStopPrice, profitFloorPrice);
 
                 if (currentPrice <= effectiveStopPrice) {
@@ -420,29 +464,66 @@ export class LiveTrader extends EventEmitter {
      * Get stop loss threshold for a strategy
      * Different strategies may have different risk tolerances
      */
+    /**
+     * Get stop loss threshold for a strategy
+     */
     getStopLossThreshold(strategyName) {
-        // Strategy-specific thresholds
         const thresholds = {
-            // TEST STRATEGY - tight stops for validation
-            'TP_SL_Test': 0.15,        // 15% stop - tight for testing
+            // TEST STRATEGY
+            'TP_SL_Test': 0.15,
 
-            // Production strategies
+            // SPOTLAG TRAIL
             'SpotLag_Trail_V1': 0.40,  // Safe: 40% stop
             'SpotLag_Trail_V2': 0.30,  // Moderate: 30% stop
             'SpotLag_Trail_V3': 0.25,  // Base: 25% stop
             'SpotLag_Trail_V4': 0.20,  // Aggressive: 20% stop
+
+            // PUREPROB
             'PureProb_Base': 0.25,
             'PureProb_Conservative': 0.20,
             'PureProb_Aggressive': 0.30,
             'PureProb_Late': 0.25,
+
+            // LAGPROB
             'LagProb_Base': 0.25,
             'LagProb_Conservative': 0.20,
             'LagProb_Aggressive': 0.30,
             'LagProb_RightSide': 0.25,
+
+            // TIMEAWARE
+            'SpotLag_TimeAware': 0.25,
+            'SpotLag_TimeAwareAggro': 0.20,
+            'SpotLag_TimeAwareSafe': 0.30,
+            'SpotLag_TimeAwareTP': 0.25,
+            'SpotLag_LateOnly': 0.25,
+            'SpotLag_ProbEdge': 0.25,
+
+            // ENDGAME - wider stops, hold to expiry
+            'Endgame': 0.30,
+            'Endgame_Aggressive': 0.35,
+            'Endgame_Conservative': 0.25,
+            'Endgame_Safe': 0.20,
+            'Endgame_Momentum': 0.30,
         };
 
-        // Default 15% stop loss (tighter default)
         return thresholds[strategyName] || SL_CONFIG.DEFAULT_STOP_LOSS;
+    }
+
+    /**
+     * Get take profit config for a strategy
+     * Returns { activation, trail, floor }
+     */
+    getTakeProfitConfig(strategyName) {
+        const config = TP_STRATEGY_CONFIG[strategyName];
+        if (config) {
+            return config;
+        }
+        // Default config
+        return {
+            activation: TP_CONFIG.DEFAULT_ACTIVATION_PCT,
+            trail: TP_CONFIG.DEFAULT_TRAIL_PCT,
+            floor: TP_CONFIG.DEFAULT_FLOOR_PCT
+        };
     }
 
     /**
