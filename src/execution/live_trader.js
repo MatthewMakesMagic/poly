@@ -43,10 +43,21 @@ const TP_CONFIG = {
 };
 
 // Strategy-specific Take Profit settings
-// Format: { activation, trail, floor }
+// Format: { activation, trail, floor, fixedTP, trailingSL }
+// - activation: % profit to activate trailing TP
+// - trail: % drop from peak to trigger trailing TP exit
+// - floor: minimum profit to lock in
+// - fixedTP: (optional) fixed take profit % - exit immediately when hit
+// - trailingSL: (optional) trailing stop loss % from HWM
 const TP_STRATEGY_CONFIG = {
-    // TEST STRATEGY - tight for validation
-    'TP_SL_Test': { activation: 0.10, trail: 0.10, floor: 0.03 },
+    // TEST STRATEGY - full feature test
+    'TP_SL_Test': {
+        activation: 0.10,    // Trailing TP activates at +10%
+        trail: 0.10,         // Exit when drops 10% from peak
+        floor: 0.03,         // Minimum +3% profit
+        fixedTP: 0.25,       // Fixed TP at +25%
+        trailingSL: 0.10     // Trailing SL: exit if drops 10% from HWM (even in loss)
+    },
 
     // SPOTLAG TRAIL - varies by aggressiveness
     'SpotLag_Trail_V1': { activation: 0.20, trail: 0.15, floor: 0.08 },  // Safe: higher activation, wider trail
@@ -301,7 +312,7 @@ export class LiveTrader extends EventEmitter {
             // Get strategy-specific TP config
             const tpConfig = this.getTakeProfitConfig(position.strategyName);
 
-            // Update high water mark
+            // Update high water mark (always track, used by trailing SL too)
             if (currentPrice > position.highWaterMark) {
                 const oldHWM = position.highWaterMark;
                 position.highWaterMark = currentPrice;
@@ -309,11 +320,38 @@ export class LiveTrader extends EventEmitter {
                 this.logger.log(`[LiveTrader] 📈 NEW HWM: ${position.strategyName} | ${crypto} ${position.tokenSide} | ${oldHWM.toFixed(3)} → ${currentPrice.toFixed(3)} | Peak: +${(pnlPct * 100).toFixed(1)}%`);
             }
 
+            // ─────────────────────────────────────────────────────────────────
+            // 1. FIXED TAKE PROFIT - exit immediately if profit exceeds threshold
+            // ─────────────────────────────────────────────────────────────────
+            if (tpConfig.fixedTP && pnlPct >= tpConfig.fixedTP) {
+                this.logger.log(`[LiveTrader] 🎯 FIXED TP HIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}% >= +${(tpConfig.fixedTP * 100).toFixed(0)}%`);
+
+                position.state = PositionState.EXITING;
+                position.exitReason = 'fixed_take_profit';
+
+                const exitResult = await this.executeExitDirect(position, tick, market, 'fixed_take_profit');
+                if (exitResult) {
+                    delete this.livePositions[positionKey];
+                    this.logger.log(`[LiveTrader] ✅ FIXED TP EXIT COMPLETE: ${positionKey}`);
+                } else {
+                    position.state = PositionState.OPEN;
+                    position.exitAttempts = (position.exitAttempts || 0) + 1;
+                    if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
+                        delete this.livePositions[positionKey];
+                    }
+                }
+                continue;
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // 2. TRAILING TAKE PROFIT - activate at threshold, exit on pullback
+            // ─────────────────────────────────────────────────────────────────
+
             // Check if trailing should activate (strategy-specific threshold)
             if (!position.trailingActive && pnlPct >= tpConfig.activation) {
                 position.trailingActive = true;
                 position.trailingActivatedAt = currentPrice;
-                this.logger.log(`[LiveTrader] 🎯 TRAILING ACTIVATED: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}% (threshold: ${(tpConfig.activation * 100)}%)`);
+                this.logger.log(`[LiveTrader] 🎯 TRAILING TP ACTIVATED: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}% (threshold: ${(tpConfig.activation * 100)}%)`);
             }
 
             // Execute trailing stop if active (strategy-specific trail and floor)
@@ -326,7 +364,7 @@ export class LiveTrader extends EventEmitter {
                     const capturedPnlPct = (currentPrice - entryPrice) / entryPrice;
                     const peakCaptured = position.peakPnlPct > 0 ? (capturedPnlPct / position.peakPnlPct * 100) : 100;
 
-                    this.logger.log(`[LiveTrader] 💰 TAKE PROFIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Exit: ${currentPrice.toFixed(3)} | Captured: ${peakCaptured.toFixed(0)}% of peak (+${(capturedPnlPct * 100).toFixed(1)}%)`);
+                    this.logger.log(`[LiveTrader] 💰 TRAILING TP: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Exit: ${currentPrice.toFixed(3)} | Captured: ${peakCaptured.toFixed(0)}% of peak (+${(capturedPnlPct * 100).toFixed(1)}%)`);
 
                     // Mark as exiting to prevent duplicate triggers
                     position.state = PositionState.EXITING;
@@ -336,17 +374,48 @@ export class LiveTrader extends EventEmitter {
 
                     if (exitResult) {
                         delete this.livePositions[positionKey];
-                        this.logger.log(`[LiveTrader] ✅ TAKE PROFIT EXIT COMPLETE: ${positionKey}`);
+                        this.logger.log(`[LiveTrader] ✅ TRAILING TP EXIT COMPLETE: ${positionKey}`);
                     } else {
                         // Reset state to try again
                         position.state = PositionState.OPEN;
                         position.exitAttempts = (position.exitAttempts || 0) + 1;
                         if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
-                            this.logger.error(`[LiveTrader] ❌ GIVING UP on take profit exit for ${positionKey}`);
+                            this.logger.error(`[LiveTrader] ❌ GIVING UP on trailing TP exit for ${positionKey}`);
                             delete this.livePositions[positionKey];
                         }
                     }
                     continue; // Move to next position
+                }
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // 3. TRAILING STOP LOSS - exit if price drops X% from HWM (even in loss)
+            // ─────────────────────────────────────────────────────────────────
+            if (tpConfig.trailingSL) {
+                const trailingSLPrice = position.highWaterMark * (1 - tpConfig.trailingSL);
+                const hwmPnlPct = (position.highWaterMark - entryPrice) / entryPrice;
+
+                if (currentPrice <= trailingSLPrice && !position.trailingActive) {
+                    // Only trigger if trailing TP not already active (TP takes priority)
+                    const dropFromHWM = (position.highWaterMark - currentPrice) / position.highWaterMark;
+
+                    this.logger.log(`[LiveTrader] 📉 TRAILING SL: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | HWM: ${position.highWaterMark.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Drop: -${(dropFromHWM * 100).toFixed(1)}% from HWM | P&L: ${(pnlPct * 100).toFixed(1)}%`);
+
+                    position.state = PositionState.EXITING;
+                    position.exitReason = 'trailing_stop_loss';
+
+                    const exitResult = await this.executeExitDirect(position, tick, market, 'trailing_stop_loss');
+                    if (exitResult) {
+                        delete this.livePositions[positionKey];
+                        this.logger.log(`[LiveTrader] ✅ TRAILING SL EXIT COMPLETE: ${positionKey}`);
+                    } else {
+                        position.state = PositionState.OPEN;
+                        position.exitAttempts = (position.exitAttempts || 0) + 1;
+                        if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
+                            delete this.livePositions[positionKey];
+                        }
+                    }
+                    continue;
                 }
             }
 

@@ -24,6 +24,7 @@ import {
     createMicroLagConvergenceSafe,
     createSpotLagAggressive,  // For comparison (known to work)
     createSpotLagTimeAware,   // For comparison (known to have 0 signals)
+    createSpotLagProbEdge,    // Probability edge strategy
 } from '../src/quant/strategies/spot_lag_simple.js';
 
 // Use DATABASE_URL from env or default
@@ -369,6 +370,9 @@ async function main() {
         createMicroLagConvergence(100),
         createMicroLagConvergenceAggro(100),
         createMicroLagConvergenceSafe(100),
+
+        // PROBABILITY EDGE (expected profit model)
+        createSpotLagProbEdge(100),
 
         // COMPARISON: Known working strategy
         createSpotLagAggressive(100),
