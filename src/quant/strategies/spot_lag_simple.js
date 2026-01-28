@@ -138,10 +138,21 @@ export class SpotLagSimpleStrategy {
         const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
         const newMarket = state.marketHistory[state.marketHistory.length - 1];
         const marketMove = newMarket - oldMarket;  // Market is already 0-1 probability
-        
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // Bug discovered Jan 27 2026: Defaulting caused blind trading at wrong prices
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', {
+                up_mid: tick.up_mid,
+                reason: 'Price data missing or at extreme (<=1% or >=99%)'
+            });
+        }
+
         // DYNAMIC THRESHOLD: Scale required move based on distance from 50¢
         // At extremes (<20¢ or >80¢), require LARGER moves to bet against consensus
-        const marketPrice = tick.up_mid || 0.5;
+        const marketPrice = tick.up_mid;
         const distanceFrom50 = Math.abs(marketPrice - 0.5);  // 0 at 50¢, 0.4 at 10¢/90¢
         
         // Scale factor: 1x at 50¢, up to 3x at extremes
@@ -2311,42 +2322,53 @@ export class SpotLag_ExtremeReversalStrategy extends SpotLagSimpleStrategy {
     
     onTick(tick, position = null, context = {}) {
         const crypto = tick.crypto;
-        
+
         if (!this.options.enabledCryptos.includes(crypto)) {
             return this.createSignal('hold', null, 'crypto_disabled');
         }
-        
+
         const windowEpoch = tick.window_epoch;
-        const marketPrice = tick.up_mid || 0.5;
-        
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // Bug discovered Jan 27 2026: Defaulting caused blind trading at wrong prices
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', {
+                up_mid: tick.up_mid,
+                reason: 'Price data missing or at extreme (<=1% or >=99%)'
+            });
+        }
+        const marketPrice = tick.up_mid;
+
         // POSITION MANAGEMENT WITH TRAILING STOP
         if (position) {
             const currentPrice = position.side === 'up' ? tick.up_bid : tick.down_bid;
             const pnlPct = (currentPrice - position.entryPrice) / position.entryPrice;
-            
+
             // Update high-water mark
             if (!this.highWaterMark[crypto] || currentPrice > this.highWaterMark[crypto]) {
                 this.highWaterMark[crypto] = currentPrice;
             }
-            
+
             const hwm = this.highWaterMark[crypto];
-            
+
             // Check if trailing stop should be activated
             if (!this.trailingActivated[crypto] && pnlPct >= this.activationThreshold) {
                 this.trailingActivated[crypto] = true;
             }
-            
+
             // If trailing is activated, check for exit
             if (this.trailingActivated[crypto]) {
                 const trailingStopPrice = hwm * (1 - this.trailPercent);
                 const floorPrice = position.entryPrice * (1 + this.profitFloor);
                 const effectiveStop = Math.max(trailingStopPrice, floorPrice);
-                
+
                 if (currentPrice <= effectiveStop) {
                     delete this.highWaterMark[crypto];
                     delete this.trailingActivated[crypto];
                     this.tradedThisWindow[crypto] = windowEpoch;
-                    
+
                     return this.createSignal('sell', null, 'extreme_reversal_trailing_exit', {
                         entryPrice: position.entryPrice.toFixed(2),
                         exitPrice: currentPrice.toFixed(2),
@@ -2355,26 +2377,26 @@ export class SpotLag_ExtremeReversalStrategy extends SpotLagSimpleStrategy {
                     });
                 }
             }
-            
+
             return this.createSignal('hold', null, 'holding_extreme_reversal', {
                 pnlPct: (pnlPct * 100).toFixed(1) + '%',
                 trailing: this.trailingActivated[crypto] ? 'ACTIVE' : 'waiting'
             });
         }
-        
+
         // Clean up state if no position
         delete this.highWaterMark[crypto];
         delete this.trailingActivated[crypto];
-        
+
         if (this.tradedThisWindow[crypto] === windowEpoch) {
             return this.createSignal('hold', null, 'already_traded');
         }
-        
+
         const timeRemaining = tick.time_remaining_sec || 0;
         if (timeRemaining < this.options.minTimeRemaining || timeRemaining > this.options.maxTimeRemaining) {
             return this.createSignal('hold', null, 'wrong_time', { timeRemaining });
         }
-        
+
         // EXTREME ZONE CHECK: Only trade when market is at extreme
         const isExtreme = marketPrice < this.extremeThreshold || marketPrice > (1 - this.extremeThreshold);
         
@@ -2766,7 +2788,41 @@ export class SpotLag_TimeAwareStrategy {
             return this.createSignal('hold', null, 'market_caught_up', { lagRatio });
         }
 
-        // All conditions met - TRADE
+        // ═══════════════════════════════════════════════════════════════════════════
+        // BLACK-SCHOLES EDGE CALCULATION (Jan 27 2026)
+        //
+        // KEY INSIGHT: The lag means market is using STALE information.
+        // We use the NEW spot price in Black-Scholes to get TRUE probability.
+        // Edge = BS probability (using new spot) - market probability (stale)
+        //
+        // This gives us an edge over traders using standard probabilistic models
+        // that don't account for the lag.
+        // ═══════════════════════════════════════════════════════════════════════════
+        const edgeCalc = calculateTheoreticalEdge(spotDeltaPct, timeRemaining, marketProb, crypto);
+
+        // Minimum edge required - don't trade just because there's a lag
+        const MIN_EDGE = this.options.minEdge || 0.03;  // Default 3% minimum edge
+        if (edgeCalc.edge < MIN_EDGE) {
+            return this.createSignal('hold', null, 'insufficient_bs_edge', {
+                edge: (edgeCalc.edge * 100).toFixed(1) + '%',
+                bsProb: (edgeCalc.theoreticalSideProb * 100).toFixed(1) + '%',
+                marketProb: (edgeCalc.marketSideProb * 100).toFixed(1) + '%',
+                minRequired: (MIN_EDGE * 100) + '%'
+            });
+        }
+
+        // Maximum edge sanity check - if edge is huge, market knows something we don't
+        const MAX_EDGE = this.options.maxEdge || 0.20;  // Default 20% max edge
+        if (edgeCalc.edge > MAX_EDGE) {
+            return this.createSignal('hold', null, 'edge_too_large_suspicious', {
+                edge: (edgeCalc.edge * 100).toFixed(1) + '%',
+                bsProb: (edgeCalc.theoreticalSideProb * 100).toFixed(1) + '%',
+                marketProb: (edgeCalc.marketSideProb * 100).toFixed(1) + '%',
+                reason: 'Edge > 20% is suspicious'
+            });
+        }
+
+        // All conditions met - TRADE WITH BS EDGE
         this.stats.signals++;
         if (timeWindow === 'early') this.stats.earlyEntries++;
         else if (timeWindow === 'mid') this.stats.midEntries++;
@@ -2774,18 +2830,19 @@ export class SpotLag_TimeAwareStrategy {
 
         this.tradedThisWindow[crypto] = windowEpoch;
 
-        // Log trade signal clearly (sideProb already calculated above in underdog check)
+        // Log trade signal with BS edge details
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
             `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
             `spotDelta=${spotDeltaPct.toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
-            `prob=${(sideProb * 100).toFixed(1)}%`);
+            `BS=${(edgeCalc.theoreticalSideProb * 100).toFixed(1)}% mkt=${(edgeCalc.marketSideProb * 100).toFixed(1)}% edge=${(edgeCalc.edge * 100).toFixed(1)}%`);
 
-        return this.createSignal('buy', side, 'time_aware_entry', {
+        return this.createSignal('buy', side, 'time_aware_bs_edge', {
             timeWindow,
             timeRemaining: timeRemaining.toFixed(0) + 's',
             spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
             marketProb: (marketProb * 100).toFixed(1) + '%',
-            sideProb: (sideProb * 100).toFixed(1) + '%',
+            bsProb: (edgeCalc.theoreticalSideProb * 100).toFixed(1) + '%',
+            edge: (edgeCalc.edge * 100).toFixed(1) + '%',
             lagRatio: lagRatio.toFixed(2),
             crypto
         });
@@ -3203,6 +3260,10 @@ export class SpotLag_TrailStrategy {
             lookbackTicks: 8,
             marketLagRatio: 0.6,         // Market should have moved < 60% of expected
 
+            // BLACK-SCHOLES EDGE REQUIREMENTS (Jan 27 2026)
+            minEdge: 0.02,               // Minimum 2% edge required
+            maxEdge: 0.20,               // Maximum 20% edge (sanity check)
+
             // TRAILING STOP
             trailingActivationPct: 0.10,  // Activate after 10% profit
             trailingStopPct: 0.25,        // 25% trailing from peak
@@ -3391,7 +3452,18 @@ export class SpotLag_TrailStrategy {
 
         // Determine trade side based on spot movement
         const side = spotMove > 0 ? 'up' : 'down';
-        const marketProb = tick.up_mid || 0.5;
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // Bug discovered Jan 27 2026: Defaulting caused blind trading at wrong prices
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', {
+                up_mid: tick.up_mid,
+                reason: 'Price data missing or at extreme (<=1% or >=99%)'
+            });
+        }
+        const marketProb = tick.up_mid;
         const sideProb = side === 'up' ? marketProb : (1 - marketProb);
 
         // STRIKE ALIGNMENT CHECK: Is spot on the RIGHT or WRONG side of strike?
@@ -3402,6 +3474,40 @@ export class SpotLag_TrailStrategy {
         // RIGHT SIDE: betting direction matches spot's position vs strike
         // e.g., betting UP when spot is ABOVE strike, or betting DOWN when spot is BELOW strike
         const rightSideOfStrike = (bettingUp && spotAboveStrike) || (!bettingUp && !spotAboveStrike);
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // BLACK-SCHOLES EDGE CALCULATION (Jan 27 2026)
+        //
+        // KEY INSIGHT: The lag means market is using STALE information.
+        // We use the NEW spot price in Black-Scholes to get TRUE probability.
+        // Edge = BS probability (using new spot) - market probability (stale)
+        // ═══════════════════════════════════════════════════════════════════════════
+        const spotDeltaPct = strike > 0 ? ((spotPrice - strike) / strike) * 100 : 0;
+        const edgeCalc = calculateTheoreticalEdge(spotDeltaPct, timeRemaining, marketProb, crypto);
+        const bsProb = edgeCalc.theoreticalSideProb;
+        const edge = edgeCalc.edge;
+
+        // Minimum edge required (if configured)
+        const MIN_EDGE = this.options.minEdge || 0.02;  // Default 2% for Trail strategies
+        if (edge < MIN_EDGE) {
+            return this.createSignal('hold', null, 'insufficient_bs_edge', {
+                edge: (edge * 100).toFixed(1) + '%',
+                bsProb: (bsProb * 100).toFixed(1) + '%',
+                marketProb: (sideProb * 100).toFixed(1) + '%',
+                minRequired: (MIN_EDGE * 100) + '%'
+            });
+        }
+
+        // Maximum edge sanity check
+        const MAX_EDGE = this.options.maxEdge || 0.20;  // 20% max
+        if (edge > MAX_EDGE) {
+            return this.createSignal('hold', null, 'edge_too_large_suspicious', {
+                edge: (edge * 100).toFixed(1) + '%',
+                bsProb: (bsProb * 100).toFixed(1) + '%',
+                marketProb: (sideProb * 100).toFixed(1) + '%',
+                reason: 'Edge > 20% is suspicious'
+            });
+        }
 
         // Calculate conviction score
         const timeWeight = timeRemaining < 60 ? 1.0 : timeRemaining < 120 ? 0.8 : timeRemaining < 300 ? 0.5 : 0.3;
@@ -3442,7 +3548,7 @@ export class SpotLag_TrailStrategy {
             });
         }
 
-        // ALL CONDITIONS MET - TRADE
+        // ALL CONDITIONS MET - TRADE WITH BS EDGE
         this.stats.signals++;
         if (timeRemaining > 300) this.stats.earlyEntries++;
         else if (timeRemaining > 120) this.stats.midEntries++;
@@ -3463,7 +3569,9 @@ export class SpotLag_TrailStrategy {
             conviction,
             entryTime: timeRemaining,
             strike,
-            spotAtEntry: spotPrice
+            spotAtEntry: spotPrice,
+            bsProb,
+            edge
         };
 
         const timeWindow = timeRemaining > 300 ? 'early' : timeRemaining > 120 ? 'mid' : 'late';
@@ -3472,16 +3580,18 @@ export class SpotLag_TrailStrategy {
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
             `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
             `spotMove=${(spotMove * 100).toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
-            `prob=${(sideProb * 100).toFixed(1)}% | ` +
+            `BS=${(bsProb * 100).toFixed(1)}% mkt=${(sideProb * 100).toFixed(1)}% edge=${(edge * 100).toFixed(1)}% | ` +
             `side=${sideLabel} conv=${conviction.toFixed(2)}`);
 
-        return this.createSignal('buy', side, 'spotlag_trail_entry', {
+        return this.createSignal('buy', side, 'spotlag_trail_bs_edge', {
             timeWindow,
             timeRemaining: timeRemaining.toFixed(0) + 's',
             spotMove: (spotMove * 100).toFixed(4) + '%',
             lagRatio: lagRatio.toFixed(2),
+            bsProb: (bsProb * 100).toFixed(1) + '%',
             marketProb: (marketProb * 100).toFixed(1) + '%',
             sideProb: (sideProb * 100).toFixed(1) + '%',
+            edge: (edge * 100).toFixed(1) + '%',
             rightSideOfStrike,
             conviction: conviction.toFixed(2),
             crypto
@@ -3514,6 +3624,7 @@ export class SpotLag_Trail_V1Strategy extends SpotLag_TrailStrategy {
             name: 'SpotLag_Trail_V1',
             spotMoveThreshold: 0.0004,    // 0.04% - higher bar
             marketLagRatio: 0.4,          // Stricter lag requirement
+            minEdge: 0.03,                // 3% min edge (conservative)
             trailingActivationPct: 0.15,  // 15% to activate trailing
             trailingStopPct: 0.30,        // 30% trailing
             minProbability: 0.10,         // 10% min (more liquidity)
@@ -3536,6 +3647,7 @@ export class SpotLag_Trail_V2Strategy extends SpotLag_TrailStrategy {
             name: 'SpotLag_Trail_V2',
             spotMoveThreshold: 0.0003,    // 0.03%
             marketLagRatio: 0.5,
+            minEdge: 0.025,               // 2.5% min edge (moderate)
             trailingActivationPct: 0.12,
             trailingStopPct: 0.28,
             minProbability: 0.08,
@@ -3576,6 +3688,7 @@ export class SpotLag_Trail_V4Strategy extends SpotLag_TrailStrategy {
             name: 'SpotLag_Trail_V4',
             spotMoveThreshold: 0.00015,   // 0.015% - lower bar
             marketLagRatio: 0.7,          // Allow more catch-up
+            minEdge: 0.015,               // 1.5% min edge (aggressive)
             trailingActivationPct: 0.08,  // 8% to activate
             trailingStopPct: 0.20,        // 20% trailing (tighter)
             minProbability: 0.04,         // 4% min
@@ -4190,8 +4303,19 @@ export class LagProb_BaseStrategy {
         const state = this.initCrypto(crypto);
         const timeRemaining = tick.time_remaining_sec || 0;
         const windowEpoch = tick.window_epoch;
-        const marketProb = tick.up_mid || 0.5;
         const strike = tick.price_to_beat;
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // Bug discovered Jan 27 2026: Defaulting caused blind trading at wrong prices
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', this.options.basePosition, {
+                up_mid: tick.up_mid,
+                reason: 'Price data missing or at extreme (<=1% or >=99%)'
+            });
+        }
+        const marketProb = tick.up_mid;
 
         // Update history
         state.spotHistory.push(tick.spot_price);
@@ -4299,16 +4423,35 @@ export class LagProb_BaseStrategy {
             return this.createSignal('hold', null, 'probability_bounds', this.options.basePosition);
         }
 
-        // Calculate spot delta and expected probability
+        // ═══════════════════════════════════════════════════════════════════════════
+        // BLACK-SCHOLES EDGE CALCULATION (Jan 27 2026)
+        //
+        // KEY INSIGHT: The lag means market is using STALE information.
+        // We use the NEW spot price in Black-Scholes to get TRUE probability.
+        // Edge = BS probability (using new spot) - market probability (stale)
+        // ═══════════════════════════════════════════════════════════════════════════
         const spotDeltaPct = strike > 0 ? ((newSpot - strike) / strike) * 100 : 0;
-        const expectedProb = calculateExpectedProbability(spotDeltaPct, timeRemaining);
-        const expectedSideProb = side === 'up' ? expectedProb : expectedProb;
-        const edge = expectedSideProb - sideProb;
+        const edgeCalc = calculateTheoreticalEdge(spotDeltaPct, timeRemaining, marketProb, crypto);
+        const expectedSideProb = edgeCalc.theoreticalSideProb;
+        const edge = edgeCalc.edge;
 
         // Edge validation
         if (this.options.useEdgeValidation && edge < this.options.minEdge) {
             return this.createSignal('hold', null, 'insufficient_edge', this.options.basePosition, {
-                edge: (edge * 100).toFixed(1) + '%'
+                edge: (edge * 100).toFixed(1) + '%',
+                bsProb: (expectedSideProb * 100).toFixed(1) + '%',
+                marketProb: (sideProb * 100).toFixed(1) + '%'
+            });
+        }
+
+        // Maximum edge sanity check - if edge is huge, market knows something
+        const MAX_EDGE = 0.20;  // 20% max
+        if (edge > MAX_EDGE) {
+            return this.createSignal('hold', null, 'edge_too_large_suspicious', this.options.basePosition, {
+                edge: (edge * 100).toFixed(1) + '%',
+                bsProb: (expectedSideProb * 100).toFixed(1) + '%',
+                marketProb: (sideProb * 100).toFixed(1) + '%',
+                reason: 'Edge > 20% is suspicious'
             });
         }
 
@@ -4345,7 +4488,7 @@ export class LagProb_BaseStrategy {
 
         const sideLabel = rightSideOfStrike ? 'RIGHT' : 'WRONG';
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
-            `lag=${lagRatio.toFixed(2)} edge=${(edge * 100).toFixed(1)}% | ` +
+            `lag=${lagRatio.toFixed(2)} | BS=${(expectedSideProb * 100).toFixed(1)}% mkt=${(sideProb * 100).toFixed(1)}% edge=${(edge * 100).toFixed(1)}% | ` +
             `side=${sideLabel} size=$${size.toFixed(0)} | time=${timeRemaining.toFixed(0)}s`);
 
         return this.createSignal('buy', side, 'lag_prob_entry', size, {
