@@ -13,8 +13,16 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Database mode
-export const USE_POSTGRES = !!process.env.DATABASE_URL;
+// Database mode - evaluated when module loads
+// IMPORTANT: Ensure dotenv.config() is called BEFORE importing this module!
+export let USE_POSTGRES = !!process.env.DATABASE_URL;
+
+// Allow reinitializing after dotenv loads (call this if USE_POSTGRES was wrong)
+export function recheckDatabaseMode() {
+    USE_POSTGRES = !!process.env.DATABASE_URL;
+    console.log(`🗄️  Database mode rechecked: ${USE_POSTGRES ? 'PostgreSQL' : 'SQLite'}`);
+    return USE_POSTGRES;
+}
 
 // PostgreSQL pool
 let pgPool = null;
@@ -33,11 +41,13 @@ function initPostgres() {
     pgPool = new pg.Pool({
         connectionString: process.env.DATABASE_URL,
         ssl: { rejectUnauthorized: false },
-        max: 5,                     // Reduced from 10 - Supabase free tier has limits
-        min: 1,                     // Keep at least 1 connection alive
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,  // Timeout for new connections
-        allowExitOnIdle: false      // Keep pool alive
+        max: 2,                     // Low max for Supabase transaction pooler
+        min: 0,                     // Don't keep connections alive - pooler manages lifecycle
+        idleTimeoutMillis: 10000,   // Release idle connections quickly
+        connectionTimeoutMillis: 30000,  // Wait longer for connections from pooler
+        allowExitOnIdle: true,      // Allow pool to idle down
+        // Statement timeout to prevent hanging queries
+        options: '-c statement_timeout=15000 -c idle_in_transaction_session_timeout=30000'
     });
     
     pgPool.on('error', (err) => {
@@ -49,7 +59,7 @@ function initPostgres() {
         console.log('📡 New PostgreSQL connection established');
     });
     
-    console.log('✅ PostgreSQL initialized (max 5 connections)');
+    console.log('✅ PostgreSQL initialized (max 2 connections, pooler mode)');
     return pgPool;
 }
 
@@ -865,16 +875,17 @@ export async function saveLiveTrade(trade, retryCount = 0) {
         await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS tx_hash TEXT`).catch(() => {});
         await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS condition_id TEXT`).catch(() => {});
         await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timestamp_et TEXT`).catch(() => {});
-        
+        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS peak_price REAL`).catch(() => {});
+
         await pgPool.query(`
-            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id, timestamp, timestamp_et)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id, timestamp, timestamp_et, peak_price)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         `, [
             trade.type, trade.strategy_name, trade.crypto, trade.side,
             trade.window_epoch, trade.price, trade.size, trade.spot_price,
             trade.time_remaining, trade.reason, trade.entry_price, trade.pnl,
             trade.outcome || null, trade.tx_hash || null, trade.condition_id || null,
-            trade.timestamp, trade.timestamp_et
+            trade.timestamp, trade.timestamp_et, trade.peak_price || null
         ]);
         
         console.log(`[LiveTrade] ✅ Saved: ${trade.type} ${trade.strategy_name} ${trade.crypto} ${trade.side} @ ${trade.price}`);

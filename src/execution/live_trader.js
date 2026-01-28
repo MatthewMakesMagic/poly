@@ -58,8 +58,8 @@ const PositionState = {
 // Global defaults
 const EXIT_CONFIG = {
     // Stop Loss - ALWAYS ACTIVE (safety net)
-    // Widened to 30% to handle high volatility in binary options (Jan 28 2026)
-    DEFAULT_STOP_LOSS: 0.30,           // Exit if loss >= 30%
+    // Widened to 50% for binary options - they swing wildly before resolving (Jan 28 2026)
+    DEFAULT_STOP_LOSS: 0.50,           // Exit if loss >= 50%
 
     // Trailing Take Profit
     DEFAULT_TRAIL_PCT: 0.10,           // Exit when price drops 10% from HWM
@@ -78,51 +78,51 @@ const EXIT_CONFIG = {
 };
 
 // Strategy-specific overrides (optional - defaults work for most)
-// All stop losses set to 30% to handle binary option volatility
+// All stop losses set to 50% - binary options swing wildly before resolving
 const STRATEGY_OVERRIDES = {
     // ═══════════════════════════════════════════════════════════════
     // ENABLED STRATEGIES (explicitly configured)
     // ═══════════════════════════════════════════════════════════════
 
     // SpotLag_ProbEdge - BEST PERFORMER (+$47)
-    'SpotLag_ProbEdge':     { trail: 0.10, stopLoss: 0.30 },
+    'SpotLag_ProbEdge':     { trail: 0.10, stopLoss: 0.50 },
 
     // Endgame - Near-expiry specialist (tighter trailing)
-    'Endgame':              { trail: 0.06, stopLoss: 0.30 },
+    'Endgame':              { trail: 0.06, stopLoss: 0.50 },
 
     // SpotLag_TimeAware - Time-based entry
-    'SpotLag_TimeAware':    { trail: 0.10, stopLoss: 0.30 },
+    'SpotLag_TimeAware':    { trail: 0.10, stopLoss: 0.50 },
 
     // SpotLag_LateOnly - Late window specialist
-    'SpotLag_LateOnly':     { trail: 0.08, stopLoss: 0.30 },
+    'SpotLag_LateOnly':     { trail: 0.08, stopLoss: 0.50 },
 
     // PureProb_Late - Late probability edge
-    'PureProb_Late':        { trail: 0.10, stopLoss: 0.30 },
+    'PureProb_Late':        { trail: 0.10, stopLoss: 0.50 },
 
     // Trail strategies - need wider stops for BS edge to play out
-    'SpotLag_Trail_V1':     { trail: 0.10, stopLoss: 0.30 },
-    'SpotLag_Trail_V2':     { trail: 0.10, stopLoss: 0.30 },
-    'SpotLag_Trail_V3':     { trail: 0.10, stopLoss: 0.30 },
+    'SpotLag_Trail_V1':     { trail: 0.10, stopLoss: 0.50 },
+    'SpotLag_Trail_V2':     { trail: 0.10, stopLoss: 0.50 },
+    'SpotLag_Trail_V3':     { trail: 0.10, stopLoss: 0.50 },
 
     // ═══════════════════════════════════════════════════════════════
     // OTHER STRATEGIES (may be disabled but keep config)
     // ═══════════════════════════════════════════════════════════════
 
     // Endgame variants
-    'Endgame_Aggressive':   { trail: 0.05, stopLoss: 0.30 },
-    'Endgame_Conservative': { trail: 0.08, stopLoss: 0.30 },
-    'Endgame_Safe':         { trail: 0.04, stopLoss: 0.30 },
-    'Endgame_Momentum':     { trail: 0.06, stopLoss: 0.30 },
+    'Endgame_Aggressive':   { trail: 0.05, stopLoss: 0.50 },
+    'Endgame_Conservative': { trail: 0.08, stopLoss: 0.50 },
+    'Endgame_Safe':         { trail: 0.04, stopLoss: 0.50 },
+    'Endgame_Momentum':     { trail: 0.06, stopLoss: 0.50 },
 
     // Aggressive strategies
-    'PureProb_Aggressive':  { trail: 0.08, stopLoss: 0.30 },
-    'LagProb_Aggressive':   { trail: 0.08, stopLoss: 0.30 },
-    'SpotLag_TimeAwareAggro': { trail: 0.08, stopLoss: 0.30 },
+    'PureProb_Aggressive':  { trail: 0.08, stopLoss: 0.50 },
+    'LagProb_Aggressive':   { trail: 0.08, stopLoss: 0.50 },
+    'SpotLag_TimeAwareAggro': { trail: 0.08, stopLoss: 0.50 },
 
     // Conservative strategies
-    'PureProb_Conservative': { trail: 0.12, stopLoss: 0.30 },
-    'LagProb_Conservative':  { trail: 0.12, stopLoss: 0.30 },
-    'SpotLag_TimeAwareSafe': { trail: 0.12, stopLoss: 0.30 },
+    'PureProb_Conservative': { trail: 0.12, stopLoss: 0.50 },
+    'LagProb_Conservative':  { trail: 0.12, stopLoss: 0.50 },
+    'SpotLag_TimeAwareSafe': { trail: 0.12, stopLoss: 0.50 },
 };
 
 /**
@@ -385,6 +385,24 @@ export class LiveTrader extends EventEmitter {
                 continue;
             }
 
+            // CRITICAL FIX: Ensure position has tokenId for exits
+            // Restored positions from DB don't have tokenId - look it up from market
+            if (!position.tokenId && market) {
+                position.tokenId = position.tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
+                if (position.tokenId) {
+                    this.logger.log(`[LiveTrader] 🔧 Resolved tokenId for restored position: ${positionKey}`);
+                }
+            }
+
+            // Skip monitoring if we can't exit (no tokenId) - will resolve at expiry
+            if (!position.tokenId) {
+                if (!position.warnedNoTokenId) {
+                    this.logger.warn(`[LiveTrader] ⚠️ Position ${positionKey} has no tokenId - cannot exit, will resolve at expiry`);
+                    position.warnedNoTokenId = true;
+                }
+                continue;
+            }
+
             // Calculate current price and PnL
             const currentPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
             const entryPrice = position.entryPrice;
@@ -541,6 +559,7 @@ export class LiveTrader extends EventEmitter {
                 reason: reason,
                 entry_price: position.entryPrice,
                 pnl: null, // Unknown - position still open on Polymarket
+                peak_price: position.highWaterMark,  // Track peak for analysis
                 timestamp: new Date().toISOString()
             });
             this.logger.error(`[LiveTrader] ⚠️ ABANDONED POSITION SAVED: ${position.strategyName} | ${position.crypto} | Reason: ${reason}`);
@@ -554,6 +573,12 @@ export class LiveTrader extends EventEmitter {
      */
     async executeExitDirect(position, tick, market, reason) {
         try {
+            // CRITICAL: Validate we have tokenId before attempting exit
+            if (!position.tokenId) {
+                this.logger.error(`[LiveTrader] ❌ CANNOT EXIT: No tokenId for ${position.strategyName} ${position.crypto}`);
+                return false;
+            }
+
             const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
             // Reduced buffer from 3 cents to 2 cents to capture more profit
             const exitPrice = Math.round(Math.max(rawPrice - EXIT_CONFIG.EXIT_PRICE_BUFFER, 0.01) * 100) / 100;
@@ -566,15 +591,12 @@ export class LiveTrader extends EventEmitter {
                 this.logger.warn(`[LiveTrader] Exit order too small: $${orderValue.toFixed(2)} < $1 minimum - letting ride to expiry`);
 
                 // Mark as abandoned - can't exit, will resolve at expiry
-                await this.saveAbandonedPosition(position, 'exit_too_small', {
-                    orderValue,
-                    exitPrice,
-                    sharesToSell,
-                    message: 'Position too small to exit, will resolve at expiry'
-                });
+                await this.saveAbandonedPosition(position, tick, 'exit_too_small');
 
                 // Remove from active monitoring - it will resolve naturally
-                delete this.livePositions[position.strategyName]?.[position.crypto];
+                // FIXED: Use correct position key format
+                const positionKey = `${position.strategyName}_${position.crypto}_${position.windowEpoch}`;
+                delete this.livePositions[positionKey];
                 return true;  // Return true so we don't retry forever
             }
 
@@ -618,6 +640,7 @@ export class LiveTrader extends EventEmitter {
                     reason: reason,
                     entry_price: position.entryPrice,
                     pnl: netPnl,
+                    peak_price: position.highWaterMark,  // Track peak for analysis
                     timestamp: new Date().toISOString()
                 });
 
@@ -1288,6 +1311,7 @@ export class LiveTrader extends EventEmitter {
                         reason: 'window_expiry',
                         entry_price: position.entryPrice,
                         pnl: netPnl,
+                        peak_price: position.highWaterMark,  // Track peak for analysis
                         outcome: outcome,
                         timestamp: new Date().toISOString()
                     });

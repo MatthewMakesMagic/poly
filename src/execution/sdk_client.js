@@ -74,17 +74,20 @@ export class SDKClient {
         
         // Create authenticated client with signature type 2
         this.client = new ClobClient(
-            HOST, 
-            CHAIN_ID, 
-            this.wallet, 
-            creds, 
+            HOST,
+            CHAIN_ID,
+            this.wallet,
+            creds,
             2,          // Signature type 2 for proxy wallets
             this.funder
         );
-        
+
+        // Note: CONDITIONAL token allowance must be set per-token before selling
+        // This is handled in the sell() method for each specific token
+
         this.ready = true;
         this.logger.log('[SDKClient] Ready');
-        
+
         return this;
     }
     
@@ -301,22 +304,36 @@ export class SDKClient {
      */
     async sell(tokenId, shares, price, orderType = 'GTC') {
         this.ensureReady();
-        
+
         // Floor shares to avoid selling more than we have
         const actualShares = Math.floor(shares);
         const expectedValue = actualShares * price;
-        
+
         if (actualShares < 1) {
             throw new Error(`Not enough shares: ${shares} < 1`);
         }
-        
+
         // Validate minimum order
         if (expectedValue < 1.0) {
             throw new Error(`Order too small: $${expectedValue.toFixed(2)} < $1 minimum`);
         }
-        
+
+        // CRITICAL: Approve this specific token for selling BEFORE attempting sell
+        // This prevents "not enough balance / allowance" errors
+        try {
+            this.logger.log(`[SDKClient] Setting allowance for token ${tokenId.slice(0, 10)}...`);
+            await this.client.updateBalanceAllowance({
+                asset_type: 'CONDITIONAL',
+                token_id: tokenId
+            });
+            this.logger.log(`[SDKClient] ✅ Token allowance set`);
+        } catch (e) {
+            // Log but continue - might already be approved or might work anyway
+            this.logger.warn(`[SDKClient] ⚠️ Allowance setup issue: ${e.message?.slice(0, 100)}`);
+        }
+
         this.logger.log(`[SDKClient] SELL ${actualShares} shares @ $${price.toFixed(4)} = $${expectedValue.toFixed(2)}`);
-        
+
         try {
             const order = await this.client.createAndPostOrder({
                 tokenID: tokenId,

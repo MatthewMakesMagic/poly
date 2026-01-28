@@ -949,22 +949,24 @@ class TickCollector {
     }
     
     /**
-     * Flush tick buffer to database
+     * Flush tick buffer to database (fire-and-forget to not block trading loop)
      */
     async flushTickBuffer() {
         if (this.tickBuffer.length === 0) return;
-        
-        try {
-            const { insertTicksBatch } = await import('../db/connection.js');
-            await insertTicksBatch(this.tickBuffer);
-            
-            const count = this.tickBuffer.length;
-            this.tickBuffer = [];
-            
-        } catch (error) {
-            console.error('❌ Failed to flush ticks:', error.message);
+
+        // Copy and clear buffer immediately so we don't block
+        const ticksToSave = [...this.tickBuffer];
+        this.tickBuffer = [];
+
+        // Fire-and-forget: don't await, let it complete in background
+        import('../db/connection.js').then(({ insertTicksBatch }) => {
+            insertTicksBatch(ticksToSave).catch(error => {
+                // Silent fail - tick persistence is not critical for trading
+                this.stats.errors++;
+            });
+        }).catch(() => {
             this.stats.errors++;
-        }
+        });
     }
     
     /**

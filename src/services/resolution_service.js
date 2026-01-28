@@ -224,22 +224,20 @@ export class ResolutionService {
         // Store in memory
         session.snapshots.push(snapshot);
 
-        // Save to database
-        try {
-            await saveResolutionSnapshot(snapshot);
-            this.stats.snapshotsCaptured++;
-
-            // Log divergence opportunities
-            if (isDivergenceOpportunity) {
-                console.log(`[ResolutionService] DIVERGENCE: ${session.crypto} | ` +
-                            `Binance=${binanceImplies} Chainlink=${chainlinkImplies || 'N/A'} | ` +
-                            `div=${divergencePct?.toFixed(3)}% | T-${secondsToResolution}s`);
-            }
-        } catch (error) {
-            // Ignore duplicate key errors
-            if (!error.message?.includes('duplicate')) {
+        // Save to database (fire-and-forget to not block trading loop)
+        this.stats.snapshotsCaptured++;
+        saveResolutionSnapshot(snapshot).catch(error => {
+            // Ignore duplicate key errors and timeouts - persistence is not critical
+            if (!error.message?.includes('duplicate') && !error.message?.includes('timeout')) {
                 console.error('[ResolutionService] Failed to save snapshot:', error.message);
             }
+        });
+
+        // Log divergence opportunities
+        if (isDivergenceOpportunity) {
+            console.log(`[ResolutionService] DIVERGENCE: ${session.crypto} | ` +
+                        `Binance=${binanceImplies} Chainlink=${chainlinkImplies || 'N/A'} | ` +
+                        `div=${divergencePct?.toFixed(3)}% | T-${secondsToResolution}s`);
         }
     }
 

@@ -8,7 +8,12 @@
  */
 
 import dotenv from 'dotenv';
-dotenv.config();
+// CRITICAL: Load env BEFORE any other imports that depend on process.env
+// Load .env.local first (local dev), then .env (fallback)
+dotenv.config({ path: '.env.local' });
+dotenv.config(); // Also try .env as fallback
+
+console.log(`🔧 DATABASE_URL loaded: ${!!process.env.DATABASE_URL}`);
 
 // ENABLE LIVE TRADING - Set env var if not already set
 if (!process.env.LIVE_TRADING_ENABLED) {
@@ -25,9 +30,10 @@ if (process.env.PROXY_URL) {
     console.log(`🔒 Proxy enabled: ${process.env.PROXY_URL.replace(/:[^:@]+@/, ':***@')}`);
 }
 
-import { TickCollector } from '../src/collectors/tick_collector.js';
-import { initDatabase, setLiveStrategyEnabled, getLiveEnabledStrategies } from '../src/db/connection.js';
-import { createAllQuantStrategies } from '../src/quant/strategies/index.js';
+// DYNAMIC IMPORTS: Load these AFTER dotenv so DATABASE_URL is available
+const { TickCollector } = await import('../src/collectors/tick_collector.js');
+const { initDatabase, setLiveStrategyEnabled, getLiveEnabledStrategies } = await import('../src/db/connection.js');
+const { createAllQuantStrategies } = await import('../src/quant/strategies/index.js');
 
 console.log('🚀 Starting Polymarket Tick Collector...\n');
 
