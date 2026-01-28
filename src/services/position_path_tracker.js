@@ -299,7 +299,7 @@ export class PositionPathTracker {
         this.activePositions.set(position.positionId, position);
         this.stats.positionsTracked++;
 
-        console.log(`[PositionPathTracker] Tracking: ${position.positionId} | ${side} @ ${entryPrice.toFixed(3)}`);
+        // Removed verbose logging - was cluttering logs with paper position tracking
 
         return position.positionId;
     }

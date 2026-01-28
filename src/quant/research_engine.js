@@ -181,8 +181,13 @@ export class ResearchEngine {
                             console.log(`[LiveSignal] ${strategy.getName()} | ${crypto} | BLOCKED: LiveTrader not running`);
                         }
                     } else {
-                        // Log signal being sent to live trader
-                        console.log(`[LiveSignal] ${strategy.getName()} | ${crypto} | ${signal.action} ${signal.side} | enabled: ${liveTrader.enabledStrategies?.has(strategy.getName())}`);
+                        // Only log signals for ENABLED strategies to reduce noise
+                        const isEnabled = liveTrader.enabledStrategies?.has(strategy.getName());
+                        if (isEnabled) {
+                            const edge = signal.metadata?.edge ? `edge=${(signal.metadata.edge * 100).toFixed(1)}%` : '';
+                            const bsProb = signal.metadata?.bsProb || '';
+                            console.log(`[LiveSignal] ✅ ${strategy.getName()} | ${crypto} | ${signal.action.toUpperCase()} ${signal.side?.toUpperCase() || ''} | ${edge} ${bsProb}`);
+                        }
                         liveTrader.processSignal(strategy.getName(), signal, tick, market);
                     }
                 } catch (e) {
@@ -196,17 +201,33 @@ export class ResearchEngine {
             });
         }
 
-        // CRITICAL: Monitor live positions for stop loss on EVERY tick
-        // This must run AFTER strategy signals are processed
+        // CRITICAL: Monitor live positions for TP/SL on EVERY tick
+        // This MUST run - no silent errors, no skipping
         // Strategies only see PAPER positions - LiveTrader needs to monitor its own LIVE positions
         try {
             const liveTrader = getLiveTrader();
-            const market = this.currentMarkets?.[crypto];
-            if (liveTrader.isRunning && market) {
-                liveTrader.monitorPositions(tick, market);
+            if (liveTrader && liveTrader.isRunning) {
+                // Always call monitoring - market is optional, tick has all needed data
+                const market = this.currentMarkets?.[crypto];
+                // Note: monitorPositions is async but we don't await to avoid blocking tick processing
+                liveTrader.monitorPositions(tick, market).catch(e => {
+                    // Track consecutive failures per crypto
+                    const failures = (liveTrader.monitoringFailures.get(crypto) || 0) + 1;
+                    liveTrader.monitoringFailures.set(crypto, failures);
+
+                    console.error(`[ResearchEngine] ❌ CRITICAL: Position monitoring failed for ${crypto} (${failures}/${liveTrader.MAX_MONITORING_FAILURES}): ${e.message}`);
+
+                    // Trigger kill switch if too many consecutive failures
+                    if (failures >= liveTrader.MAX_MONITORING_FAILURES) {
+                        console.error(`[ResearchEngine] 🛑 TRIGGERING KILL SWITCH: Monitoring failed ${failures} times for ${crypto}`);
+                        liveTrader.activateKillSwitch(`Monitoring failed ${failures} times consecutively for ${crypto}`);
+                    }
+                });
             }
         } catch (e) {
-            // Silently ignore monitoring errors
+            // NEVER silently ignore - this is critical for TP/SL execution
+            console.error(`[ResearchEngine] ❌ CRITICAL: Position monitoring setup failed for ${crypto}: ${e.message}`);
+            console.error(e.stack);
         }
 
         return {
