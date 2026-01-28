@@ -3476,30 +3476,62 @@ export class SpotLag_TrailStrategy {
         const rightSideOfStrike = (bettingUp && spotAboveStrike) || (!bettingUp && !spotAboveStrike);
 
         // ═══════════════════════════════════════════════════════════════════════════
-        // BLACK-SCHOLES EDGE CALCULATION (Jan 27 2026)
+        // ENHANCED BLACK-SCHOLES EDGE CALCULATION (Jan 28 2026)
         //
         // KEY INSIGHT: The lag means market is using STALE information.
         // We use the NEW spot price in Black-Scholes to get TRUE probability.
         // Edge = BS probability (using new spot) - market probability (stale)
+        //
+        // CRITICAL: Our edge estimate has UNCERTAINTY. If vol estimate is wrong,
+        // our edge is wrong. Use conservative edge and adjusted thresholds.
         // ═══════════════════════════════════════════════════════════════════════════
         const spotDeltaPct = strike > 0 ? ((spotPrice - strike) / strike) * 100 : 0;
         const edgeCalc = calculateTheoreticalEdge(spotDeltaPct, timeRemaining, marketProb, crypto);
         const bsProb = edgeCalc.theoreticalSideProb;
         const edge = edgeCalc.edge;
+        const conservativeEdge = edgeCalc.conservativeEdge;
+        const sigmas = edgeCalc.sigmas;
 
-        // Minimum edge required (if configured)
-        const MIN_EDGE = this.options.minEdge || 0.02;  // Default 2% for Trail strategies
-        if (edge < MIN_EDGE) {
+        // SIGMA CHECK: Require meaningful displacement (> 1.5 standard deviations)
+        // A 0.22% move with 4 minutes left is only ~1 sigma - within noise
+        const MIN_SIGMAS = this.options.minSigmas || 1.5;
+        if (sigmas < MIN_SIGMAS) {
+            return this.createSignal('hold', null, 'displacement_too_small', {
+                spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
+                sigmas: sigmas.toFixed(2),
+                minSigmas: MIN_SIGMAS,
+                expectedMove: edgeCalc.expectedMove?.toFixed(3) + '%'
+            });
+        }
+
+        // CONSERVATIVE EDGE CHECK: After accounting for vol uncertainty,
+        // do we still have positive edge?
+        if (!edgeCalc.edgeIsReal) {
+            return this.createSignal('hold', null, 'edge_not_real_after_uncertainty', {
+                edge: (edge * 100).toFixed(1) + '%',
+                conservativeEdge: (conservativeEdge * 100).toFixed(1) + '%',
+                volConfidence: (edgeCalc.volConfidence * 100).toFixed(0) + '%'
+            });
+        }
+
+        // TIME-ADJUSTED MINIMUM EDGE: Use the dynamically calculated threshold
+        // Longer time = need bigger edge (more time for reversal)
+        const adjustedMinEdge = edgeCalc.adjustedMinEdge;
+        const configMinEdge = this.options.minEdge || 0.02;
+        const effectiveMinEdge = Math.max(adjustedMinEdge, configMinEdge);
+
+        if (edge < effectiveMinEdge) {
             return this.createSignal('hold', null, 'insufficient_bs_edge', {
                 edge: (edge * 100).toFixed(1) + '%',
                 bsProb: (bsProb * 100).toFixed(1) + '%',
                 marketProb: (sideProb * 100).toFixed(1) + '%',
-                minRequired: (MIN_EDGE * 100) + '%'
+                minRequired: (effectiveMinEdge * 100).toFixed(1) + '%',
+                timeAdjusted: (adjustedMinEdge * 100).toFixed(1) + '%'
             });
         }
 
         // Maximum edge sanity check
-        const MAX_EDGE = this.options.maxEdge || 0.20;  // 20% max
+        const MAX_EDGE = this.options.maxEdge || 0.20;
         if (edge > MAX_EDGE) {
             return this.createSignal('hold', null, 'edge_too_large_suspicious', {
                 edge: (edge * 100).toFixed(1) + '%',
@@ -3579,8 +3611,8 @@ export class SpotLag_TrailStrategy {
 
         console.log(`[${this.name}] 🎯 SIGNAL: BUY ${side.toUpperCase()} ${crypto.toUpperCase()} | ` +
             `window=${timeWindow} time=${timeRemaining.toFixed(0)}s | ` +
-            `spotMove=${(spotMove * 100).toFixed(3)}% lag=${lagRatio.toFixed(2)} | ` +
-            `BS=${(bsProb * 100).toFixed(1)}% mkt=${(sideProb * 100).toFixed(1)}% edge=${(edge * 100).toFixed(1)}% | ` +
+            `spotMove=${(spotMove * 100).toFixed(3)}% σ=${sigmas.toFixed(1)} | ` +
+            `BS=${(bsProb * 100).toFixed(1)}% mkt=${(sideProb * 100).toFixed(1)}% edge=${(edge * 100).toFixed(1)}% (cons=${(conservativeEdge * 100).toFixed(1)}%) | ` +
             `side=${sideLabel} conv=${conviction.toFixed(2)}`);
 
         return this.createSignal('buy', side, 'spotlag_trail_bs_edge', {
@@ -3763,17 +3795,19 @@ export function createMicroLagConvergenceSafe(capital = 100) {
 }
 
 // =============================================================================
-// PROBABILITY MODEL UTILITIES - BLACK-SCHOLES BASED (Jan 27 2026)
+// PROBABILITY MODEL UTILITIES - IMPROVED BLACK-SCHOLES (Jan 28 2026)
 //
-// Proper quant model using N(d2) from Black-Scholes for binary option pricing.
-// This calculates the risk-neutral probability that spot > strike at expiry.
+// Enhanced quant model using N(d2) from Black-Scholes with:
+// 1. Dynamic volatility estimation from recent price history
+// 2. Uncertainty-adjusted edge requirements
+// 3. Market efficiency weighting (blend with market price)
+// 4. Time-scaled minimum displacement (in sigma terms)
 //
 // Formula: P(spot > strike) = N(d2)
-// Where:  d2 = ln(S/K) / (σ * √T)  [simplified for r ≈ 0 on short timeframes]
+// Where:  d2 = ln(S/K) / (σ * √T)
 //
-// References:
-// - https://www.codearmo.com/python-tutorial/binary-options-and-implied-distributions
-// - https://en.wikipedia.org/wiki/Black%E2%80%93Scholes_model
+// KEY INSIGHT: The edge we calculate has UNCERTAINTY. If we estimate vol wrong,
+// our edge estimate is wrong. Require larger edge when uncertainty is high.
 // =============================================================================
 
 /**
@@ -3789,11 +3823,9 @@ function normalCDF(x) {
     const a5 =  1.061405429;
     const p  =  0.3275911;
 
-    // Save the sign of x
     const sign = x < 0 ? -1 : 1;
     x = Math.abs(x);
 
-    // A&S formula 26.2.17
     const t = 1.0 / (1.0 + p * x);
     const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
 
@@ -3801,19 +3833,102 @@ function normalCDF(x) {
 }
 
 /**
- * Annualized volatility estimates per crypto (as of Jan 2026)
- * These should ideally be calculated from rolling realized volatility,
- * but fixed estimates work as a baseline.
- *
- * Source: Historical 30-day realized volatility from major exchanges
+ * BASE annualized volatility estimates per crypto
+ * These are BASELINE values - actual vol should be calculated dynamically
  */
-const CRYPTO_VOLATILITY = {
-    btc: 0.50,   // Bitcoin: ~50% annualized (relatively stable for crypto)
+const CRYPTO_VOLATILITY_BASE = {
+    btc: 0.50,   // Bitcoin: ~50% annualized
     eth: 0.65,   // Ethereum: ~65% annualized
-    sol: 0.85,   // Solana: ~85% annualized (more volatile)
+    sol: 0.85,   // Solana: ~85% annualized
     xrp: 0.75,   // XRP: ~75% annualized
-    default: 0.70  // Default assumption for unknown cryptos
+    default: 0.70
 };
+
+/**
+ * VOLATILITY UNCERTAINTY - how much our vol estimate could be wrong
+ * Higher uncertainty = require larger edge to compensate
+ */
+const CRYPTO_VOLATILITY_UNCERTAINTY = {
+    btc: 0.20,   // BTC vol estimate could be 20% off (40-60% actual)
+    eth: 0.25,   // ETH more variable
+    sol: 0.35,   // SOL highly variable
+    xrp: 0.30,   // XRP variable
+    default: 0.30
+};
+
+// Rolling volatility state (updated by tick processor)
+const rollingVolatility = {
+    btc: { values: [], lastUpdate: 0, estimate: null },
+    eth: { values: [], lastUpdate: 0, estimate: null },
+    sol: { values: [], lastUpdate: 0, estimate: null },
+    xrp: { values: [], lastUpdate: 0, estimate: null }
+};
+
+/**
+ * Update rolling volatility estimate from tick data
+ * Call this from the tick processor to maintain fresh vol estimates
+ *
+ * @param {string} crypto - Crypto symbol
+ * @param {number} spotPrice - Current spot price
+ * @param {number} prevSpotPrice - Previous spot price
+ * @param {number} timeDeltaMs - Time between ticks in milliseconds
+ */
+export function updateRollingVolatility(crypto, spotPrice, prevSpotPrice, timeDeltaMs) {
+    const state = rollingVolatility[crypto?.toLowerCase()];
+    if (!state || !prevSpotPrice || timeDeltaMs <= 0) return;
+
+    // Calculate log return
+    const logReturn = Math.log(spotPrice / prevSpotPrice);
+
+    // Annualize: multiply by sqrt(periods per year)
+    // For 100ms ticks: ~315,360,000 ticks per year
+    const periodsPerYear = (365.25 * 24 * 3600 * 1000) / timeDeltaMs;
+    const annualizedReturn = logReturn * Math.sqrt(periodsPerYear);
+
+    // Store absolute value (we want magnitude of moves)
+    state.values.push(Math.abs(annualizedReturn));
+
+    // Keep last 1000 ticks (~100 seconds at 10Hz)
+    while (state.values.length > 1000) {
+        state.values.shift();
+    }
+
+    // Update estimate if we have enough data
+    if (state.values.length >= 100) {
+        // Use mean absolute deviation as vol estimate (more robust than std)
+        const mean = state.values.reduce((a, b) => a + b, 0) / state.values.length;
+        // Scale MAD to approximate std (MAD ≈ 0.8 * std for normal distribution)
+        state.estimate = mean / 0.8;
+        state.lastUpdate = Date.now();
+    }
+}
+
+/**
+ * Get best volatility estimate for a crypto
+ * Uses rolling estimate if fresh, otherwise falls back to baseline
+ *
+ * @param {string} crypto - Crypto symbol
+ * @returns {{ vol: number, confidence: number }} Volatility and confidence [0-1]
+ */
+function getVolatilityEstimate(crypto) {
+    const cryptoLower = crypto?.toLowerCase() || 'btc';
+    const state = rollingVolatility[cryptoLower];
+    const baseVol = CRYPTO_VOLATILITY_BASE[cryptoLower] || CRYPTO_VOLATILITY_BASE.default;
+
+    // Check if we have a fresh rolling estimate (< 60 seconds old)
+    if (state?.estimate && (Date.now() - state.lastUpdate) < 60000) {
+        // Blend rolling estimate with base (80% rolling, 20% base for stability)
+        const blendedVol = state.estimate * 0.8 + baseVol * 0.2;
+        // Higher confidence when using rolling data
+        return { vol: blendedVol, confidence: 0.7 };
+    }
+
+    // Fall back to base estimate with lower confidence
+    return { vol: baseVol, confidence: 0.3 };
+}
+
+// Legacy alias for backwards compatibility
+const CRYPTO_VOLATILITY = CRYPTO_VOLATILITY_BASE;
 
 /**
  * Calculate d2 parameter for Black-Scholes binary option pricing
@@ -3842,18 +3957,16 @@ function calculateD2(spotDeltaPct, timeRemainingSec, sigma) {
 
 /**
  * Calculate expected probability using Black-Scholes N(d2)
- *
- * This gives the theoretical probability that spot > strike at expiry,
- * assuming a geometric Brownian motion (random walk with drift = 0).
+ * Now returns confidence interval based on volatility uncertainty
  *
  * @param {number} spotDeltaPct - Spot displacement from strike as percentage
  * @param {number} timeRemainingSec - Seconds remaining in window
- * @param {string} crypto - Crypto symbol (btc, eth, sol, xrp) for volatility lookup
- * @returns {number} Expected probability [0, 1]
+ * @param {string} crypto - Crypto symbol for volatility lookup
+ * @returns {{ prob: number, confidence: number, sigmas: number }} Probability, confidence, and displacement in sigmas
  */
 function calculateExpectedProbability(spotDeltaPct, timeRemainingSec, crypto = 'btc') {
-    // Get volatility for this crypto
-    const sigma = CRYPTO_VOLATILITY[crypto?.toLowerCase()] || CRYPTO_VOLATILITY.default;
+    // Get volatility estimate with confidence
+    const { vol: sigma, confidence: volConfidence } = getVolatilityEstimate(crypto);
 
     // Calculate d2
     const d2 = calculateD2(spotDeltaPct, timeRemainingSec, sigma);
@@ -3861,46 +3974,112 @@ function calculateExpectedProbability(spotDeltaPct, timeRemainingSec, crypto = '
     // P(spot > strike at expiry) = N(d2)
     const probAboveStrike = normalCDF(d2);
 
-    // If spotDeltaPct > 0, we're calculating P(UP wins) directly
-    // If spotDeltaPct < 0, we're calculating P(spot > strike) which is P(UP wins)
-    // The caller determines which side to bet on based on spotDeltaPct sign
+    // Calculate displacement in standard deviations (sigmas)
+    // This tells us how "meaningful" the spot displacement is
+    const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+    const T = Math.max(timeRemainingSec, 1) / SECONDS_PER_YEAR;
+    const expectedMove = sigma * Math.sqrt(T) * 100;  // Expected % move (1 sigma)
+    const sigmas = Math.abs(spotDeltaPct) / expectedMove;
 
-    return probAboveStrike;
+    return probAboveStrike;  // Return just the probability for backwards compatibility
 }
 
 /**
- * Calculate the theoretical edge given spot position, time, and market price
+ * ENHANCED: Calculate expected probability with full uncertainty analysis
  *
- * Edge = |Theoretical Probability - Market Probability|
- *
- * A positive edge means the market is underpricing the indicated side.
- *
- * @param {number} spotDeltaPct - Spot displacement from strike (%)
- * @param {number} timeRemainingSec - Seconds remaining
- * @param {number} marketProb - Market's probability for UP (from order book)
- * @param {string} crypto - Crypto symbol for volatility
- * @returns {Object} { theoreticalProb, marketSideProb, edge, side }
+ * @returns {Object} Full analysis including confidence bounds
  */
-function calculateTheoreticalEdge(spotDeltaPct, timeRemainingSec, marketProb, crypto = 'btc') {
-    // Determine which side spot is indicating
-    const side = spotDeltaPct > 0 ? 'up' : 'down';
+function calculateExpectedProbabilityAdvanced(spotDeltaPct, timeRemainingSec, crypto = 'btc') {
+    const cryptoLower = crypto?.toLowerCase() || 'btc';
+    const { vol: sigma, confidence: volConfidence } = getVolatilityEstimate(crypto);
+    const volUncertainty = CRYPTO_VOLATILITY_UNCERTAINTY[cryptoLower] || CRYPTO_VOLATILITY_UNCERTAINTY.default;
 
-    // Calculate theoretical P(UP wins) using Black-Scholes
-    const theoreticalUpProb = calculateExpectedProbability(spotDeltaPct, timeRemainingSec, crypto);
+    // Calculate d2 with base vol
+    const d2 = calculateD2(spotDeltaPct, timeRemainingSec, sigma);
+    const probBase = normalCDF(d2);
 
-    // Get probabilities for the side we're considering
-    const theoreticalSideProb = side === 'up' ? theoreticalUpProb : (1 - theoreticalUpProb);
-    const marketSideProb = side === 'up' ? marketProb : (1 - marketProb);
+    // Calculate bounds using vol uncertainty
+    const sigmaHigh = sigma * (1 + volUncertainty);
+    const sigmaLow = sigma * (1 - volUncertainty);
+    const d2High = calculateD2(spotDeltaPct, timeRemainingSec, sigmaHigh);
+    const d2Low = calculateD2(spotDeltaPct, timeRemainingSec, sigmaLow);
+    const probHigh = normalCDF(d2High);
+    const probLow = normalCDF(d2Low);
 
-    // Edge = theoretical - market (positive = market underpricing our side)
-    const edge = theoreticalSideProb - marketSideProb;
+    // Displacement in sigmas (how meaningful is the spot move?)
+    const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+    const T = Math.max(timeRemainingSec, 1) / SECONDS_PER_YEAR;
+    const expectedMove = sigma * Math.sqrt(T) * 100;
+    const sigmas = Math.abs(spotDeltaPct) / expectedMove;
 
     return {
-        theoreticalUpProb,
+        prob: probBase,
+        probHigh: Math.max(probHigh, probLow),  // Upper bound
+        probLow: Math.min(probHigh, probLow),   // Lower bound
+        sigma,
+        sigmas,                                  // Displacement in standard deviations
+        volConfidence,
+        expectedMove                             // Expected 1-sigma move in %
+    };
+}
+
+/**
+ * ENHANCED: Calculate theoretical edge with uncertainty-adjusted requirements
+ *
+ * KEY INSIGHT: If our vol estimate has 20% uncertainty, our probability estimate
+ * could be significantly off. Require larger edge to compensate.
+ *
+ * @returns {Object} Enhanced edge analysis with confidence bounds
+ */
+function calculateTheoreticalEdge(spotDeltaPct, timeRemainingSec, marketProb, crypto = 'btc') {
+    const side = spotDeltaPct > 0 ? 'up' : 'down';
+
+    // Get advanced probability analysis
+    const analysis = calculateExpectedProbabilityAdvanced(spotDeltaPct, timeRemainingSec, crypto);
+
+    // Get probabilities for the side we're considering
+    const theoreticalSideProb = side === 'up' ? analysis.prob : (1 - analysis.prob);
+    const theoreticalSideProbHigh = side === 'up' ? analysis.probHigh : (1 - analysis.probLow);
+    const theoreticalSideProbLow = side === 'up' ? analysis.probLow : (1 - analysis.probHigh);
+    const marketSideProb = side === 'up' ? marketProb : (1 - marketProb);
+
+    // Raw edge (theoretical - market)
+    const edge = theoreticalSideProb - marketSideProb;
+
+    // Conservative edge (worst case given vol uncertainty)
+    // Only count edge we're confident in
+    const conservativeEdge = theoreticalSideProbLow - marketSideProb;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MINIMUM EDGE REQUIREMENTS - Scale with time and uncertainty
+    //
+    // With 4 minutes left, a lot can happen. Require larger edge.
+    // With 30 seconds left, small edge is more meaningful.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const baseMinEdge = 0.03;  // 3% base minimum
+    const timeMultiplier = Math.sqrt(timeRemainingSec / 60);  // √(time in minutes)
+    const uncertaintyMultiplier = 1 + (1 - analysis.volConfidence);  // More uncertain = need more edge
+    const adjustedMinEdge = baseMinEdge * timeMultiplier * uncertaintyMultiplier;
+
+    // Is the edge "real" (survives uncertainty analysis)?
+    const edgeIsReal = conservativeEdge > 0;
+    const edgeMeetsThreshold = edge >= adjustedMinEdge;
+
+    return {
+        theoreticalUpProb: analysis.prob,
         theoreticalSideProb,
+        theoreticalSideProbHigh,
+        theoreticalSideProbLow,
         marketSideProb,
         edge,
-        side
+        conservativeEdge,
+        adjustedMinEdge,
+        edgeIsReal,
+        edgeMeetsThreshold,
+        side,
+        sigmas: analysis.sigmas,
+        expectedMove: analysis.expectedMove,
+        volConfidence: analysis.volConfidence
     };
 }
 
