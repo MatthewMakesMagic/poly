@@ -3443,11 +3443,50 @@ export class SpotLag_TrailStrategy {
         const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
         const newMarket = state.marketHistory[state.marketHistory.length - 1];
         const marketMove = newMarket - oldMarket;
-        const expectedMarketMove = spotMove * 10;
-        const lagRatio = Math.abs(marketMove) / Math.abs(expectedMarketMove);
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // IMPROVED LAG DETECTION (Jan 28 2026)
+        //
+        // OLD: expectedMarketMove = spotMove * 10 (arbitrary multiplier)
+        // NEW: Use Black-Scholes to calculate what market SHOULD be given new spot
+        //
+        // True lag = difference between actual market prob and BS-implied prob
+        // This is more accurate than assuming linear relationship
+        // ═══════════════════════════════════════════════════════════════════════════
+        const strike = tick.price_to_beat;
+        const spotDeltaPctForLag = strike > 0 ? ((newSpot - strike) / strike) * 100 : 0;
+        const bsImpliedProb = calculateExpectedProbability(spotDeltaPctForLag, timeRemaining, crypto);
+
+        // How much has market moved vs how much BS says it SHOULD have moved?
+        // If spot moved and BS says probability should be X, but market is still at Y,
+        // that's lag = X - Y (or Y - X for down moves)
+        const bsImpliedMove = bsImpliedProb - oldMarket;
+        const actualMarketMove = newMarket - oldMarket;
+
+        // Lag ratio: how much of the "correct" move has market made?
+        // 0 = market hasn't moved at all (maximum lag)
+        // 1 = market fully reflects new information (no lag)
+        // > 1 = market overreacted
+        const lagRatio = Math.abs(bsImpliedMove) > 0.001
+            ? Math.abs(actualMarketMove) / Math.abs(bsImpliedMove)
+            : 1.0;  // No expected move = no lag
+
+        // DIAGNOSTIC: Log lag detection details every 50 ticks
+        if (!this._lagLogCounter) this._lagLogCounter = {};
+        if (!this._lagLogCounter[crypto]) this._lagLogCounter[crypto] = 0;
+        this._lagLogCounter[crypto]++;
+        if (this._lagLogCounter[crypto] % 50 === 1 && Math.abs(spotMove) > 0.0001) {
+            console.log(`[${this.name}] LAG CHECK ${crypto}: ` +
+                `spotMove=${(spotMove * 100).toFixed(4)}% | ` +
+                `mktMove=${(actualMarketMove * 100).toFixed(2)}% vs bsExpected=${(bsImpliedMove * 100).toFixed(2)}% | ` +
+                `lagRatio=${lagRatio.toFixed(2)} (need <${this.options.marketLagRatio})`);
+        }
 
         if (lagRatio > this.options.marketLagRatio) {
-            return this.createSignal('hold', null, 'market_caught_up');
+            return this.createSignal('hold', null, 'market_caught_up', {
+                lagRatio: lagRatio.toFixed(2),
+                threshold: this.options.marketLagRatio
+            });
         }
 
         // Determine trade side based on spot movement
@@ -3467,7 +3506,7 @@ export class SpotLag_TrailStrategy {
         const sideProb = side === 'up' ? marketProb : (1 - marketProb);
 
         // STRIKE ALIGNMENT CHECK: Is spot on the RIGHT or WRONG side of strike?
-        const strike = tick.price_to_beat;
+        // (strike already defined above in lag detection)
         const spotPrice = newSpot;
         const spotAboveStrike = spotPrice > strike;
         const bettingUp = side === 'up';
