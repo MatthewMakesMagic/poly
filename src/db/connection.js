@@ -30,6 +30,14 @@ let pgPool = null;
 // SQLite db (lazy loaded)
 let sqliteDb = null;
 
+// Schema initialization tracking - prevents running CREATE TABLE on every query
+let schemaInitialized = {
+    live_trades: false,
+    live_strategies: false,
+    oracle_resolution: false,
+    position_paths: false
+};
+
 /**
  * Initialize PostgreSQL connection
  */
@@ -827,26 +835,13 @@ async function backupTradeToFile(trade) {
 }
 
 /**
- * Save a live trade to database with retry and backup
+ * Initialize live_trades table schema (run once at startup)
  */
-export async function saveLiveTrade(trade, retryCount = 0) {
-    const MAX_RETRIES = 3;
-    const RETRY_DELAY = 1000;
-    
-    // Add ET timestamp if not provided
-    if (!trade.timestamp_et) {
-        trade.timestamp_et = getETTimestamp();
-    }
-    
-    // If no Postgres, backup to file
-    if (!USE_POSTGRES || !pgPool) {
-        console.log('[LiveTrade] No DB, backing up:', trade);
-        await backupTradeToFile(trade);
-        return;
-    }
-    
+async function ensureLiveTradesSchema() {
+    if (schemaInitialized.live_trades) return;
+    if (!USE_POSTGRES || !pgPool) return;
+
     try {
-        // Ensure table exists with all columns
         await pgPool.query(`
             CREATE TABLE IF NOT EXISTS live_trades (
                 id SERIAL PRIMARY KEY,
@@ -866,17 +861,53 @@ export async function saveLiveTrade(trade, retryCount = 0) {
                 tx_hash TEXT,
                 condition_id TEXT,
                 timestamp TIMESTAMP DEFAULT NOW(),
-                timestamp_et TEXT
+                timestamp_et TEXT,
+                peak_price REAL
             )
         `);
-        
-        // Add new columns if they don't exist
-        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS outcome TEXT`).catch(() => {});
-        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS tx_hash TEXT`).catch(() => {});
-        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS condition_id TEXT`).catch(() => {});
-        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timestamp_et TEXT`).catch(() => {});
-        await pgPool.query(`ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS peak_price REAL`).catch(() => {});
 
+        // Add columns if they don't exist (for migration)
+        const migrations = [
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS outcome TEXT',
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS tx_hash TEXT',
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS condition_id TEXT',
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timestamp_et TEXT',
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS peak_price REAL'
+        ];
+
+        for (const sql of migrations) {
+            await pgPool.query(sql).catch(() => {});
+        }
+
+        schemaInitialized.live_trades = true;
+        console.log('[DB] live_trades schema initialized');
+    } catch (error) {
+        console.error('[DB] Failed to init live_trades schema:', error.message);
+    }
+}
+
+/**
+ * Save a live trade to database with retry and backup
+ */
+export async function saveLiveTrade(trade, retryCount = 0) {
+    const MAX_RETRIES = 2;  // Reduced from 3 - fail fast, backup works
+    const RETRY_DELAY = 500; // Reduced from 1000 - faster recovery
+
+    // Add ET timestamp if not provided
+    if (!trade.timestamp_et) {
+        trade.timestamp_et = getETTimestamp();
+    }
+
+    // If no Postgres, backup to file
+    if (!USE_POSTGRES || !pgPool) {
+        await backupTradeToFile(trade);
+        return;
+    }
+
+    // Ensure schema exists (runs once per process)
+    await ensureLiveTradesSchema();
+
+    try {
         await pgPool.query(`
             INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id, timestamp, timestamp_et, peak_price)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
@@ -887,30 +918,31 @@ export async function saveLiveTrade(trade, retryCount = 0) {
             trade.outcome || null, trade.tx_hash || null, trade.condition_id || null,
             trade.timestamp, trade.timestamp_et, trade.peak_price || null
         ]);
-        
+
         console.log(`[LiveTrade] ✅ Saved: ${trade.type} ${trade.strategy_name} ${trade.crypto} ${trade.side} @ ${trade.price}`);
-        
-        // Update strategy stats
+
+        // Update strategy stats (fire-and-forget, don't block on this)
         if (trade.pnl !== null && trade.pnl !== undefined) {
-            await pgPool.query(`
-                UPDATE live_strategies 
+            pgPool.query(`
+                UPDATE live_strategies
                 SET total_trades = total_trades + 1, total_pnl = total_pnl + $2
                 WHERE strategy_name = $1
-            `, [trade.strategy_name, trade.pnl]);
+            `, [trade.strategy_name, trade.pnl]).catch(() => {});
         }
     } catch (error) {
-        console.error(`[LiveTrade] ❌ Save failed (attempt ${retryCount + 1}/${MAX_RETRIES}):`, error.message);
-        
-        // Retry with exponential backoff
-        if (retryCount < MAX_RETRIES - 1) {
+        // Only retry on connection errors, not query errors
+        const isConnectionError = error.message.includes('timeout') ||
+                                  error.message.includes('connect') ||
+                                  error.message.includes('ECONNREFUSED');
+
+        if (isConnectionError && retryCount < MAX_RETRIES - 1) {
             const delay = RETRY_DELAY * Math.pow(2, retryCount);
-            console.log(`[LiveTrade] Retrying in ${delay}ms...`);
             await new Promise(r => setTimeout(r, delay));
             return saveLiveTrade(trade, retryCount + 1);
         }
-        
-        // All retries failed - backup to file
-        console.error('[LiveTrade] All retries failed, backing up to file');
+
+        // Backup to file on failure
+        console.error(`[LiveTrade] Save failed: ${error.message.slice(0, 50)}`);
         await backupTradeToFile(trade);
     }
 }
@@ -1572,86 +1604,99 @@ export async function getLatencyStats(options = {}) {
 }
 
 /**
- * Save resolution snapshot
+ * Save resolution snapshot (fire-and-forget, non-critical)
+ * Uses a short timeout to avoid blocking the trading loop
  */
 export async function saveResolutionSnapshot(snapshot) {
     if (!USE_POSTGRES || !pgPool) return;
 
+    // Use Promise.race with timeout to avoid blocking
+    const TIMEOUT_MS = 3000;
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('snapshot save timeout')), TIMEOUT_MS)
+    );
+
+    const queryPromise = pgPool.query(`
+        INSERT INTO resolution_snapshots (
+            timestamp_ms, crypto, window_epoch, seconds_to_resolution,
+            binance_price, chainlink_price, chainlink_staleness,
+            up_bid, up_ask, up_mid, down_bid, down_ask,
+            binance_chainlink_divergence, binance_chainlink_divergence_pct,
+            price_to_beat, binance_implies, chainlink_implies, market_implies,
+            is_divergence_opportunity
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        ON CONFLICT (crypto, window_epoch, seconds_to_resolution) DO UPDATE SET
+            binance_price = EXCLUDED.binance_price,
+            chainlink_price = EXCLUDED.chainlink_price,
+            chainlink_staleness = EXCLUDED.chainlink_staleness,
+            up_bid = EXCLUDED.up_bid,
+            up_ask = EXCLUDED.up_ask,
+            up_mid = EXCLUDED.up_mid,
+            is_divergence_opportunity = EXCLUDED.is_divergence_opportunity
+    `, [
+        snapshot.timestampMs,
+        snapshot.crypto,
+        snapshot.windowEpoch,
+        snapshot.secondsToResolution,
+        snapshot.binancePrice,
+        snapshot.chainlinkPrice,
+        snapshot.chainlinkStaleness,
+        snapshot.upBid,
+        snapshot.upAsk,
+        snapshot.upMid,
+        snapshot.downBid,
+        snapshot.downAsk,
+        snapshot.binanceChainlinkDivergence,
+        snapshot.binanceChainlinkDivergencePct,
+        snapshot.priceToBeat,
+        snapshot.binanceImplies,
+        snapshot.chainlinkImplies,
+        snapshot.marketImplies,
+        snapshot.isDivergenceOpportunity || false
+    ]);
+
     try {
-        await pgPool.query(`
-            INSERT INTO resolution_snapshots (
-                timestamp_ms, crypto, window_epoch, seconds_to_resolution,
-                binance_price, chainlink_price, chainlink_staleness,
-                up_bid, up_ask, up_mid, down_bid, down_ask,
-                binance_chainlink_divergence, binance_chainlink_divergence_pct,
-                price_to_beat, binance_implies, chainlink_implies, market_implies,
-                is_divergence_opportunity
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-            ON CONFLICT (crypto, window_epoch, seconds_to_resolution) DO UPDATE SET
-                binance_price = EXCLUDED.binance_price,
-                chainlink_price = EXCLUDED.chainlink_price,
-                chainlink_staleness = EXCLUDED.chainlink_staleness,
-                up_bid = EXCLUDED.up_bid,
-                up_ask = EXCLUDED.up_ask,
-                up_mid = EXCLUDED.up_mid,
-                is_divergence_opportunity = EXCLUDED.is_divergence_opportunity
-        `, [
-            snapshot.timestampMs,
-            snapshot.crypto,
-            snapshot.windowEpoch,
-            snapshot.secondsToResolution,
-            snapshot.binancePrice,
-            snapshot.chainlinkPrice,
-            snapshot.chainlinkStaleness,
-            snapshot.upBid,
-            snapshot.upAsk,
-            snapshot.upMid,
-            snapshot.downBid,
-            snapshot.downAsk,
-            snapshot.binanceChainlinkDivergence,
-            snapshot.binanceChainlinkDivergencePct,
-            snapshot.priceToBeat,
-            snapshot.binanceImplies,
-            snapshot.chainlinkImplies,
-            snapshot.marketImplies,
-            snapshot.isDivergenceOpportunity || false
-        ]);
+        await Promise.race([queryPromise, timeoutPromise]);
     } catch (error) {
-        // Ignore duplicate key errors (expected on upsert)
-        if (!error.message.includes('duplicate key')) {
-            console.error('Failed to save resolution snapshot:', error.message);
-        }
+        // Silent fail - resolution snapshots are non-critical analytics data
+        // Don't spam logs with timeout messages
     }
 }
 
 /**
- * Save resolution outcome
+ * Save resolution outcome (fire-and-forget, non-critical)
+ * Uses a short timeout to avoid blocking the trading loop
  */
 export async function saveResolutionOutcome(outcome) {
     if (!USE_POSTGRES || !pgPool) return;
 
-    try {
-        await pgPool.query(`
-            INSERT INTO resolution_outcomes (
-                crypto, window_epoch,
-                final_binance, final_chainlink, final_pyth, final_market_up_mid, price_to_beat,
-                binance_predicted, chainlink_predicted, pyth_predicted, market_predicted,
-                actual_outcome,
-                chainlink_was_stale, chainlink_staleness_at_resolution, pyth_staleness_at_resolution,
-                had_divergence_opportunity, divergence_magnitude, binance_pyth_divergence,
-                binance_was_correct, chainlink_was_correct, pyth_was_correct, market_was_correct
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
-            ON CONFLICT (crypto, window_epoch) DO UPDATE SET
-                actual_outcome = EXCLUDED.actual_outcome,
-                final_pyth = EXCLUDED.final_pyth,
-                pyth_predicted = EXCLUDED.pyth_predicted,
-                pyth_staleness_at_resolution = EXCLUDED.pyth_staleness_at_resolution,
-                binance_pyth_divergence = EXCLUDED.binance_pyth_divergence,
-                binance_was_correct = EXCLUDED.binance_was_correct,
-                chainlink_was_correct = EXCLUDED.chainlink_was_correct,
-                pyth_was_correct = EXCLUDED.pyth_was_correct,
-                market_was_correct = EXCLUDED.market_was_correct
-        `, [
+    // Use Promise.race with timeout to avoid blocking
+    const TIMEOUT_MS = 3000;
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('outcome save timeout')), TIMEOUT_MS)
+    );
+
+    const queryPromise = pgPool.query(`
+        INSERT INTO resolution_outcomes (
+            crypto, window_epoch,
+            final_binance, final_chainlink, final_pyth, final_market_up_mid, price_to_beat,
+            binance_predicted, chainlink_predicted, pyth_predicted, market_predicted,
+            actual_outcome,
+            chainlink_was_stale, chainlink_staleness_at_resolution, pyth_staleness_at_resolution,
+            had_divergence_opportunity, divergence_magnitude, binance_pyth_divergence,
+            binance_was_correct, chainlink_was_correct, pyth_was_correct, market_was_correct
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+        ON CONFLICT (crypto, window_epoch) DO UPDATE SET
+            actual_outcome = EXCLUDED.actual_outcome,
+            final_pyth = EXCLUDED.final_pyth,
+            pyth_predicted = EXCLUDED.pyth_predicted,
+            pyth_staleness_at_resolution = EXCLUDED.pyth_staleness_at_resolution,
+            binance_pyth_divergence = EXCLUDED.binance_pyth_divergence,
+            binance_was_correct = EXCLUDED.binance_was_correct,
+            chainlink_was_correct = EXCLUDED.chainlink_was_correct,
+            pyth_was_correct = EXCLUDED.pyth_was_correct,
+            market_was_correct = EXCLUDED.market_was_correct
+    `, [
             outcome.crypto,
             outcome.windowEpoch,
             outcome.finalBinance,
@@ -1675,8 +1720,12 @@ export async function saveResolutionOutcome(outcome) {
             outcome.pythWasCorrect,
             outcome.marketWasCorrect
         ]);
+
+    try {
+        await Promise.race([queryPromise, timeoutPromise]);
     } catch (error) {
-        console.error('Failed to save resolution outcome:', error.message);
+        // Silent fail - resolution outcomes are non-critical analytics data
+        // Don't spam logs with timeout messages
     }
 }
 
