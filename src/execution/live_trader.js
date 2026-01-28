@@ -580,14 +580,34 @@ export class LiveTrader extends EventEmitter {
             }
 
             const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
-            // Reduced buffer from 3 cents to 2 cents to capture more profit
-            const exitPrice = Math.round(Math.max(rawPrice - EXIT_CONFIG.EXIT_PRICE_BUFFER, 0.01) * 100) / 100;
+
+            // DYNAMIC EXIT BUFFER: Use smaller buffer when prices are low to ensure exits work
+            // At low prices (< 30¢), a 2¢ buffer can make order too small to execute
+            // Use 1¢ buffer for prices < 30¢, otherwise 2¢
+            const dynamicBuffer = rawPrice < 0.30 ? 0.01 : EXIT_CONFIG.EXIT_PRICE_BUFFER;
+            const exitPrice = Math.round(Math.max(rawPrice - dynamicBuffer, 0.01) * 100) / 100;
 
             const sharesToSell = position.shares;
             const orderValue = sharesToSell * exitPrice;
 
             // Check minimum order value - Polymarket requires $1 minimum
+            // If we can't exit, try with NO buffer as last resort
             if (orderValue < 1.0) {
+                const noBufferPrice = Math.round(Math.max(rawPrice, 0.01) * 100) / 100;
+                const noBufferValue = sharesToSell * noBufferPrice;
+
+                if (noBufferValue >= 1.0) {
+                    // Try exit with no buffer - worse fill but at least we exit
+                    this.logger.warn(`[LiveTrader] Using no-buffer exit: $${noBufferValue.toFixed(2)} @ ${noBufferPrice.toFixed(2)}`);
+                    const response = await this.client.sell(position.tokenId, sharesToSell, noBufferPrice, 'FOK');
+                    if (response.filled) {
+                        this.logger.log(`[LiveTrader] ✅ NO-BUFFER EXIT FILLED: ${position.strategyName} | ${position.crypto}`);
+                        const positionKey = `${position.strategyName}_${position.crypto}_${position.windowEpoch}`;
+                        delete this.livePositions[positionKey];
+                        return true;
+                    }
+                }
+
                 this.logger.warn(`[LiveTrader] Exit order too small: $${orderValue.toFixed(2)} < $1 minimum - letting ride to expiry`);
 
                 // Mark as abandoned - can't exit, will resolve at expiry

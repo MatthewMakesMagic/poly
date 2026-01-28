@@ -90,8 +90,8 @@ async function runMigrations() {
         // Requires minimum BS edge (2-3%) before entering trades
         // =================================================================
         const toEnable = [
-            // BS EDGE STRATEGIES - all validated with proper edge calculation
-            'SpotLag_ProbEdge',        // Best performer +$47
+            // BS EDGE STRATEGIES - validated with proper edge calculation
+            // DISABLED SpotLag_ProbEdge - bets against market sentiment, lost $2 on Jan 28
             'SpotLag_Trail_V1',        // Safe - 3% min edge
             'SpotLag_Trail_V2',        // 2.5% min edge
             'SpotLag_Trail_V3',        // 2% min edge
@@ -110,6 +110,9 @@ async function runMigrations() {
         const toDisable = [
             // TEST STRATEGY
             'TP_SL_Test',
+
+            // DISABLED Jan 28 2026 - bets against market sentiment, lost money
+            'SpotLag_ProbEdge',     // Entry logic wrong - ignores market probability
 
             // PREVIOUSLY ENABLED CORE - disabled for now
             'SpotLag_TimeAware',    // Needs more testing with BS edge
