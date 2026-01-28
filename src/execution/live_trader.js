@@ -58,7 +58,8 @@ const PositionState = {
 // Global defaults
 const EXIT_CONFIG = {
     // Stop Loss - ALWAYS ACTIVE (safety net)
-    DEFAULT_STOP_LOSS: 0.15,           // Exit if loss >= 15%
+    // Widened to 30% to handle high volatility in binary options (Jan 28 2026)
+    DEFAULT_STOP_LOSS: 0.30,           // Exit if loss >= 30%
 
     // Trailing Take Profit
     DEFAULT_TRAIL_PCT: 0.10,           // Exit when price drops 10% from HWM
@@ -77,46 +78,51 @@ const EXIT_CONFIG = {
 };
 
 // Strategy-specific overrides (optional - defaults work for most)
-// Only specify if strategy needs different behavior
+// All stop losses set to 30% to handle binary option volatility
 const STRATEGY_OVERRIDES = {
     // ═══════════════════════════════════════════════════════════════
     // ENABLED STRATEGIES (explicitly configured)
     // ═══════════════════════════════════════════════════════════════
 
     // SpotLag_ProbEdge - BEST PERFORMER (+$47)
-    'SpotLag_ProbEdge':     { trail: 0.10, stopLoss: 0.15 },
+    'SpotLag_ProbEdge':     { trail: 0.10, stopLoss: 0.30 },
 
     // Endgame - Near-expiry specialist (tighter trailing)
-    'Endgame':              { trail: 0.06, stopLoss: 0.20 },
+    'Endgame':              { trail: 0.06, stopLoss: 0.30 },
 
     // SpotLag_TimeAware - Time-based entry
-    'SpotLag_TimeAware':    { trail: 0.10, stopLoss: 0.15 },
+    'SpotLag_TimeAware':    { trail: 0.10, stopLoss: 0.30 },
 
     // SpotLag_LateOnly - Late window specialist
-    'SpotLag_LateOnly':     { trail: 0.08, stopLoss: 0.15 },
+    'SpotLag_LateOnly':     { trail: 0.08, stopLoss: 0.30 },
 
     // PureProb_Late - Late probability edge
-    'PureProb_Late':        { trail: 0.10, stopLoss: 0.15 },
+    'PureProb_Late':        { trail: 0.10, stopLoss: 0.30 },
+
+    // Trail strategies - need wider stops for BS edge to play out
+    'SpotLag_Trail_V1':     { trail: 0.10, stopLoss: 0.30 },
+    'SpotLag_Trail_V2':     { trail: 0.10, stopLoss: 0.30 },
+    'SpotLag_Trail_V3':     { trail: 0.10, stopLoss: 0.30 },
 
     // ═══════════════════════════════════════════════════════════════
     // OTHER STRATEGIES (may be disabled but keep config)
     // ═══════════════════════════════════════════════════════════════
 
     // Endgame variants
-    'Endgame_Aggressive':   { trail: 0.05, stopLoss: 0.25 },
-    'Endgame_Conservative': { trail: 0.08, stopLoss: 0.18 },
-    'Endgame_Safe':         { trail: 0.04, stopLoss: 0.15 },
-    'Endgame_Momentum':     { trail: 0.06, stopLoss: 0.20 },
+    'Endgame_Aggressive':   { trail: 0.05, stopLoss: 0.30 },
+    'Endgame_Conservative': { trail: 0.08, stopLoss: 0.30 },
+    'Endgame_Safe':         { trail: 0.04, stopLoss: 0.30 },
+    'Endgame_Momentum':     { trail: 0.06, stopLoss: 0.30 },
 
-    // Aggressive strategies - tighter stops
-    'PureProb_Aggressive':  { trail: 0.08, stopLoss: 0.12 },
-    'LagProb_Aggressive':   { trail: 0.08, stopLoss: 0.12 },
-    'SpotLag_TimeAwareAggro': { trail: 0.08, stopLoss: 0.12 },
+    // Aggressive strategies
+    'PureProb_Aggressive':  { trail: 0.08, stopLoss: 0.30 },
+    'LagProb_Aggressive':   { trail: 0.08, stopLoss: 0.30 },
+    'SpotLag_TimeAwareAggro': { trail: 0.08, stopLoss: 0.30 },
 
-    // Conservative strategies - wider stops
-    'PureProb_Conservative': { trail: 0.12, stopLoss: 0.20 },
-    'LagProb_Conservative':  { trail: 0.12, stopLoss: 0.20 },
-    'SpotLag_TimeAwareSafe': { trail: 0.12, stopLoss: 0.20 },
+    // Conservative strategies
+    'PureProb_Conservative': { trail: 0.12, stopLoss: 0.30 },
+    'LagProb_Conservative':  { trail: 0.12, stopLoss: 0.30 },
+    'SpotLag_TimeAwareSafe': { trail: 0.12, stopLoss: 0.30 },
 };
 
 /**
