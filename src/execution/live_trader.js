@@ -24,7 +24,9 @@ const OrderType = { FOK: 'FOK', GTC: 'GTC', GTD: 'GTD' };
 
 // Configuration
 const CONFIG = {
-    POSITION_SIZE: parseFloat(process.env.LIVE_POSITION_SIZE || '1'),
+    // Minimum $2 position size to ensure exits work even at max loss
+    // At 30% stop loss, exit value = $2 * 0.70 = $1.40 > $1 minimum
+    POSITION_SIZE: parseFloat(process.env.LIVE_POSITION_SIZE || '2'),
     ENABLED: process.env.LIVE_TRADING_ENABLED === 'true',
 };
 
@@ -35,68 +37,86 @@ const PositionState = {
     CLOSED: 'closed'
 };
 
-// Take Profit Configuration (defaults)
-const TP_CONFIG = {
-    DEFAULT_ACTIVATION_PCT: 0.15,    // Activate trailing at +15%
-    DEFAULT_TRAIL_PCT: 0.10,         // Trail 10% below HWM
-    DEFAULT_FLOOR_PCT: 0.05,         // Never exit below +5% profit
+// ═══════════════════════════════════════════════════════════════════════════════
+// TAKE PROFIT / STOP LOSS CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// SYSTEM OVERVIEW:
+// 1. FIXED STOP LOSS - Always active, exits at max loss (safety net)
+// 2. AGGRESSIVE LOCK-IN FLOORS - Ratchet up as profit increases, never down
+// 3. TRAILING FROM PEAK - Exit when price drops X% from high water mark
+// 4. CONTINUOUS MONITORING - Every tick, no silent errors, no skipping
+//
+// CHECK ORDER (every tick):
+// 1. Stop Loss: If loss >= stopLoss% → EXIT (always checked first!)
+// 2. Update HWM and peak profit
+// 3. Update profit floor based on peak (ratchets up)
+// 4. Floor Check: If profit dropped below locked floor → EXIT
+// 5. Trailing Check: If price dropped trail% from HWM → EXIT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Global defaults
+const EXIT_CONFIG = {
+    // Stop Loss - ALWAYS ACTIVE (safety net)
+    DEFAULT_STOP_LOSS: 0.15,           // Exit if loss >= 15%
+
+    // Trailing Take Profit
+    DEFAULT_TRAIL_PCT: 0.10,           // Exit when price drops 10% from HWM
+
+    // Aggressive Lock-in Floors (ratchet up, never down)
+    // Format: [profitThreshold, floorToLock]
+    PROFIT_FLOORS: [
+        [0.30, 0.20],  // At +30% profit → lock in +20% minimum
+        [0.20, 0.12],  // At +20% profit → lock in +12% minimum
+        [0.10, 0.05],  // At +10% profit → lock in +5% minimum
+    ],
+
+    // Execution
+    MAX_EXIT_ATTEMPTS: 3,
+    EXIT_PRICE_BUFFER: 0.02,           // 2 cents below bid for fills (reduced from 3)
 };
 
-// Strategy-specific Take Profit settings
-// Format: { activation, trail, floor, fixedTP, trailingSL }
-// - activation: % profit to activate trailing TP
-// - trail: % drop from peak to trigger trailing TP exit
-// - floor: minimum profit to lock in
-// - fixedTP: (optional) fixed take profit % - exit immediately when hit
-// - trailingSL: (optional) trailing stop loss % from HWM
-const TP_STRATEGY_CONFIG = {
-    // TEST STRATEGY - full feature test
-    'TP_SL_Test': {
-        activation: 0.10,    // Trailing TP activates at +10%
-        trail: 0.10,         // Exit when drops 10% from peak
-        floor: 0.03,         // Minimum +3% profit
-        fixedTP: 0.25,       // Fixed TP at +25%
-        trailingSL: 0.10     // Trailing SL: exit if drops 10% from HWM (even in loss)
-    },
+// Strategy-specific overrides (optional - defaults work for most)
+// Only specify if strategy needs different behavior
+const STRATEGY_OVERRIDES = {
+    // ═══════════════════════════════════════════════════════════════
+    // ENABLED STRATEGIES (explicitly configured)
+    // ═══════════════════════════════════════════════════════════════
 
-    // SPOTLAG TRAIL - varies by aggressiveness
-    'SpotLag_Trail_V1': { activation: 0.20, trail: 0.15, floor: 0.08 },  // Safe: higher activation, wider trail
-    'SpotLag_Trail_V2': { activation: 0.15, trail: 0.12, floor: 0.06 },  // Moderate
-    'SpotLag_Trail_V3': { activation: 0.15, trail: 0.10, floor: 0.05 },  // Base
-    'SpotLag_Trail_V4': { activation: 0.12, trail: 0.08, floor: 0.04 },  // Aggressive: tighter trail
+    // SpotLag_ProbEdge - BEST PERFORMER (+$47)
+    'SpotLag_ProbEdge':     { trail: 0.10, stopLoss: 0.15 },
 
-    // PUREPROB - probabilistic strategies
-    'PureProb_Base': { activation: 0.15, trail: 0.10, floor: 0.05 },
-    'PureProb_Conservative': { activation: 0.20, trail: 0.12, floor: 0.08 },  // More patient
-    'PureProb_Aggressive': { activation: 0.10, trail: 0.08, floor: 0.03 },    // Quick profits
-    'PureProb_Late': { activation: 0.12, trail: 0.08, floor: 0.04 },          // Late window, tighter
+    // Endgame - Near-expiry specialist (tighter trailing)
+    'Endgame':              { trail: 0.06, stopLoss: 0.20 },
 
-    // LAGPROB - lag + probabilistic
-    'LagProb_Base': { activation: 0.15, trail: 0.10, floor: 0.05 },
-    'LagProb_Conservative': { activation: 0.20, trail: 0.12, floor: 0.08 },
-    'LagProb_Aggressive': { activation: 0.10, trail: 0.08, floor: 0.03 },
-    'LagProb_RightSide': { activation: 0.15, trail: 0.10, floor: 0.05 },
+    // SpotLag_TimeAware - Time-based entry
+    'SpotLag_TimeAware':    { trail: 0.10, stopLoss: 0.15 },
 
-    // TIMEAWARE - time-based strategies
-    'SpotLag_TimeAware': { activation: 0.15, trail: 0.10, floor: 0.05 },
-    'SpotLag_TimeAwareAggro': { activation: 0.10, trail: 0.08, floor: 0.03 },
-    'SpotLag_TimeAwareSafe': { activation: 0.20, trail: 0.12, floor: 0.08 },
-    'SpotLag_TimeAwareTP': { activation: 0.12, trail: 0.08, floor: 0.04 },   // Built for TP
-    'SpotLag_LateOnly': { activation: 0.12, trail: 0.08, floor: 0.04 },      // Late window
-    'SpotLag_ProbEdge': { activation: 0.15, trail: 0.10, floor: 0.05 },
+    // SpotLag_LateOnly - Late window specialist
+    'SpotLag_LateOnly':     { trail: 0.08, stopLoss: 0.15 },
 
-    // ENDGAME - near-expiry, hold longer
-    'Endgame': { activation: 0.08, trail: 0.05, floor: 0.02 },               // Very tight - near expiry
-    'Endgame_Aggressive': { activation: 0.06, trail: 0.04, floor: 0.02 },
-    'Endgame_Conservative': { activation: 0.10, trail: 0.06, floor: 0.03 },
-    'Endgame_Safe': { activation: 0.05, trail: 0.03, floor: 0.01 },          // Tightest - very near expiry
-    'Endgame_Momentum': { activation: 0.08, trail: 0.05, floor: 0.02 },
-};
+    // PureProb_Late - Late probability edge
+    'PureProb_Late':        { trail: 0.10, stopLoss: 0.15 },
 
-// Stop Loss Configuration
-const SL_CONFIG = {
-    DEFAULT_STOP_LOSS: 0.15,         // Default 15% stop loss
-    MAX_EXIT_ATTEMPTS: 3,            // Retry failed exits
+    // ═══════════════════════════════════════════════════════════════
+    // OTHER STRATEGIES (may be disabled but keep config)
+    // ═══════════════════════════════════════════════════════════════
+
+    // Endgame variants
+    'Endgame_Aggressive':   { trail: 0.05, stopLoss: 0.25 },
+    'Endgame_Conservative': { trail: 0.08, stopLoss: 0.18 },
+    'Endgame_Safe':         { trail: 0.04, stopLoss: 0.15 },
+    'Endgame_Momentum':     { trail: 0.06, stopLoss: 0.20 },
+
+    // Aggressive strategies - tighter stops
+    'PureProb_Aggressive':  { trail: 0.08, stopLoss: 0.12 },
+    'LagProb_Aggressive':   { trail: 0.08, stopLoss: 0.12 },
+    'SpotLag_TimeAwareAggro': { trail: 0.08, stopLoss: 0.12 },
+
+    // Conservative strategies - wider stops
+    'PureProb_Conservative': { trail: 0.12, stopLoss: 0.20 },
+    'LagProb_Conservative':  { trail: 0.12, stopLoss: 0.20 },
+    'SpotLag_TimeAwareSafe': { trail: 0.12, stopLoss: 0.20 },
 };
 
 /**
@@ -140,6 +160,10 @@ export class LiveTrader extends EventEmitter {
         // Pending entries: positionKey -> timestamp
         // Prevents race condition where multiple signals try to enter same position simultaneously
         this.pendingEntries = new Map();
+
+        // Monitoring failure tracking - triggers kill switch if too many consecutive failures
+        this.monitoringFailures = new Map(); // crypto -> failure count
+        this.MAX_MONITORING_FAILURES = 10;   // Kill switch after 10 consecutive failures per crypto
 
         // Stats
         this.stats = {
@@ -275,7 +299,15 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Monitor live positions for STOP LOSS and TAKE PROFIT
-     * This is critical because strategies only see PAPER positions, not LIVE ones
+     *
+     * CRITICAL: This runs on EVERY tick. No silent errors. No skipping.
+     *
+     * CHECK ORDER:
+     * 1. STOP LOSS - Always first (safety net, catches gaps)
+     * 2. Update HWM and peak profit tracking
+     * 3. Update profit floor (ratchets up based on peak)
+     * 4. FLOOR CHECK - Exit if dropped below locked floor
+     * 5. TRAILING CHECK - Exit if price dropped X% from peak
      */
     async monitorPositions(tick, market) {
         if (!this.isRunning || this.killSwitchActive) return;
@@ -296,157 +328,164 @@ export class LiveTrader extends EventEmitter {
             // Calculate current price and PnL
             const currentPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
             const entryPrice = position.entryPrice;
+
+            // Validate price data
+            if (!currentPrice || currentPrice <= 0 || !entryPrice || entryPrice <= 0) {
+                this.logger.error(`[LiveTrader] ⚠️ INVALID PRICE DATA: ${positionKey} | current=${currentPrice} entry=${entryPrice}`);
+                continue;
+            }
+
             const pnlPct = (currentPrice - entryPrice) / entryPrice;
 
             // Initialize tracking fields if not present
             if (!position.highWaterMark) position.highWaterMark = entryPrice;
+            if (!position.peakPnlPct) position.peakPnlPct = 0;
+            if (!position.profitFloor) position.profitFloor = 0;
             if (!position.state) position.state = PositionState.OPEN;
             if (!position.ticksMonitored) position.ticksMonitored = 0;
             position.ticksMonitored++;
 
+            // Get strategy-specific config
+            const strategyConfig = STRATEGY_OVERRIDES[position.strategyName] || {};
+            const stopLossThreshold = strategyConfig.stopLoss || EXIT_CONFIG.DEFAULT_STOP_LOSS;
+            const trailPct = strategyConfig.trail || EXIT_CONFIG.DEFAULT_TRAIL_PCT;
+
             // ═══════════════════════════════════════════════════════════════
-            // TAKE PROFIT LOGIC (check first - we prefer taking profit!)
-            // Strategy-specific activation, trail, and floor percentages
+            // 1. STOP LOSS - ALWAYS CHECK FIRST (safety net, catches gaps)
             // ═══════════════════════════════════════════════════════════════
-
-            // Get strategy-specific TP config
-            const tpConfig = this.getTakeProfitConfig(position.strategyName);
-
-            // Update high water mark (always track, used by trailing SL too)
-            if (currentPrice > position.highWaterMark) {
-                const oldHWM = position.highWaterMark;
-                position.highWaterMark = currentPrice;
-                position.peakPnlPct = pnlPct;
-                this.logger.log(`[LiveTrader] 📈 NEW HWM: ${position.strategyName} | ${crypto} ${position.tokenSide} | ${oldHWM.toFixed(3)} → ${currentPrice.toFixed(3)} | Peak: +${(pnlPct * 100).toFixed(1)}%`);
-            }
-
-            // ─────────────────────────────────────────────────────────────────
-            // 1. FIXED TAKE PROFIT - exit immediately if profit exceeds threshold
-            // ─────────────────────────────────────────────────────────────────
-            if (tpConfig.fixedTP && pnlPct >= tpConfig.fixedTP) {
-                this.logger.log(`[LiveTrader] 🎯 FIXED TP HIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}% >= +${(tpConfig.fixedTP * 100).toFixed(0)}%`);
+            if (pnlPct <= -stopLossThreshold) {
+                this.logger.log(`[LiveTrader] 🛑 STOP LOSS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Loss: ${(pnlPct * 100).toFixed(1)}% <= -${(stopLossThreshold * 100).toFixed(0)}%`);
 
                 position.state = PositionState.EXITING;
-                position.exitReason = 'fixed_take_profit';
+                position.exitReason = 'stop_loss';
 
-                const exitResult = await this.executeExitDirect(position, tick, market, 'fixed_take_profit');
+                const exitResult = await this.executeExitDirect(position, tick, market, 'stop_loss');
                 if (exitResult) {
                     delete this.livePositions[positionKey];
-                    this.logger.log(`[LiveTrader] ✅ FIXED TP EXIT COMPLETE: ${positionKey}`);
+                    this.logger.log(`[LiveTrader] ✅ STOP LOSS EXIT COMPLETE: ${positionKey}`);
                 } else {
                     position.state = PositionState.OPEN;
                     position.exitAttempts = (position.exitAttempts || 0) + 1;
-                    if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
+                    if (position.exitAttempts >= EXIT_CONFIG.MAX_EXIT_ATTEMPTS) {
+                        this.logger.error(`[LiveTrader] ❌ GIVING UP on stop loss for ${positionKey} after ${EXIT_CONFIG.MAX_EXIT_ATTEMPTS} attempts`);
+                        await this.saveAbandonedPosition(position, tick, 'stop_loss_failed');
                         delete this.livePositions[positionKey];
                     }
                 }
                 continue;
             }
 
-            // ─────────────────────────────────────────────────────────────────
-            // 2. TRAILING TAKE PROFIT - activate at threshold, exit on pullback
-            // ─────────────────────────────────────────────────────────────────
-
-            // Check if trailing should activate (strategy-specific threshold)
-            if (!position.trailingActive && pnlPct >= tpConfig.activation) {
-                position.trailingActive = true;
-                position.trailingActivatedAt = currentPrice;
-                this.logger.log(`[LiveTrader] 🎯 TRAILING TP ACTIVATED: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Profit: +${(pnlPct * 100).toFixed(1)}% (threshold: ${(tpConfig.activation * 100)}%)`);
+            // ═══════════════════════════════════════════════════════════════
+            // 2. UPDATE HIGH WATER MARK AND PEAK PROFIT
+            // ═══════════════════════════════════════════════════════════════
+            if (currentPrice > position.highWaterMark) {
+                const oldHWM = position.highWaterMark;
+                position.highWaterMark = currentPrice;
+                position.peakPnlPct = pnlPct;
+                this.logger.log(`[LiveTrader] 📈 NEW PEAK: ${position.strategyName} | ${crypto} ${position.tokenSide} | Price: ${oldHWM.toFixed(3)} → ${currentPrice.toFixed(3)} | Peak P&L: +${(pnlPct * 100).toFixed(1)}%`);
             }
 
-            // Execute trailing stop if active (strategy-specific trail and floor)
-            if (position.trailingActive) {
-                const trailingStopPrice = position.highWaterMark * (1 - tpConfig.trail);
-                const profitFloorPrice = entryPrice * (1 + tpConfig.floor);
-                const effectiveStopPrice = Math.max(trailingStopPrice, profitFloorPrice);
-
-                if (currentPrice <= effectiveStopPrice) {
-                    const capturedPnlPct = (currentPrice - entryPrice) / entryPrice;
-                    const peakCaptured = position.peakPnlPct > 0 ? (capturedPnlPct / position.peakPnlPct * 100) : 100;
-
-                    this.logger.log(`[LiveTrader] 💰 TRAILING TP: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Exit: ${currentPrice.toFixed(3)} | Captured: ${peakCaptured.toFixed(0)}% of peak (+${(capturedPnlPct * 100).toFixed(1)}%)`);
-
-                    // Mark as exiting to prevent duplicate triggers
-                    position.state = PositionState.EXITING;
-                    position.exitReason = 'trailing_stop';
-
-                    const exitResult = await this.executeExitDirect(position, tick, market, 'trailing_stop');
-
-                    if (exitResult) {
-                        delete this.livePositions[positionKey];
-                        this.logger.log(`[LiveTrader] ✅ TRAILING TP EXIT COMPLETE: ${positionKey}`);
-                    } else {
-                        // Reset state to try again
-                        position.state = PositionState.OPEN;
-                        position.exitAttempts = (position.exitAttempts || 0) + 1;
-                        if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
-                            this.logger.error(`[LiveTrader] ❌ GIVING UP on trailing TP exit for ${positionKey}`);
-                            delete this.livePositions[positionKey];
-                        }
-                    }
-                    continue; // Move to next position
-                }
-            }
-
-            // ─────────────────────────────────────────────────────────────────
-            // 3. TRAILING STOP LOSS - exit if price drops X% from HWM (even in loss)
-            // ─────────────────────────────────────────────────────────────────
-            if (tpConfig.trailingSL) {
-                const trailingSLPrice = position.highWaterMark * (1 - tpConfig.trailingSL);
-                const hwmPnlPct = (position.highWaterMark - entryPrice) / entryPrice;
-
-                if (currentPrice <= trailingSLPrice && !position.trailingActive) {
-                    // Only trigger if trailing TP not already active (TP takes priority)
-                    const dropFromHWM = (position.highWaterMark - currentPrice) / position.highWaterMark;
-
-                    this.logger.log(`[LiveTrader] 📉 TRAILING SL: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | HWM: ${position.highWaterMark.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Drop: -${(dropFromHWM * 100).toFixed(1)}% from HWM | P&L: ${(pnlPct * 100).toFixed(1)}%`);
-
-                    position.state = PositionState.EXITING;
-                    position.exitReason = 'trailing_stop_loss';
-
-                    const exitResult = await this.executeExitDirect(position, tick, market, 'trailing_stop_loss');
-                    if (exitResult) {
-                        delete this.livePositions[positionKey];
-                        this.logger.log(`[LiveTrader] ✅ TRAILING SL EXIT COMPLETE: ${positionKey}`);
-                    } else {
-                        position.state = PositionState.OPEN;
-                        position.exitAttempts = (position.exitAttempts || 0) + 1;
-                        if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
-                            delete this.livePositions[positionKey];
-                        }
-                    }
-                    continue;
+            // ═══════════════════════════════════════════════════════════════
+            // 3. UPDATE PROFIT FLOOR (Aggressive Lock-in - ratchets up, never down)
+            // ═══════════════════════════════════════════════════════════════
+            for (const [threshold, floor] of EXIT_CONFIG.PROFIT_FLOORS) {
+                if (position.peakPnlPct >= threshold && position.profitFloor < floor) {
+                    const oldFloor = position.profitFloor;
+                    position.profitFloor = floor;
+                    this.logger.log(`[LiveTrader] 🔒 FLOOR LOCKED: ${position.strategyName} | ${crypto} ${position.tokenSide} | Peak: +${(position.peakPnlPct * 100).toFixed(1)}% | Floor: +${(oldFloor * 100).toFixed(0)}% → +${(floor * 100).toFixed(0)}%`);
                 }
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // STOP LOSS LOGIC
+            // 4. FLOOR CHECK - Exit if dropped below locked profit floor
             // ═══════════════════════════════════════════════════════════════
+            if (position.profitFloor > 0 && pnlPct <= position.profitFloor) {
+                this.logger.log(`[LiveTrader] 💰 FLOOR EXIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | P&L: +${(pnlPct * 100).toFixed(1)}% hit floor +${(position.profitFloor * 100).toFixed(0)}%`);
 
-            const stopLossThreshold = this.getStopLossThreshold(position.strategyName);
-
-            if (pnlPct < -stopLossThreshold) {
-                this.logger.log(`[LiveTrader] 🛑 STOP LOSS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Loss: ${(pnlPct * 100).toFixed(1)}% < -${(stopLossThreshold * 100).toFixed(0)}%`);
-
-                // Mark as exiting to prevent duplicate triggers
                 position.state = PositionState.EXITING;
-                position.exitReason = 'stop_loss';
+                position.exitReason = `profit_floor_${(position.profitFloor * 100).toFixed(0)}pct`;
 
-                const exitResult = await this.executeExitDirect(position, tick, market, 'stop_loss');
-
+                const exitResult = await this.executeExitDirect(position, tick, market, position.exitReason);
                 if (exitResult) {
                     delete this.livePositions[positionKey];
-                    this.logger.log(`[LiveTrader] ✅ STOP LOSS EXIT COMPLETE: ${positionKey}`);
+                    this.logger.log(`[LiveTrader] ✅ FLOOR EXIT COMPLETE: ${positionKey} | Locked in +${(position.profitFloor * 100).toFixed(0)}% minimum`);
                 } else {
-                    // Reset state to try again
                     position.state = PositionState.OPEN;
                     position.exitAttempts = (position.exitAttempts || 0) + 1;
-                    if (position.exitAttempts >= SL_CONFIG.MAX_EXIT_ATTEMPTS) {
-                        this.logger.error(`[LiveTrader] ❌ GIVING UP on stop loss exit for ${positionKey}`);
+                    if (position.exitAttempts >= EXIT_CONFIG.MAX_EXIT_ATTEMPTS) {
+                        this.logger.error(`[LiveTrader] ❌ GIVING UP on floor exit for ${positionKey}`);
+                        await this.saveAbandonedPosition(position, tick, 'floor_exit_failed');
                         delete this.livePositions[positionKey];
                     }
                 }
+                continue;
             }
+
+            // ═══════════════════════════════════════════════════════════════
+            // 5. TRAILING CHECK - Exit if price dropped X% from peak
+            // ═══════════════════════════════════════════════════════════════
+            const dropFromPeak = (position.highWaterMark - currentPrice) / position.highWaterMark;
+
+            if (dropFromPeak >= trailPct && pnlPct > position.profitFloor) {
+                // Only trail-exit if we're still above the floor (floor takes priority)
+                const capturedPct = position.peakPnlPct > 0 ? (pnlPct / position.peakPnlPct * 100) : 100;
+
+                this.logger.log(`[LiveTrader] 📉 TRAILING EXIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Drop: -${(dropFromPeak * 100).toFixed(1)}% from peak | Captured: ${capturedPct.toFixed(0)}% of peak (+${(pnlPct * 100).toFixed(1)}%)`);
+
+                position.state = PositionState.EXITING;
+                position.exitReason = 'trailing_exit';
+
+                const exitResult = await this.executeExitDirect(position, tick, market, 'trailing_exit');
+                if (exitResult) {
+                    delete this.livePositions[positionKey];
+                    this.logger.log(`[LiveTrader] ✅ TRAILING EXIT COMPLETE: ${positionKey}`);
+                } else {
+                    position.state = PositionState.OPEN;
+                    position.exitAttempts = (position.exitAttempts || 0) + 1;
+                    if (position.exitAttempts >= EXIT_CONFIG.MAX_EXIT_ATTEMPTS) {
+                        this.logger.error(`[LiveTrader] ❌ GIVING UP on trailing exit for ${positionKey}`);
+                        await this.saveAbandonedPosition(position, tick, 'trailing_exit_failed');
+                        delete this.livePositions[positionKey];
+                    }
+                }
+                continue;
+            }
+
+            // Log periodic status for debugging (every 60 ticks = ~1 minute)
+            if (position.ticksMonitored % 60 === 0) {
+                this.logger.log(`[LiveTrader] 📊 STATUS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | P&L: ${(pnlPct * 100).toFixed(1)}% | Peak: +${(position.peakPnlPct * 100).toFixed(1)}% | Floor: +${(position.profitFloor * 100).toFixed(0)}% | Ticks: ${position.ticksMonitored}`);
+            }
+        }
+
+        // Reset monitoring failure count on successful run
+        this.monitoringFailures.delete(crypto);
+    }
+
+    /**
+     * Save abandoned position to database for tracking
+     * Called when we give up on exit after MAX_EXIT_ATTEMPTS
+     * The position still exists on Polymarket but we can't exit it
+     */
+    async saveAbandonedPosition(position, tick, reason) {
+        try {
+            await saveLiveTrade({
+                type: 'abandoned',
+                strategy_name: position.strategyName,
+                crypto: position.crypto,
+                side: position.tokenSide.toLowerCase(),
+                window_epoch: position.windowEpoch,
+                price: tick ? (position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid) : null,
+                size: position.size,
+                spot_price: tick?.spot_price,
+                time_remaining: tick?.time_remaining_sec,
+                reason: reason,
+                entry_price: position.entryPrice,
+                pnl: null, // Unknown - position still open on Polymarket
+                timestamp: new Date().toISOString()
+            });
+            this.logger.error(`[LiveTrader] ⚠️ ABANDONED POSITION SAVED: ${position.strategyName} | ${position.crypto} | Reason: ${reason}`);
+        } catch (e) {
+            this.logger.error(`[LiveTrader] ❌ FAILED TO SAVE ABANDONED POSITION: ${e.message}`);
         }
     }
 
@@ -455,17 +494,28 @@ export class LiveTrader extends EventEmitter {
      */
     async executeExitDirect(position, tick, market, reason) {
         try {
-            const EXIT_BUFFER = 0.03;
             const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
-            const exitPrice = Math.round(Math.max(rawPrice - EXIT_BUFFER, 0.01) * 100) / 100;
+            // Reduced buffer from 3 cents to 2 cents to capture more profit
+            const exitPrice = Math.round(Math.max(rawPrice - EXIT_CONFIG.EXIT_PRICE_BUFFER, 0.01) * 100) / 100;
 
             const sharesToSell = position.shares;
             const orderValue = sharesToSell * exitPrice;
 
-            // Check minimum order value
+            // Check minimum order value - Polymarket requires $1 minimum
             if (orderValue < 1.0) {
-                this.logger.warn(`[LiveTrader] Exit order too small: $${orderValue.toFixed(2)} < $1 minimum`);
-                return false;
+                this.logger.warn(`[LiveTrader] Exit order too small: $${orderValue.toFixed(2)} < $1 minimum - letting ride to expiry`);
+
+                // Mark as abandoned - can't exit, will resolve at expiry
+                await this.saveAbandonedPosition(position, 'exit_too_small', {
+                    orderValue,
+                    exitPrice,
+                    sharesToSell,
+                    message: 'Position too small to exit, will resolve at expiry'
+                });
+
+                // Remove from active monitoring - it will resolve naturally
+                delete this.livePositions[position.strategyName]?.[position.crypto];
+                return true;  // Return true so we don't retry forever
             }
 
             this.stats.ordersPlaced++;
@@ -540,64 +590,27 @@ export class LiveTrader extends EventEmitter {
      */
     /**
      * Get stop loss threshold for a strategy
+     * Uses new EXIT_CONFIG and STRATEGY_OVERRIDES
      */
     getStopLossThreshold(strategyName) {
-        const thresholds = {
-            // TEST STRATEGY
-            'TP_SL_Test': 0.15,
-
-            // SPOTLAG TRAIL
-            'SpotLag_Trail_V1': 0.40,  // Safe: 40% stop
-            'SpotLag_Trail_V2': 0.30,  // Moderate: 30% stop
-            'SpotLag_Trail_V3': 0.25,  // Base: 25% stop
-            'SpotLag_Trail_V4': 0.20,  // Aggressive: 20% stop
-
-            // PUREPROB
-            'PureProb_Base': 0.25,
-            'PureProb_Conservative': 0.20,
-            'PureProb_Aggressive': 0.30,
-            'PureProb_Late': 0.25,
-
-            // LAGPROB
-            'LagProb_Base': 0.25,
-            'LagProb_Conservative': 0.20,
-            'LagProb_Aggressive': 0.30,
-            'LagProb_RightSide': 0.25,
-
-            // TIMEAWARE
-            'SpotLag_TimeAware': 0.25,
-            'SpotLag_TimeAwareAggro': 0.20,
-            'SpotLag_TimeAwareSafe': 0.30,
-            'SpotLag_TimeAwareTP': 0.25,
-            'SpotLag_LateOnly': 0.25,
-            'SpotLag_ProbEdge': 0.25,
-
-            // ENDGAME - wider stops, hold to expiry
-            'Endgame': 0.30,
-            'Endgame_Aggressive': 0.35,
-            'Endgame_Conservative': 0.25,
-            'Endgame_Safe': 0.20,
-            'Endgame_Momentum': 0.30,
-        };
-
-        return thresholds[strategyName] || SL_CONFIG.DEFAULT_STOP_LOSS;
+        const override = STRATEGY_OVERRIDES[strategyName];
+        return override?.stopLoss || EXIT_CONFIG.DEFAULT_STOP_LOSS;
     }
 
     /**
-     * Get take profit config for a strategy
-     * Returns { activation, trail, floor }
+     * Get trailing % for a strategy
+     * Uses new EXIT_CONFIG and STRATEGY_OVERRIDES
      */
-    getTakeProfitConfig(strategyName) {
-        const config = TP_STRATEGY_CONFIG[strategyName];
-        if (config) {
-            return config;
-        }
-        // Default config
-        return {
-            activation: TP_CONFIG.DEFAULT_ACTIVATION_PCT,
-            trail: TP_CONFIG.DEFAULT_TRAIL_PCT,
-            floor: TP_CONFIG.DEFAULT_FLOOR_PCT
-        };
+    getTrailPercent(strategyName) {
+        const override = STRATEGY_OVERRIDES[strategyName];
+        return override?.trail || EXIT_CONFIG.DEFAULT_TRAIL_PCT;
+    }
+
+    /**
+     * Get current profit floors config
+     */
+    getProfitFloors() {
+        return EXIT_CONFIG.PROFIT_FLOORS;
     }
 
     /**
@@ -693,27 +706,37 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Calculate minimum viable position size
-     * Polymarket requires minimum $1 order VALUE (shares * price >= $1)
+     *
+     * CRITICAL: Polymarket requires minimum $1 order VALUE for both ENTRY and EXIT.
+     * If we enter at $1 and the position drops 30% (stop loss), exit value = $0.70 < $1 = REJECTED!
+     *
+     * Solution: Entry must be large enough that even at maximum loss, exit still >= $1
+     * With 30% emergency stop: entry * 0.70 >= $1, so entry >= $1.43
+     * With buffer for slippage: minimum $2 entry
      */
     calculateMinimumSize(price, requestedSize) {
-        const MIN_ORDER_VALUE = 1.0;  // $1 minimum order value
-        
+        // Minimum entry to ensure exits work even at max loss
+        // Emergency stop = 30%, so worst case exit = entry * 0.70
+        // For exit >= $1: entry >= $1 / 0.70 = $1.43
+        // Add buffer for slippage/spread: $2.00 minimum
+        const MIN_ENTRY_VALUE = 2.0;
+
         // Calculate shares for requested size
         const requestedShares = requestedSize / price;
         const requestedValue = requestedShares * price;
-        
-        // If requested value is already >= $1, use it
-        if (requestedValue >= MIN_ORDER_VALUE) {
+
+        // If requested value is already >= minimum, use it
+        if (requestedValue >= MIN_ENTRY_VALUE) {
             return requestedSize;
         }
-        
-        // Otherwise, calculate minimum size to hit $1 value
-        // shares * price >= $1, so shares >= 1/price
-        const minShares = Math.ceil(MIN_ORDER_VALUE / price);
+
+        // Otherwise, calculate minimum size to ensure exits work
+        // shares * price >= $2, so shares >= 2/price
+        const minShares = Math.ceil(MIN_ENTRY_VALUE / price);
         const actualSize = minShares * price;
-        
-        this.logger.log(`[LiveTrader] Adjusted size: $${requestedSize} → $${actualSize.toFixed(2)} (min $1 value requires ${minShares} shares at $${price.toFixed(2)})`);
-        
+
+        this.logger.log(`[LiveTrader] Adjusted size: $${requestedSize.toFixed(2)} → $${actualSize.toFixed(2)} (min $2 entry ensures $1 exit at 50% loss, ${minShares} shares at $${price.toFixed(2)})`);
+
         return actualSize;
     }
     
@@ -731,7 +754,41 @@ export class LiveTrader extends EventEmitter {
             this.logger.warn(`[LiveTrader] SKIPPING: ${crypto} tick is ${(tickAge/1000).toFixed(1)}s stale (max ${MAX_TICK_AGE_MS/1000}s)`);
             return null;
         }
-        
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL SAFETY CHECK 1: MINIMUM ENTRY PRICE
+        // Don't buy tokens priced below 5 cents - they're near-certain losers
+        // A 1 cent token means the market thinks there's only 1% chance of that outcome
+        // ═══════════════════════════════════════════════════════════════════════════
+        const MIN_ENTRY_PRICE = 0.05;  // 5 cents = 5% probability minimum
+        const tokenSideCheck = signal.side === 'up' ? 'UP' : 'DOWN';
+        const rawPriceCheck = tokenSideCheck === 'UP' ? tick.up_ask : tick.down_ask;
+
+        if (rawPriceCheck < MIN_ENTRY_PRICE) {
+            this.logger.warn(`[LiveTrader] ⛔ BLOCKED LOW PRICE: ${strategyName} | ${crypto} ${tokenSideCheck} at ${(rawPriceCheck * 100).toFixed(1)}¢ < ${MIN_ENTRY_PRICE * 100}¢ minimum`);
+            return null;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL SAFETY CHECK 2: GLOBAL PER-CRYPTO EXPOSURE LIMIT
+        // Prevents multiple strategies from stacking positions on the same crypto
+        // Maximum $5 total exposure per crypto per window (across ALL strategies)
+        // ═══════════════════════════════════════════════════════════════════════════
+        const MAX_EXPOSURE_PER_CRYPTO = 5.0;  // Maximum $5 per crypto per window
+
+        // Calculate current exposure for this crypto in this window
+        let currentCryptoExposure = 0;
+        for (const [key, pos] of Object.entries(this.livePositions)) {
+            if (pos.crypto === crypto && pos.windowEpoch === windowEpoch) {
+                currentCryptoExposure += pos.size || 0;
+            }
+        }
+
+        if (currentCryptoExposure >= MAX_EXPOSURE_PER_CRYPTO) {
+            this.logger.warn(`[LiveTrader] ⛔ BLOCKED EXPOSURE LIMIT: ${strategyName} | ${crypto} already has $${currentCryptoExposure.toFixed(2)} exposure (max $${MAX_EXPOSURE_PER_CRYPTO})`);
+            return null;
+        }
+
         // Determine token side and price first
         const tokenSide = signal.side === 'up' ? 'UP' : 'DOWN';
         const tokenId = tokenSide === 'UP' ? market.upTokenId : market.downTokenId;
@@ -754,9 +811,23 @@ export class LiveTrader extends EventEmitter {
         const MAX_POSITION_SIZE = 15;  // Max $15 per trade for safety
 
         // Use signal.size (scaled) if provided, otherwise use default
-        const requestedSize = signal.size && signal.size > 0
+        let requestedSize = signal.size && signal.size > 0
             ? Math.min(signal.size * SCALE_FACTOR, MAX_POSITION_SIZE)
             : this.options.positionSize;
+
+        // Cap requested size to stay within per-crypto exposure limit
+        const remainingExposure = MAX_EXPOSURE_PER_CRYPTO - currentCryptoExposure;
+        if (requestedSize > remainingExposure) {
+            this.logger.log(`[LiveTrader] Capping size from $${requestedSize.toFixed(2)} to $${remainingExposure.toFixed(2)} (exposure limit)`);
+            requestedSize = remainingExposure;
+        }
+
+        // If remaining exposure is too small for a viable trade, skip
+        const MIN_VIABLE_TRADE = 2.0;  // Minimum $2 to ensure exits work
+        if (requestedSize < MIN_VIABLE_TRADE) {
+            this.logger.warn(`[LiveTrader] ⛔ BLOCKED INSUFFICIENT ROOM: ${strategyName} | ${crypto} only $${remainingExposure.toFixed(2)} room (need $${MIN_VIABLE_TRADE})`);
+            return null;
+        }
 
         // Calculate actual position size (ensure minimum 5 shares for Polymarket)
         const actualSize = this.calculateMinimumSize(entryPrice, requestedSize);

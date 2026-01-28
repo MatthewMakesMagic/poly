@@ -50,12 +50,21 @@ export class EndgameStrategy {
     }
     
     onTick(tick, position = null, context = {}) {
-        const marketProb = tick.up_mid || 0.5;
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // Bug discovered Jan 27 2026: Defaulting caused blind trading at wrong prices
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', {
+                up_mid: tick.up_mid
+            });
+        }
+        const marketProb = tick.up_mid;
         const timeRemaining = tick.time_remaining_sec || 0;
         const spotPrice = tick.spot_price;
         const priceToBeat = tick.price_to_beat || spotPrice;
         const spread = tick.spread_pct / 100 || 0.02;
-        
+
         // Calculate which side is the favorite
         const upIsFavorite = marketProb > 0.5;
         const favoriteProb = upIsFavorite ? marketProb : (1 - marketProb);

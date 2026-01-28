@@ -2505,7 +2505,9 @@ export class SpotLag_TimeAwareStrategy {
         this.name = options.name || 'SpotLag_TimeAware';
         this.options = {
             // Spot movement thresholds (as % of spot price)
-            spotMoveThreshold: 0.0008,  // 0.08% minimum spot move
+            // Jan 2026: Lowered thresholds - BTC at $88k means 0.08% = $70 which is too high
+            // Realistic 15-min moves: $15-30 = 0.02-0.03%
+            spotMoveThreshold: 0.0002,  // 0.02% minimum spot move (~$17 for BTC)
 
             // Market lag detection
             lookbackTicks: 8,
@@ -2515,9 +2517,10 @@ export class SpotLag_TimeAwareStrategy {
             // Early window (>5min): need larger spot displacement for entry
             // Mid window (2-5min): standard thresholds
             // Late window (<2min): tighter spreads, smaller edges OK
-            earlyWindowMinSpotDelta: 0.15,    // Need 0.15% spot delta when >5min left
-            midWindowMinSpotDelta: 0.10,      // Need 0.10% spot delta when 2-5min left
-            lateWindowMinSpotDelta: 0.05,     // Need 0.05% spot delta when <2min left
+            // Jan 2026: Lowered all thresholds for higher BTC prices
+            earlyWindowMinSpotDelta: 0.04,    // Need 0.04% spot delta when >5min left (~$35)
+            midWindowMinSpotDelta: 0.025,     // Need 0.025% spot delta when 2-5min left (~$22)
+            lateWindowMinSpotDelta: 0.015,    // Need 0.015% spot delta when <2min left (~$13)
 
             // Time cutoffs
             earlyWindowThreshold: 300,   // >5 min = early
@@ -2704,14 +2707,27 @@ export class SpotLag_TimeAwareStrategy {
 
         // Determine trade side based on spot position
         const side = spotDeltaPct > 0 ? 'up' : 'down';
-        const marketProb = tick.up_mid || 0.5;
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', {
+                up_mid: tick.up_mid
+            });
+        }
+        const marketProb = tick.up_mid;
 
         // Avoid fighting strong consensus
+        // Don't buy UP if market already >92% UP
         if (side === 'up' && marketProb > this.options.maxMarketProb) {
             return this.createSignal('hold', null, 'market_already_high', { marketProb });
         }
-        if (side === 'down' && marketProb < this.options.minMarketProb) {
-            return this.createSignal('hold', null, 'market_already_low', { marketProb });
+        // Don't buy DOWN if market already <8% DOWN (i.e., UP > 92%)
+        // BUG FIX: Was checking marketProb < minMarketProb which never triggered
+        const downProb = 1 - marketProb;
+        if (side === 'down' && downProb < this.options.minMarketProb) {
+            return this.createSignal('hold', null, 'market_already_low', { marketProb, downProb });
         }
 
         // UNDERDOG CONVICTION CHECK
@@ -2869,8 +2885,9 @@ export class SpotLag_LateWindowOnlyStrategy extends SpotLag_TimeAwareStrategy {
             lateWindowThreshold: 120,
             minTimeRemaining: 30,
             earlyWindowMinSpotDelta: 999,  // Effectively disable early entries
-            midWindowMinSpotDelta: 0.08,
-            lateWindowMinSpotDelta: 0.04,
+            // Jan 2026: Lowered thresholds for higher BTC prices
+            midWindowMinSpotDelta: 0.02,    // 0.02% (~$17 for BTC)
+            lateWindowMinSpotDelta: 0.01,   // 0.01% (~$9 for BTC)
             ...options
         });
     }
@@ -2892,21 +2909,24 @@ export class SpotLag_ProbabilityEdgeStrategy {
         this.name = options.name || 'SpotLag_ProbEdge';
         this.options = {
             // Expected probabilities by time bucket when spot is displaced
-            // Based on actual data analysis
+            // RECALIBRATED Jan 27 2026 - MUCH MORE CONSERVATIVE
+            // Previous values (80-91%) were WAY too aggressive
+            // Markets are efficient - our edge should be small, not massive
             expectedProbByTime: {
                 // Time remaining (sec) -> expected prob when spot is 0.2%+ above strike
-                600: 0.80,  // 10min left: should be ~80%
-                300: 0.85,  // 5min left: should be ~85%
-                120: 0.89,  // 2min left: should be ~89%
-                60: 0.90,   // 1min left: should be ~90%
-                30: 0.91    // 30s left: should be ~91%
+                600: 0.52,  // 10min left: basically no edge - spot can reverse many times
+                300: 0.53,  // 5min left: tiny edge
+                120: 0.55,  // 2min left: small edge
+                60: 0.58,   // 1min left: modest edge
+                30: 0.62    // 30s left: decent edge (but not overwhelming)
             },
 
             // Minimum edge required to trade
-            minEdge: 0.05,  // Market must be at least 5% below expected
+            minEdge: 0.03,  // Market must be at least 3% below expected
 
             // Spot displacement threshold to consider
-            minSpotDeltaPct: 0.10,  // Need at least 0.1% spot displacement
+            // Jan 2026: Lowered from 0.10% ($88 for BTC) to 0.02% (~$17)
+            minSpotDeltaPct: 0.02,  // Need at least 0.02% spot displacement
 
             maxPosition: 100,
             minTimeRemaining: 30,
@@ -2939,25 +2959,16 @@ export class SpotLag_ProbabilityEdgeStrategy {
         return this.state[crypto];
     }
 
-    getExpectedProb(timeRemainingSec, spotDeltaPct) {
-        // Interpolate expected probability based on time and spot delta
-        const times = Object.keys(this.options.expectedProbByTime).map(Number).sort((a, b) => b - a);
+    getExpectedProb(timeRemainingSec, spotDeltaPct, crypto = 'btc') {
+        // ═══════════════════════════════════════════════════════════════════════════
+        // BLACK-SCHOLES BASED PROBABILITY (Jan 27 2026)
+        // Uses N(d2) formula - the mathematically correct approach for binary options
+        // This replaces the ad-hoc lookup table which was incorrectly calibrated
+        // ═══════════════════════════════════════════════════════════════════════════
 
-        // Find bracketing times
-        let expectedProb = 0.5;
-        for (let i = 0; i < times.length; i++) {
-            if (timeRemainingSec >= times[i]) {
-                expectedProb = this.options.expectedProbByTime[times[i]];
-                break;
-            }
-            expectedProb = this.options.expectedProbByTime[times[i]];
-        }
-
-        // Adjust for spot delta magnitude (larger delta = higher confidence)
-        const deltaMultiplier = Math.min(Math.abs(spotDeltaPct) / 0.2, 1.5);  // Cap at 1.5x
-        const adjusted = 0.5 + (expectedProb - 0.5) * deltaMultiplier;
-
-        return Math.min(0.95, Math.max(0.05, adjusted));  // Clamp to [0.05, 0.95]
+        // Use the global Black-Scholes function
+        // This returns P(spot > strike at expiry) which is P(UP wins)
+        return calculateExpectedProbability(spotDeltaPct, timeRemainingSec, crypto);
     }
 
     onTick(tick, position = null, context = {}) {
@@ -3056,25 +3067,68 @@ export class SpotLag_ProbabilityEdgeStrategy {
             return this.createSignal('hold', null, 'spot_not_displaced');
         }
 
-        const marketProb = tick.up_mid || 0.5;
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data - NEVER default to 0.5!
+        // Bug discovered Jan 27 2026: When up_mid was missing, defaulting to 0.5
+        // caused model to think market was at 50% while executing at real 1 cent price
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price_data', {
+                up_mid: tick.up_mid,
+                reason: 'Price data missing or at extreme (<=1% or >=99%)'
+            });
+        }
+        const marketProb = tick.up_mid;
         const side = spotDeltaPct > 0 ? 'up' : 'down';
+        const sideProb = side === 'up' ? marketProb : (1 - marketProb);
 
-        // Calculate expected probability
-        const expectedProb = this.getExpectedProb(timeRemaining, spotDeltaPct);
+        // PROBABILITY FLOOR: Don't bet on unlikely outcomes (< 15%)
+        // Raised from 8% after 1 cent trade disaster (Jan 27 2026)
+        // If market prices something at <15%, they know something we don't
+        const MIN_SIDE_PROB = 0.15;
+        if (sideProb < MIN_SIDE_PROB) {
+            return this.createSignal('hold', null, 'probability_too_low', {
+                side,
+                sideProb: (sideProb * 100).toFixed(1) + '%',
+                minRequired: (MIN_SIDE_PROB * 100) + '%'
+            });
+        }
 
-        // Determine edge
+        // Calculate expected probability using Black-Scholes N(d2)
+        // This returns P(UP wins) - the probability spot finishes above strike
+        const expectedProb = this.getExpectedProb(timeRemaining, spotDeltaPct, crypto);
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // EDGE CALCULATION - Fixed Jan 27 2026
+        // For UP: edge = expected_UP - market_UP = expectedProb - marketProb
+        // For DOWN: edge = expected_DOWN - market_DOWN = (1-expectedProb) - (1-marketProb) = marketProb - expectedProb
+        // ═══════════════════════════════════════════════════════════════════════════
         let edge;
+        let expectedSideProb;
         if (side === 'up') {
+            expectedSideProb = expectedProb;
             edge = expectedProb - marketProb;  // Positive = market underpricing UP
         } else {
-            edge = marketProb - (1 - expectedProb);  // Positive = market underpricing DOWN
+            expectedSideProb = 1 - expectedProb;  // Expected DOWN probability
+            edge = (1 - expectedProb) - (1 - marketProb);  // = marketProb - expectedProb
+        }
+
+        // MARKET DISAGREEMENT CHECK - If we disagree with market by >25%, trust the market
+        const MAX_DISAGREEMENT = 0.25;
+        if (Math.abs(expectedSideProb - sideProb) > MAX_DISAGREEMENT) {
+            return this.createSignal('hold', null, 'market_disagreement', {
+                side,
+                expected: (expectedSideProb * 100).toFixed(1) + '%',
+                market: (sideProb * 100).toFixed(1) + '%',
+                disagreement: (Math.abs(expectedSideProb - sideProb) * 100).toFixed(1) + '%'
+            });
         }
 
         if (edge < this.options.minEdge) {
             return this.createSignal('hold', null, 'insufficient_edge', {
                 edge: (edge * 100).toFixed(1) + '%',
-                expected: (expectedProb * 100).toFixed(1) + '%',
-                market: (marketProb * 100).toFixed(1) + '%'
+                expected: (expectedSideProb * 100).toFixed(1) + '%',
+                market: (sideProb * 100).toFixed(1) + '%'
             });
         }
 
@@ -3596,55 +3650,145 @@ export function createMicroLagConvergenceSafe(capital = 100) {
 }
 
 // =============================================================================
-// PROBABILITY MODEL UTILITIES (Jan 2026)
-// Used by both PureProb and enhanced Lag strategies for sizing and entry
+// PROBABILITY MODEL UTILITIES - BLACK-SCHOLES BASED (Jan 27 2026)
+//
+// Proper quant model using N(d2) from Black-Scholes for binary option pricing.
+// This calculates the risk-neutral probability that spot > strike at expiry.
+//
+// Formula: P(spot > strike) = N(d2)
+// Where:  d2 = ln(S/K) / (σ * √T)  [simplified for r ≈ 0 on short timeframes]
+//
+// References:
+// - https://www.codearmo.com/python-tutorial/binary-options-and-implied-distributions
+// - https://en.wikipedia.org/wiki/Black%E2%80%93Scholes_model
 // =============================================================================
 
 /**
- * Calculate expected probability given spot displacement and time remaining
- * Based on empirical data: closer to expiry + larger displacement = more certain outcome
+ * Cumulative Normal Distribution Function (CDF)
+ * Approximation using Abramowitz and Stegun formula 26.2.17
+ * Accurate to 1.5×10⁻⁷
+ */
+function normalCDF(x) {
+    const a1 =  0.254829592;
+    const a2 = -0.284496736;
+    const a3 =  1.421413741;
+    const a4 = -1.453152027;
+    const a5 =  1.061405429;
+    const p  =  0.3275911;
+
+    // Save the sign of x
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x);
+
+    // A&S formula 26.2.17
+    const t = 1.0 / (1.0 + p * x);
+    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+
+    return 0.5 * (1.0 + sign * y);
+}
+
+/**
+ * Annualized volatility estimates per crypto (as of Jan 2026)
+ * These should ideally be calculated from rolling realized volatility,
+ * but fixed estimates work as a baseline.
+ *
+ * Source: Historical 30-day realized volatility from major exchanges
+ */
+const CRYPTO_VOLATILITY = {
+    btc: 0.50,   // Bitcoin: ~50% annualized (relatively stable for crypto)
+    eth: 0.65,   // Ethereum: ~65% annualized
+    sol: 0.85,   // Solana: ~85% annualized (more volatile)
+    xrp: 0.75,   // XRP: ~75% annualized
+    default: 0.70  // Default assumption for unknown cryptos
+};
+
+/**
+ * Calculate d2 parameter for Black-Scholes binary option pricing
  *
  * @param {number} spotDeltaPct - Spot displacement from strike as percentage (e.g., 0.15 = 0.15%)
- * @param {number} timeRemainingSec - Seconds remaining in window
- * @returns {number} Expected probability [0.5, 0.95]
+ * @param {number} timeRemainingSec - Seconds remaining until expiry
+ * @param {number} sigma - Annualized volatility (e.g., 0.50 for 50%)
+ * @returns {number} d2 value for use in normal CDF
  */
-function calculateExpectedProbability(spotDeltaPct, timeRemainingSec) {
-    // Base expected probabilities by time bucket
-    // CONSERVATIVE calibration: early window = weak signal, late window = strong signal
-    // These assume spot is displaced ~0.2% from strike
-    const baseProbs = {
-        600: 0.55,  // 10min left: barely better than 50% - spot can easily reverse
-        300: 0.58,  // 5min left: slight edge
-        180: 0.62,  // 3min left: moderate edge
-        120: 0.68,  // 2min left: decent edge
-        60: 0.78,   // 1min left: good edge - spot movement more predictive
-        30: 0.85,   // 30s left: strong edge
-        15: 0.90,   // 15s left: very strong
-        5: 0.95     // 5s left: near certain
+function calculateD2(spotDeltaPct, timeRemainingSec, sigma) {
+    // Convert spot delta percentage to S/K ratio
+    // spotDeltaPct = ((S - K) / K) * 100, so S/K = 1 + spotDeltaPct/100
+    const spotRatio = 1 + (spotDeltaPct / 100);
+
+    // Convert time to years (for annualized volatility)
+    const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+    const T = Math.max(timeRemainingSec, 1) / SECONDS_PER_YEAR;  // Minimum 1 second to avoid division by zero
+
+    // d2 = ln(S/K) / (σ * √T)
+    // Note: For short timeframes, r*T ≈ 0 and σ²T/2 ≈ 0, so we use simplified formula
+    const sqrtT = Math.sqrt(T);
+    const d2 = Math.log(spotRatio) / (sigma * sqrtT);
+
+    return d2;
+}
+
+/**
+ * Calculate expected probability using Black-Scholes N(d2)
+ *
+ * This gives the theoretical probability that spot > strike at expiry,
+ * assuming a geometric Brownian motion (random walk with drift = 0).
+ *
+ * @param {number} spotDeltaPct - Spot displacement from strike as percentage
+ * @param {number} timeRemainingSec - Seconds remaining in window
+ * @param {string} crypto - Crypto symbol (btc, eth, sol, xrp) for volatility lookup
+ * @returns {number} Expected probability [0, 1]
+ */
+function calculateExpectedProbability(spotDeltaPct, timeRemainingSec, crypto = 'btc') {
+    // Get volatility for this crypto
+    const sigma = CRYPTO_VOLATILITY[crypto?.toLowerCase()] || CRYPTO_VOLATILITY.default;
+
+    // Calculate d2
+    const d2 = calculateD2(spotDeltaPct, timeRemainingSec, sigma);
+
+    // P(spot > strike at expiry) = N(d2)
+    const probAboveStrike = normalCDF(d2);
+
+    // If spotDeltaPct > 0, we're calculating P(UP wins) directly
+    // If spotDeltaPct < 0, we're calculating P(spot > strike) which is P(UP wins)
+    // The caller determines which side to bet on based on spotDeltaPct sign
+
+    return probAboveStrike;
+}
+
+/**
+ * Calculate the theoretical edge given spot position, time, and market price
+ *
+ * Edge = |Theoretical Probability - Market Probability|
+ *
+ * A positive edge means the market is underpricing the indicated side.
+ *
+ * @param {number} spotDeltaPct - Spot displacement from strike (%)
+ * @param {number} timeRemainingSec - Seconds remaining
+ * @param {number} marketProb - Market's probability for UP (from order book)
+ * @param {string} crypto - Crypto symbol for volatility
+ * @returns {Object} { theoreticalProb, marketSideProb, edge, side }
+ */
+function calculateTheoreticalEdge(spotDeltaPct, timeRemainingSec, marketProb, crypto = 'btc') {
+    // Determine which side spot is indicating
+    const side = spotDeltaPct > 0 ? 'up' : 'down';
+
+    // Calculate theoretical P(UP wins) using Black-Scholes
+    const theoreticalUpProb = calculateExpectedProbability(spotDeltaPct, timeRemainingSec, crypto);
+
+    // Get probabilities for the side we're considering
+    const theoreticalSideProb = side === 'up' ? theoreticalUpProb : (1 - theoreticalUpProb);
+    const marketSideProb = side === 'up' ? marketProb : (1 - marketProb);
+
+    // Edge = theoretical - market (positive = market underpricing our side)
+    const edge = theoreticalSideProb - marketSideProb;
+
+    return {
+        theoreticalUpProb,
+        theoreticalSideProb,
+        marketSideProb,
+        edge,
+        side
     };
-
-    // Interpolate base probability by time
-    const times = Object.keys(baseProbs).map(Number).sort((a, b) => b - a);
-    let baseProb = 0.52;  // Default for very early (>10min): almost no edge
-    for (const t of times) {
-        if (timeRemainingSec <= t) {
-            baseProb = baseProbs[t];
-        }
-    }
-
-    // Adjust for displacement magnitude (larger delta = higher confidence)
-    // But scale this effect by time too - large delta matters more late in window
-    const absDelta = Math.abs(spotDeltaPct);
-    const timeWeight = Math.min(timeRemainingSec / 60, 1);  // 0-1 scale, maxes at 1min
-    const deltaMultiplier = 0.7 + (absDelta / 0.2) * (0.3 + 0.7 * (1 - timeWeight));
-    // Early: delta has small effect (0.7 to 1.0 range)
-    // Late: delta has large effect (0.7 to 1.7 range)
-
-    // Apply multiplier to edge over 50%
-    const adjusted = 0.5 + (baseProb - 0.5) * Math.min(deltaMultiplier, 1.5);
-
-    // Clamp to reasonable range
-    return Math.min(0.95, Math.max(0.50, adjusted));
 }
 
 /**
@@ -3696,16 +3840,17 @@ export class PureProb_BaseStrategy {
         this.name = options.name || 'PureProb_Base';
         this.options = {
             // Entry thresholds
-            minEdge: 0.05,              // Minimum 5% edge to trade
-            minSpotDeltaPct: 0.05,      // Minimum 0.05% spot displacement from strike
+            minEdge: 0.03,              // Minimum 3% edge to trade
+            // Jan 2026: Lowered from 0.05% ($44 for BTC) to 0.02% (~$17)
+            minSpotDeltaPct: 0.02,      // Minimum 0.02% spot displacement from strike
 
             // Time constraints
             minTimeRemaining: 30,       // Don't enter in final 30s
             maxTimeRemaining: 600,      // Don't enter too early (before 10min mark)
 
-            // Liquidity guards
-            minProbability: 0.05,       // Don't trade below 5 cents
-            maxProbability: 0.95,       // Don't trade above 95 cents
+            // Liquidity guards - RAISED Jan 27 2026 after 1 cent trade disaster
+            minProbability: 0.15,       // Don't trade below 15 cents (market knows something)
+            maxProbability: 0.85,       // Don't trade above 85 cents (too expensive)
             minLiquidity: 50,           // Minimum $50 liquidity on our side
 
             // Position sizing - $2 minimum in production to allow stop loss exits
@@ -3745,9 +3890,21 @@ export class PureProb_BaseStrategy {
         const state = this.initCrypto(crypto);
         const timeRemaining = tick.time_remaining_sec || 0;
         const windowEpoch = tick.window_epoch;
-        const marketProb = tick.up_mid || 0.5;
         const strike = tick.price_to_beat;
         const spotPrice = tick.spot_price;
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CRITICAL: Validate price data exists - DO NOT DEFAULT TO 0.5!
+        // The old code defaulted to 0.5 if up_mid was missing, which caused trades
+        // to execute at 1 cent while the model thought it was 50 cents.
+        // ═══════════════════════════════════════════════════════════════════════════
+        if (!tick.up_mid || tick.up_mid <= 0 || tick.up_mid >= 1) {
+            return this.createSignal('hold', null, 'invalid_price_data', this.options.basePosition, {
+                up_mid: tick.up_mid,
+                reason: 'up_mid missing or invalid'
+            });
+        }
+        const marketProb = tick.up_mid;
 
         // Position management with stop loss
         if (position) {
@@ -3799,12 +3956,29 @@ export class PureProb_BaseStrategy {
             return this.createSignal('hold', null, 'probability_bounds', this.options.basePosition);
         }
 
-        // Calculate expected probability
-        const expectedProb = calculateExpectedProbability(spotDeltaPct, timeRemaining);
-        const expectedSideProb = side === 'up' ? expectedProb : expectedProb;  // Same for the side we're betting
+        // ═══════════════════════════════════════════════════════════════════════════
+        // BLACK-SCHOLES PROBABILITY MODEL (Jan 27 2026)
+        // Uses N(d2) to calculate theoretical probability that spot > strike at expiry
+        // This is the mathematically correct approach for binary options
+        // ═══════════════════════════════════════════════════════════════════════════
 
-        // Calculate edge
-        const edge = expectedSideProb - sideProb;
+        // Calculate theoretical edge using Black-Scholes N(d2)
+        const edgeCalc = calculateTheoreticalEdge(spotDeltaPct, timeRemaining, marketProb, crypto);
+        const expectedSideProb = edgeCalc.theoreticalSideProb;
+        const edge = edgeCalc.edge;
+
+        // SANITY CHECK: If edge is unrealistically large (>15%), something is wrong
+        // Either our volatility estimate is off, or there's market microstructure we don't understand
+        const MAX_REALISTIC_EDGE = 0.15;  // 15% max edge - beyond this, trust the market
+        if (edge > MAX_REALISTIC_EDGE) {
+            return this.createSignal('hold', null, 'edge_too_large_suspicious', this.options.basePosition, {
+                edge: (edge * 100).toFixed(1) + '%',
+                expected: (expectedSideProb * 100).toFixed(1) + '%',
+                market: (sideProb * 100).toFixed(1) + '%',
+                maxRealistic: (MAX_REALISTIC_EDGE * 100) + '%',
+                reason: 'Edge > 15% is suspicious - market likely knows something we dont'
+            });
+        }
 
         if (edge < this.options.minEdge) {
             return this.createSignal('hold', null, 'insufficient_edge', this.options.basePosition, {
@@ -3906,8 +4080,9 @@ export class PureProb_LateStrategy extends PureProb_BaseStrategy {
     constructor(options = {}) {
         super({
             name: 'PureProb_Late',
-            minEdge: 0.04,              // Lower edge OK when late
-            minSpotDeltaPct: 0.05,
+            minEdge: 0.03,              // Lower edge OK when late
+            // Jan 2026: Lowered from 0.05% ($44 for BTC) to 0.015% (~$13)
+            minSpotDeltaPct: 0.015,
             minTimeRemaining: 15,       // Can enter very late
             maxTimeRemaining: 120,      // Only last 2 min
             stopLoss: 0.20,

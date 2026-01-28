@@ -79,25 +79,13 @@ async function runMigrations() {
         await initDatabase();
         
         // =================================================================
-        // PRODUCTION MODE - TP/SL validated Jan 2026
-        // All strategies now have trailing take profit protection
+        // PRODUCTION MODE - MINIMAL RISK Jan 27 2026
+        // ONLY ONE STRATEGY after catastrophic duplicate exposure failure
+        // Added safety: $5 max per crypto, 5 cent min entry price
         // =================================================================
         const toEnable = [
-            // SPOTLAG TIME-AWARE - core strategies
-            'SpotLag_TimeAware', 'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe',
-            'SpotLag_TimeAwareTP', 'SpotLag_LateOnly', 'SpotLag_ProbEdge',
-
-            // SPOTLAG TRAIL - V1-V4 (V5 removed - too aggressive)
-            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4',
-
-            // PUREPROB - probability edge strategies
-            'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive', 'PureProb_Late',
-
-            // LAGPROB - lag + probability
-            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
-
-            // ENDGAME - near-expiry strategies
-            'Endgame', 'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
+            // SINGLE STRATEGY ONLY - best performer, minimal risk
+            'SpotLag_ProbEdge',    // Best performer +$47
         ];
 
         for (const strat of toEnable) {
@@ -106,14 +94,24 @@ async function runMigrations() {
         }
 
         // =================================================================
-        // DISABLED STRATEGIES
+        // DISABLED STRATEGIES - All others disabled for risk reduction
         // =================================================================
         const toDisable = [
-            // TEST STRATEGY - disable after validation
+            // TEST STRATEGY
             'TP_SL_Test',
 
-            // V5 too aggressive - consistently losing
-            'SpotLag_Trail_V5',
+            // PREVIOUSLY ENABLED CORE - now disabled after catastrophic failure
+            'Endgame',              // Disabled until exposure limits tested
+            'SpotLag_TimeAware',    // Disabled until exposure limits tested
+            'SpotLag_LateOnly',     // Disabled until exposure limits tested
+            'PureProb_Late',        // Disabled until exposure limits tested
+
+            // PREVIOUSLY ENABLED - now disabled for risk reduction
+            'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe', 'SpotLag_TimeAwareTP',
+            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4', 'SpotLag_Trail_V5',
+            'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive',
+            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
+            'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
 
             // OLD/DEPRECATED STRATEGIES
             'MicroLag_Convergence', 'MicroLag_Convergence_Aggro', 'MicroLag_Convergence_Safe',
