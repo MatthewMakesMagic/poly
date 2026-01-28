@@ -79,13 +79,18 @@ async function runMigrations() {
         await initDatabase();
         
         // =================================================================
-        // PRODUCTION MODE - MINIMAL RISK Jan 27 2026
-        // ONLY ONE STRATEGY after catastrophic duplicate exposure failure
-        // Added safety: $5 max per crypto, 5 cent min entry price
+        // PRODUCTION MODE - BLACK-SCHOLES EDGE STRATEGIES Jan 28 2026
+        // All strategies now use N(d2) probabilistic model for edge calculation
+        // Requires minimum BS edge (2-3%) before entering trades
         // =================================================================
         const toEnable = [
-            // SINGLE STRATEGY ONLY - best performer, minimal risk
-            'SpotLag_ProbEdge',    // Best performer +$47
+            // BS EDGE STRATEGIES - all validated with proper edge calculation
+            'SpotLag_ProbEdge',        // Best performer +$47
+            'SpotLag_Trail_V1',        // Safe - 3% min edge
+            'SpotLag_Trail_V2',        // 2.5% min edge
+            'SpotLag_Trail_V3',        // 2% min edge
+            'Endgame',                 // High conviction end-of-window
+            'Endgame_Conservative',    // Conservative endgame
         ];
 
         for (const strat of toEnable) {
@@ -100,18 +105,17 @@ async function runMigrations() {
             // TEST STRATEGY
             'TP_SL_Test',
 
-            // PREVIOUSLY ENABLED CORE - now disabled after catastrophic failure
-            'Endgame',              // Disabled until exposure limits tested
-            'SpotLag_TimeAware',    // Disabled until exposure limits tested
-            'SpotLag_LateOnly',     // Disabled until exposure limits tested
-            'PureProb_Late',        // Disabled until exposure limits tested
+            // PREVIOUSLY ENABLED CORE - disabled for now
+            'SpotLag_TimeAware',    // Needs more testing with BS edge
+            'SpotLag_LateOnly',     // Needs more testing
+            'PureProb_Late',        // Needs more testing
 
-            // PREVIOUSLY ENABLED - now disabled for risk reduction
+            // DISABLED - need BS edge validation first
             'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe', 'SpotLag_TimeAwareTP',
-            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3', 'SpotLag_Trail_V4', 'SpotLag_Trail_V5',
+            'SpotLag_Trail_V4', 'SpotLag_Trail_V5',  // V4/V5 more aggressive, enable later
             'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive',
             'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
-            'Endgame_Aggressive', 'Endgame_Conservative', 'Endgame_Safe', 'Endgame_Momentum',
+            'Endgame_Aggressive', 'Endgame_Safe', 'Endgame_Momentum',
 
             // OLD/DEPRECATED STRATEGIES
             'MicroLag_Convergence', 'MicroLag_Convergence_Aggro', 'MicroLag_Convergence_Safe',
