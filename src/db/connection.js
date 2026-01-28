@@ -748,6 +748,40 @@ export async function setLiveStrategyEnabled(strategyName, enabled) {
 }
 
 /**
+ * Get open positions (entries without corresponding exits)
+ * CRITICAL: Used to restore positions after restart
+ */
+export async function getOpenPositions() {
+    if (!USE_POSTGRES || !pgPool) {
+        return [];
+    }
+
+    try {
+        // Find entries that don't have a corresponding exit in the same window
+        const result = await pgPool.query(`
+            SELECT DISTINCT ON (e.strategy_name, e.crypto, e.window_epoch)
+                e.strategy_name, e.crypto, e.window_epoch, e.side, e.price, e.size, e.timestamp
+            FROM live_trades e
+            WHERE e.type = 'entry'
+            AND NOT EXISTS (
+                SELECT 1 FROM live_trades x
+                WHERE x.strategy_name = e.strategy_name
+                AND x.crypto = e.crypto
+                AND x.window_epoch = e.window_epoch
+                AND x.type IN ('exit', 'abandoned')
+            )
+            AND e.window_epoch >= (EXTRACT(EPOCH FROM NOW())::bigint / 900 * 900 - 900)
+            ORDER BY e.strategy_name, e.crypto, e.window_epoch, e.timestamp DESC
+        `);
+
+        return result.rows;
+    } catch (error) {
+        console.error('Failed to get open positions:', error.message);
+        return [];
+    }
+}
+
+/**
  * Get timestamp in Eastern Time (ET) to match Polymarket display
  */
 function getETTimestamp() {
@@ -1915,6 +1949,7 @@ export default {
     getLiveTrades,
     getStrategyPerformanceStats,
     getRunningPnL,
+    getOpenPositions,
     // OracleOverseer & Resolution
     initOracleResolutionTables,
     saveLagEvent,

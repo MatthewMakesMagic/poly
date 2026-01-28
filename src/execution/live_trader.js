@@ -225,6 +225,10 @@ export class LiveTrader extends EventEmitter {
             // Load enabled strategies from database
             await this.loadEnabledStrategies();
 
+            // CRITICAL: Restore any open positions from database
+            // This prevents orphaned positions after restart/deployment
+            await this.restoreOpenPositions();
+
             // Link SDK client to claim service and start it
             this.claimService.setSDKClient(this.client);
             this.claimService.start();
@@ -256,7 +260,57 @@ export class LiveTrader extends EventEmitter {
             this.enabledStrategies = new Set();
         }
     }
-    
+
+    /**
+     * CRITICAL: Restore open positions from database on startup
+     * This prevents orphaned positions after restarts/deployments
+     */
+    async restoreOpenPositions() {
+        try {
+            const { getOpenPositions } = await import('../db/connection.js');
+            const openPositions = await getOpenPositions();
+
+            if (!openPositions || openPositions.length === 0) {
+                this.logger.log('[LiveTrader] No open positions to restore');
+                return;
+            }
+
+            this.logger.log(`[LiveTrader] 🔄 RESTORING ${openPositions.length} OPEN POSITIONS...`);
+
+            for (const pos of openPositions) {
+                const positionKey = `${pos.strategy_name}_${pos.crypto}_${pos.window_epoch}`;
+
+                // Only restore if position is from current or recent window
+                const now = Math.floor(Date.now() / 1000);
+                const currentEpoch = Math.floor(now / 900) * 900;
+                const posAge = currentEpoch - pos.window_epoch;
+
+                if (posAge > 900) { // Older than one window (15 min)
+                    this.logger.log(`[LiveTrader] ⏭️ Skipping old position: ${positionKey} (age: ${posAge}s)`);
+                    continue;
+                }
+
+                this.livePositions[positionKey] = {
+                    strategyName: pos.strategy_name,
+                    crypto: pos.crypto,
+                    windowEpoch: pos.window_epoch,
+                    tokenSide: pos.side?.toUpperCase(),
+                    entryPrice: pos.price,
+                    entryTime: new Date(pos.timestamp).getTime(),
+                    size: pos.size || 2,
+                    shares: Math.ceil((pos.size || 2) / pos.price),
+                    restored: true  // Mark as restored for debugging
+                };
+
+                this.logger.log(`[LiveTrader] ✅ Restored: ${positionKey} | ${pos.side?.toUpperCase()} @ ${pos.price?.toFixed(3)}`);
+            }
+
+            this.logger.log(`[LiveTrader] 🔄 Restoration complete: ${Object.keys(this.livePositions).length} active positions`);
+        } catch (error) {
+            this.logger.error('[LiveTrader] Failed to restore positions:', error.message);
+        }
+    }
+
     /**
      * Enable a strategy for live trading
      */
