@@ -231,9 +231,9 @@ export class LiveTrader extends EventEmitter {
 
             this.isRunning = true;
             this.logger.log('[LiveTrader] Initialized successfully');
-            this.logger.log(`[LiveTrader] Position size: $${this.options.positionSize}`);
-            this.logger.log(`[LiveTrader] Enabled strategies: ${this.enabledStrategies.size > 0 ? Array.from(this.enabledStrategies).join(', ') : 'NONE'}`);
-            this.logger.log(`[LiveTrader] Auto-claim: ${this.claimService.options.autoClaimEnabled ? 'ENABLED' : 'DISABLED (manual)'}`);
+
+            // Start the beautiful status dashboard (every 60 seconds)
+            this.startStatusDisplay(60000);
 
             return true;
         } catch (error) {
@@ -1400,6 +1400,83 @@ export class LiveTrader extends EventEmitter {
             executionMetrics: this.getExecutionMetrics(),
             riskStatus: this.riskManager.getStatus()
         };
+    }
+
+    /**
+     * Print a beautiful live trading status dashboard
+     */
+    printStatusDashboard() {
+        if (!this.isRunning) return;
+
+        const now = new Date().toISOString().slice(11, 19);
+        const positions = Object.values(this.livePositions);
+        const enabledList = Array.from(this.enabledStrategies);
+
+        console.log('');
+        console.log('╔══════════════════════════════════════════════════════════════╗');
+        console.log(`║  🎰 LIVE TRADING STATUS                        ${now} UTC  ║`);
+        console.log('╠══════════════════════════════════════════════════════════════╣');
+
+        // Stats line
+        const wins = this.stats.wins || 0;
+        const losses = this.stats.losses || 0;
+        const pnl = this.stats.netPnL?.toFixed(2) || '0.00';
+        const pnlSign = parseFloat(pnl) >= 0 ? '+' : '';
+        console.log(`║  💰 Session: ${wins}W/${losses}L | P&L: ${pnlSign}$${pnl}`.padEnd(64) + '║');
+        console.log('╠══════════════════════════════════════════════════════════════╣');
+
+        // Open positions
+        if (positions.length > 0) {
+            console.log('║  📈 OPEN POSITIONS:'.padEnd(64) + '║');
+            for (const pos of positions) {
+                const side = pos.tokenSide?.toUpperCase() || '?';
+                const crypto = pos.crypto?.toUpperCase() || '?';
+                const entry = pos.entryPrice?.toFixed(2) || '?';
+                const current = pos.currentPrice?.toFixed(2) || entry;
+                const pnlPct = pos.entryPrice ? ((pos.currentPrice - pos.entryPrice) / pos.entryPrice * 100) : 0;
+                const pnlStr = pnlPct >= 0 ? `+${pnlPct.toFixed(1)}%` : `${pnlPct.toFixed(1)}%`;
+                const stratShort = (pos.strategyName || '?').slice(0, 18);
+                console.log(`║    ${stratShort.padEnd(18)} | ${crypto} ${side.padEnd(4)} | $${entry} → $${current} | ${pnlStr}`.padEnd(64) + '║');
+            }
+        } else {
+            console.log('║  📈 OPEN POSITIONS: None'.padEnd(64) + '║');
+        }
+
+        console.log('╠══════════════════════════════════════════════════════════════╣');
+        console.log('║  🎯 ENABLED STRATEGIES:'.padEnd(64) + '║');
+
+        for (const strat of enabledList) {
+            const hasPosition = positions.some(p => p.strategyName === strat);
+            const icon = hasPosition ? '🟢' : '⚪';
+            const status = hasPosition ? 'IN POSITION' : 'scanning...';
+            console.log(`║    ${icon} ${strat.padEnd(24)} ${status}`.padEnd(64) + '║');
+        }
+
+        console.log('╚══════════════════════════════════════════════════════════════╝');
+        console.log('');
+    }
+
+    /**
+     * Start periodic status display
+     */
+    startStatusDisplay(intervalMs = 60000) {
+        // Print immediately
+        this.printStatusDashboard();
+
+        // Then every interval
+        this.statusInterval = setInterval(() => {
+            this.printStatusDashboard();
+        }, intervalMs);
+    }
+
+    /**
+     * Stop periodic status display
+     */
+    stopStatusDisplay() {
+        if (this.statusInterval) {
+            clearInterval(this.statusInterval);
+            this.statusInterval = null;
+        }
     }
 }
 

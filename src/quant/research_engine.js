@@ -183,10 +183,17 @@ export class ResearchEngine {
                     } else {
                         // Only log signals for ENABLED strategies to reduce noise
                         const isEnabled = liveTrader.enabledStrategies?.has(strategy.getName());
-                        if (isEnabled) {
-                            const edge = signal.metadata?.edge ? `edge=${(signal.metadata.edge * 100).toFixed(1)}%` : '';
-                            const bsProb = signal.metadata?.bsProb || '';
-                            console.log(`[LiveSignal] ✅ ${strategy.getName()} | ${crypto} | ${signal.action.toUpperCase()} ${signal.side?.toUpperCase() || ''} | ${edge} ${bsProb}`);
+                        if (isEnabled && signal.action === 'buy') {
+                            const edge = signal.metadata?.edge ? (signal.metadata.edge * 100).toFixed(1) : '?';
+                            const bsProb = signal.metadata?.bsProb || '?';
+                            const mktProb = signal.metadata?.marketProb ? (signal.metadata.marketProb * 100).toFixed(0) : '?';
+                            console.log('');
+                            console.log(`🚀 ═══════════════════════════════════════════════════════════`);
+                            console.log(`🚀 SIGNAL: ${strategy.getName()}`);
+                            console.log(`🚀 ${crypto.toUpperCase()} | ${signal.action.toUpperCase()} ${signal.side?.toUpperCase() || ''}`);
+                            console.log(`🚀 Edge: ${edge}% | BS: ${bsProb} | Market: ${mktProb}%`);
+                            console.log(`🚀 ═══════════════════════════════════════════════════════════`);
+                            console.log('');
                         }
                         liveTrader.processSignal(strategy.getName(), signal, tick, market);
                     }
