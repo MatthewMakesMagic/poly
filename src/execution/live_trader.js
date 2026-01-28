@@ -875,9 +875,10 @@ export class LiveTrader extends EventEmitter {
         // ═══════════════════════════════════════════════════════════════════════════
         // CRITICAL SAFETY CHECK 2: GLOBAL PER-CRYPTO EXPOSURE LIMIT
         // Prevents multiple strategies from stacking positions on the same crypto
-        // Maximum $5 total exposure per crypto per window (across ALL strategies)
+        // Maximum $2 total exposure per crypto per window (across ALL strategies)
+        // REDUCED from $5 to $2 on Jan 28 2026 due to low balance
         // ═══════════════════════════════════════════════════════════════════════════
-        const MAX_EXPOSURE_PER_CRYPTO = 5.0;  // Maximum $5 per crypto per window
+        const MAX_EXPOSURE_PER_CRYPTO = 2.0;  // Maximum $2 per crypto per window
 
         // Calculate current exposure for this crypto in this window
         let currentCryptoExposure = 0;
