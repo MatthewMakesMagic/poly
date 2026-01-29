@@ -1259,13 +1259,47 @@ export class LiveTrader extends EventEmitter {
         } catch (error) {
             this.stats.ordersRejected++;
             this.logger.error(`[LiveTrader] Entry order failed: ${error.message}`);
-            
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // CRITICAL FIX (Jan 29 2026): Check balance BEFORE retrying
+            // Bug: First order may have filled on Polymarket but returned error to us
+            // If we retry without checking, we double the position size
+            // ═══════════════════════════════════════════════════════════════════════════
+            try {
+                const balanceBeforeRetry = await this.client.getBalance(tokenId);
+                if (balanceBeforeRetry > 0) {
+                    this.logger.warn(`[LiveTrader] ⚠️ SKIPPING RETRY - Already have ${balanceBeforeRetry.toFixed(2)} tokens from first attempt (order likely filled despite error)`);
+                    // First order actually succeeded - record the position
+                    const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
+                    this.livePositions[positionKey] = {
+                        strategyName,
+                        crypto,
+                        windowEpoch,
+                        tokenSide,
+                        tokenId,
+                        entryPrice: entryPrice,  // Use original price estimate
+                        entryTime: Date.now(),
+                        size: actualSize,
+                        shares: balanceBeforeRetry,
+                        spotAtEntry: tick.spot_price,
+                        recoveredFromError: true
+                    };
+                    this.riskManager.recordTradeOpen({ crypto, windowEpoch, size: actualSize });
+                    await this.saveTrade('entry', strategyName, signal, tick, entryPrice, null, null, null, {
+                        fillDetails: { source: 'recovered_from_error', balance: balanceBeforeRetry }
+                    });
+                    return { filled: true, shares: balanceBeforeRetry, recoveredFromError: true };
+                }
+            } catch (balanceErr) {
+                this.logger.warn(`[LiveTrader] Could not check balance before retry: ${balanceErr.message}`);
+            }
+
             // RETRY ONCE at slightly worse price (+2 cents)
             const RETRY_SLIPPAGE = 0.02;
             const MAX_SLIPPAGE = 0.02;  // Don't retry if we'd exceed 2c worse
             // Round to 2 decimal places to avoid floating point precision issues
             const retryPrice = Math.round(Math.min(entryPrice + RETRY_SLIPPAGE, 0.99) * 100) / 100;
-            
+
             if (retryPrice - entryPrice <= MAX_SLIPPAGE) {
                 this.logger.log(`[LiveTrader] 🔄 RETRYING at ${retryPrice.toFixed(3)} (+${((retryPrice - entryPrice) * 100).toFixed(1)}c)`);
                 
