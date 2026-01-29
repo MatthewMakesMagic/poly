@@ -459,6 +459,32 @@ export class LiveTrader extends EventEmitter {
             const trailPct = strategyConfig.trail || EXIT_CONFIG.DEFAULT_TRAIL_PCT;
 
             // ═══════════════════════════════════════════════════════════════
+            // 0. DANGER ZONE EXIT - Exit before position becomes too small to exit!
+            // ═══════════════════════════════════════════════════════════════
+            // Polymarket requires $1 minimum order. If position value drops to $1.20,
+            // we MUST exit immediately or we'll be trapped.
+            const positionValue = position.shares * currentPrice;
+            const DANGER_THRESHOLD = 1.20;  // Exit when value drops to $1.20 (gives buffer above $1)
+
+            if (positionValue < DANGER_THRESHOLD && positionValue > 0) {
+                this.logger.warn(`[LiveTrader] ⚠️ DANGER ZONE: ${position.strategyName} | ${crypto} | Value=$${positionValue.toFixed(2)} < $${DANGER_THRESHOLD} | EMERGENCY EXIT`);
+
+                position.state = PositionState.EXITING;
+                position.exitingStartTime = Date.now();
+                position.exitReason = 'danger_zone_exit';
+
+                const exitResult = await this.executeExitDirect(position, tick, market, 'danger_zone_exit');
+                if (exitResult) {
+                    delete this.livePositions[positionKey];
+                    this.logger.log(`[LiveTrader] ✅ DANGER ZONE EXIT COMPLETE: ${positionKey}`);
+                } else {
+                    position.state = PositionState.OPEN;
+                    this.logger.error(`[LiveTrader] ❌ DANGER ZONE EXIT FAILED: ${positionKey}`);
+                }
+                continue;
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // 1. STOP LOSS - ALWAYS CHECK FIRST (safety net, catches gaps)
             // ═══════════════════════════════════════════════════════════════
 
