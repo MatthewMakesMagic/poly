@@ -73,7 +73,7 @@ const EXIT_CONFIG = {
     ],
 
     // Execution
-    MAX_EXIT_ATTEMPTS: 3,
+    MAX_EXIT_ATTEMPTS: 5,  // Increased from 3 - give more chances to exit
     EXIT_PRICE_BUFFER: 0.02,           // 2 cents below bid for fills (reduced from 3)
 };
 
@@ -381,17 +381,26 @@ export class LiveTrader extends EventEmitter {
 
         // Check all positions for this crypto
         for (const [positionKey, position] of Object.entries(this.livePositions)) {
-            if (position.crypto !== crypto) continue;
+            // Wrap EACH position in try-catch so one failure doesn't kill all monitoring
+            try {
+                if (position.crypto !== crypto) continue;
 
-            // Skip positions from different windows - they resolve automatically at window end
-            if (position.windowEpoch !== windowEpoch) {
-                continue;
-            }
+                // Skip positions from different windows - they resolve automatically at window end
+                if (position.windowEpoch !== windowEpoch) {
+                    continue;
+                }
 
-            // Skip if already exiting (prevents duplicate triggers)
-            if (position.state === PositionState.EXITING) {
-                continue;
-            }
+                // Skip if already exiting (prevents duplicate triggers)
+                // BUT reset if stuck for too long (> 60 seconds)
+                if (position.state === PositionState.EXITING) {
+                    const stuckTime = Date.now() - (position.exitingStartTime || Date.now());
+                    if (stuckTime > 60000) {
+                        this.logger.warn(`[LiveTrader] ⚠️ RESETTING STUCK POSITION: ${positionKey} stuck in EXITING for ${(stuckTime/1000).toFixed(0)}s`);
+                        position.state = PositionState.OPEN;
+                    } else {
+                        continue;
+                    }
+                }
 
             // CRITICAL FIX: Ensure position has tokenId for exits
             // Restored positions from DB don't have tokenId - look it up from market
@@ -449,6 +458,7 @@ export class LiveTrader extends EventEmitter {
                 this.logger.log(`[LiveTrader] 🛑 STOP LOSS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Loss: ${(pnlPct * 100).toFixed(1)}% <= -${(stopLossThreshold * 100).toFixed(0)}%`);
 
                 position.state = PositionState.EXITING;
+                position.exitingStartTime = Date.now();
                 position.exitReason = 'stop_loss';
 
                 const exitResult = await this.executeExitDirect(position, tick, market, 'stop_loss');
@@ -495,6 +505,7 @@ export class LiveTrader extends EventEmitter {
                 this.logger.log(`[LiveTrader] 💰 FLOOR EXIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | P&L: +${(pnlPct * 100).toFixed(1)}% hit floor +${(position.profitFloor * 100).toFixed(0)}%`);
 
                 position.state = PositionState.EXITING;
+                position.exitingStartTime = Date.now();
                 position.exitReason = `profit_floor_${(position.profitFloor * 100).toFixed(0)}pct`;
 
                 const exitResult = await this.executeExitDirect(position, tick, market, position.exitReason);
@@ -532,6 +543,7 @@ export class LiveTrader extends EventEmitter {
                 this.logger.log(`[LiveTrader] 📉 TRAILING EXIT: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Peak: ${position.highWaterMark.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Drop: -${(dropFromPeak * 100).toFixed(1)}% from peak | Captured: ${capturedPct.toFixed(0)}% of peak (+${(pnlPct * 100).toFixed(1)}%)`);
 
                 position.state = PositionState.EXITING;
+                position.exitingStartTime = Date.now();
                 position.exitReason = 'trailing_exit';
 
                 const exitResult = await this.executeExitDirect(position, tick, market, 'trailing_exit');
@@ -555,6 +567,16 @@ export class LiveTrader extends EventEmitter {
                 const dropPct = dropFromPeak * 100;
                 const trailTriggerPct = trailPct * 100;
                 this.logger.log(`[LiveTrader] 📊 STATUS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: $${entryPrice.toFixed(3)} → Current: $${currentPrice.toFixed(3)} (HWM: $${position.highWaterMark.toFixed(3)}) | P&L: ${(pnlPct * 100).toFixed(1)}% | Drop: ${dropPct.toFixed(1)}%/${trailTriggerPct.toFixed(0)}% | Floor: +${(position.profitFloor * 100).toFixed(0)}% | StopLoss: -${(stopLossThreshold * 100).toFixed(0)}%`);
+            }
+
+            } catch (positionError) {
+                // CRITICAL: Log but DON'T let one position's error kill monitoring for others
+                this.logger.error(`[LiveTrader] ❌ POSITION MONITORING ERROR: ${positionKey} | ${positionError.message}`);
+                this.logger.error(positionError.stack);
+                // Reset state in case it got stuck
+                if (position.state === PositionState.EXITING) {
+                    position.state = PositionState.OPEN;
+                }
             }
         }
 
@@ -1068,22 +1090,39 @@ export class LiveTrader extends EventEmitter {
                 
                 this.stats.ordersFilled++;
                 
-                // Record position
+                // Record position with VALIDATED fields
                 const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
+                const finalEntryPrice = response.avgPrice || entryPrice;
+                const finalShares = response.shares || Math.ceil(actualSize / finalEntryPrice);
+
+                // CRITICAL: Validate all required fields before storing
+                if (!tokenId || !finalEntryPrice || finalEntryPrice <= 0 || !finalShares || finalShares <= 0) {
+                    this.logger.error(`[LiveTrader] ❌ INVALID POSITION DATA: tokenId=${!!tokenId} price=${finalEntryPrice} shares=${finalShares}`);
+                    this.stats.ordersRejected++;
+                    return null;
+                }
+
                 this.livePositions[positionKey] = {
                     strategyName,
                     crypto,
                     windowEpoch,
                     tokenSide,
                     tokenId,
-                    entryPrice: response.avgPrice || entryPrice,
+                    entryPrice: finalEntryPrice,
                     entryTime: Date.now(),
                     size: response.value || actualSize,
-                    shares: response.shares,
+                    shares: finalShares,
                     spotAtEntry: tick.spot_price,
                     orderId: response.orderId,
-                    txHash: response.tx,  // Store tx hash for audit
-                    balanceVerified: true
+                    txHash: response.tx,
+                    balanceVerified: true,
+                    // Initialize tracking fields NOW to avoid issues later
+                    highWaterMark: finalEntryPrice,
+                    peakPnlPct: 0,
+                    profitFloor: 0,
+                    state: PositionState.OPEN,
+                    ticksMonitored: 0,
+                    exitAttempts: 0
                 };
 
                 // Clear pending entry now that position is recorded
