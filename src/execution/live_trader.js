@@ -24,9 +24,9 @@ const OrderType = { FOK: 'FOK', GTC: 'GTC', GTD: 'GTD' };
 
 // Configuration
 const CONFIG = {
-    // Minimum $2 position size to ensure exits work even at max loss
-    // At 30% stop loss, exit value = $2 * 0.70 = $1.40 > $1 minimum
-    POSITION_SIZE: parseFloat(process.env.LIVE_POSITION_SIZE || '2'),
+    // Position size $6 to ensure exits work even at 50% stop loss
+    // At 50% stop loss, exit value = $6 * 0.50 = $3.00 > $1 minimum
+    POSITION_SIZE: parseFloat(process.env.LIVE_POSITION_SIZE || '6'),
     ENABLED: process.env.LIVE_TRADING_ENABLED === 'true',
 };
 
