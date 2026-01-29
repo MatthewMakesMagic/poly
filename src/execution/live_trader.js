@@ -994,16 +994,20 @@ export class LiveTrader extends EventEmitter {
                     }
                 }
                 
-                // CRITICAL: If we have a valid tx hash, the trade DID execute on-chain
-                // Trust the tx hash even if balance check fails (RPC lag is common)
-                if (!balanceVerified && response.tx && response.txHashes?.length > 0) {
-                    this.logger.warn(`[LiveTrader] ⚠️ Balance verification failed but TX HASH EXISTS: ${response.tx}`);
-                    this.logger.warn(`[LiveTrader] TRUSTING TX HASH - trade executed on-chain, RPC may be lagging`);
-                    balanceVerified = true; // Trust the blockchain proof
-                }
-                
+                // Jan 29 2026: Balance is source of truth, NOT tx hash
+                // TX hashes can exist for reverted transactions or approvals
+                // If balance is 0 after 3 checks, the trade did NOT succeed
                 if (!balanceVerified) {
-                    this.logger.error(`[LiveTrader] ❌ TRADE VERIFICATION FAILED - no tx hash and no balance`);
+                    // Log for analysis - how often do we get TX hash but no balance?
+                    if (response.tx && response.txHashes?.length > 0) {
+                        this.logger.error(`[LiveTrader] ❌ TX HASH EXISTS BUT NO BALANCE - trade likely reverted`);
+                        this.logger.error(`[LiveTrader] TX: ${response.tx} | Status: ${response.status} | Success: ${response.success}`);
+                        this.logger.error(`[LiveTrader] This indicates the order was submitted but did not fill or reverted on-chain`);
+                        // Track this metric for future analysis
+                        this.stats.txHashNoBalance = (this.stats.txHashNoBalance || 0) + 1;
+                    } else {
+                        this.logger.error(`[LiveTrader] ❌ TRADE VERIFICATION FAILED - no tx hash and no balance`);
+                    }
                     this.logger.error(`[LiveTrader] Response: ${JSON.stringify(response)}`);
                     this.stats.ordersRejected++;
                     return null;
