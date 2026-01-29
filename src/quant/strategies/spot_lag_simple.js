@@ -4218,8 +4218,8 @@ export class PureProb_BaseStrategy {
         this.options = {
             // Entry thresholds
             minEdge: 0.03,              // Minimum 3% edge to trade
-            // Jan 2026: Lowered from 0.05% ($44 for BTC) to 0.02% (~$17)
-            minSpotDeltaPct: 0.02,      // Minimum 0.02% spot displacement from strike
+            // Jan 29 2026: Raised back to 0.05% - coin-flip trades were losing money
+            minSpotDeltaPct: 0.05,      // Minimum 0.05% spot displacement from strike (~$44 on BTC)
 
             // Time constraints
             minTimeRemaining: 30,       // Don't enter in final 30s
@@ -4463,8 +4463,8 @@ export class PureProb_LateStrategy extends PureProb_BaseStrategy {
         super({
             name: 'PureProb_Late',
             minEdge: 0.03,              // Lower edge OK when late
-            // Jan 2026: Lowered from 0.05% ($44 for BTC) to 0.015% (~$13)
-            minSpotDeltaPct: 0.015,
+            // Jan 29 2026: Raised back to 0.05% - coin-flip trades were losing money
+            minSpotDeltaPct: 0.05,      // Require 0.05% from strike (~$44 on BTC)
             minTimeRemaining: 15,       // Can enter very late
             maxTimeRemaining: 120,      // Only last 2 min
             stopLoss: 0.20,
@@ -4516,6 +4516,10 @@ export class LagProb_BaseStrategy {
             // Probability validation
             minEdge: 0.03,               // Need at least 3% probability edge
             useEdgeValidation: true,     // Validate with probability model
+
+            // MINIMUM DISPLACEMENT (Jan 29 2026) - avoid coin-flip trades
+            minSigmas: 1.0,              // Require 1 standard deviation from strike
+            minSpotDeltaPct: 0.05,       // Require 0.05% from strike (~$44 on BTC)
 
             // Time constraints
             minTimeRemaining: 30,
@@ -4737,6 +4741,38 @@ export class LagProb_BaseStrategy {
         const expectedSideProb = edgeCalc.theoreticalSideProb;
         const edge = edgeCalc.edge;
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // MINIMUM DISPLACEMENT CHECK (Jan 29 2026)
+        // Being "right side of strike" by $20 on $88k BTC is only 0.02% - essentially noise
+        // Require meaningful displacement in sigma terms to avoid coin-flip trades
+        // ═══════════════════════════════════════════════════════════════════════════
+        const MIN_SIGMAS = this.options.minSigmas || 1.0;  // Minimum 1 standard deviation
+        const MIN_SPOT_DELTA_PCT = this.options.minSpotDeltaPct || 0.05;  // Minimum 0.05% from strike
+
+        if (edgeCalc.sigmas < MIN_SIGMAS) {
+            if (this._lagLogCounter[crypto] % 50 === 1) {
+                console.log(`[${this.name}] REJECTED ${crypto}: displacement_too_small ` +
+                    `sigmas=${edgeCalc.sigmas.toFixed(2)} < ${MIN_SIGMAS} | spotDelta=${spotDeltaPct.toFixed(3)}%`);
+            }
+            return this.createSignal('hold', null, 'displacement_too_small', this.options.basePosition, {
+                spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
+                sigmas: edgeCalc.sigmas.toFixed(2),
+                minSigmas: MIN_SIGMAS,
+                expectedMove: edgeCalc.expectedMove?.toFixed(3) + '%'
+            });
+        }
+
+        if (Math.abs(spotDeltaPct) < MIN_SPOT_DELTA_PCT) {
+            if (this._lagLogCounter[crypto] % 50 === 1) {
+                console.log(`[${this.name}] REJECTED ${crypto}: spot_too_close ` +
+                    `spotDelta=${spotDeltaPct.toFixed(3)}% < ${MIN_SPOT_DELTA_PCT}%`);
+            }
+            return this.createSignal('hold', null, 'spot_too_close_to_strike', this.options.basePosition, {
+                spotDeltaPct: spotDeltaPct.toFixed(3) + '%',
+                minRequired: MIN_SPOT_DELTA_PCT + '%'
+            });
+        }
+
         // DYNAMIC EDGE THRESHOLD (Jan 29 2026)
         const dynamicMinEdge = calculateDynamicMinEdge(this.options.minEdge, sideProb);
         if (this.options.useEdgeValidation && edge < dynamicMinEdge) {
@@ -4874,6 +4910,7 @@ export class LagProb_AggressiveStrategy extends LagProb_BaseStrategy {
 
 /**
  * LagProb RightSide - Only trades when on right side of strike
+ * Jan 29 2026: Added minimum displacement requirements to avoid coin-flip trades
  */
 export class LagProb_RightSideStrategy extends LagProb_BaseStrategy {
     constructor(options = {}) {
@@ -4883,6 +4920,9 @@ export class LagProb_RightSideStrategy extends LagProb_BaseStrategy {
             marketLagRatio: 0.6,
             minEdge: 0.03,
             requireRightSide: true,      // ONLY right side
+            // MINIMUM DISPLACEMENT (Jan 29 2026) - avoid coin-flip trades
+            minSigmas: 1.0,              // Require 1 standard deviation from strike
+            minSpotDeltaPct: 0.05,       // Require 0.05% from strike (~$44 on BTC)
             basePosition: 200,           // Higher conviction = larger size
             trailingActivationPct: 0.12,
             ...options
