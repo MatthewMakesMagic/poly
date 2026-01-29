@@ -24,9 +24,10 @@ const OrderType = { FOK: 'FOK', GTC: 'GTC', GTD: 'GTD' };
 
 // Configuration
 const CONFIG = {
-    // Position size $6 to ensure exits work even at 50% stop loss
+    // MINIMUM position size $6 to ensure exits work even at 50% stop loss
     // At 50% stop loss, exit value = $6 * 0.50 = $3.00 > $1 minimum
-    POSITION_SIZE: parseFloat(process.env.LIVE_POSITION_SIZE || '6'),
+    // CRITICAL: Do NOT reduce below $6 - smaller sizes get trapped at Polymarket's $1 minimum
+    POSITION_SIZE: Math.max(6, parseFloat(process.env.LIVE_POSITION_SIZE || '6')),
     ENABLED: process.env.LIVE_TRADING_ENABLED === 'true',
 };
 
@@ -137,8 +138,14 @@ export class LiveTrader extends EventEmitter {
             enabled: CONFIG.ENABLED,
             ...options
         };
-        
+
         this.logger = options.logger || console;
+
+        // CRITICAL: Log position size at startup for verification
+        this.logger.log(`[LiveTrader] 💰 POSITION SIZE: $${this.options.positionSize.toFixed(2)} (min $6 enforced)`);
+        if (this.options.positionSize < 6) {
+            this.logger.error(`[LiveTrader] ❌ CRITICAL: Position size $${this.options.positionSize} is below $6 minimum!`);
+        }
         
         // Core components
         this.client = null;
@@ -1058,10 +1065,11 @@ export class LiveTrader extends EventEmitter {
             requestedSize = remainingExposure;
         }
 
-        // If remaining exposure is too small for a viable trade, skip
-        const MIN_VIABLE_TRADE = 2.0;  // Minimum $2 to ensure exits work
+        // CRITICAL: Enforce minimum $6 position size
+        // At 50% stop loss, $6 position has $3 exit value > $1 Polymarket minimum
+        const MIN_VIABLE_TRADE = 6.0;
         if (requestedSize < MIN_VIABLE_TRADE) {
-            this.logger.warn(`[LiveTrader] ⛔ BLOCKED INSUFFICIENT ROOM: ${strategyName} | ${crypto} only $${remainingExposure.toFixed(2)} room (need $${MIN_VIABLE_TRADE})`);
+            this.logger.warn(`[LiveTrader] ⛔ BLOCKED: Size $${requestedSize.toFixed(2)} < $${MIN_VIABLE_TRADE} minimum | ${strategyName} ${crypto}`);
             return null;
         }
 
