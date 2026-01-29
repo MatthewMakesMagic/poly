@@ -375,22 +375,17 @@ export class LiveTrader extends EventEmitter {
         const crypto = tick.crypto;
         const windowEpoch = tick.window_epoch;
 
-        // DEBUG: Log all positions we're tracking for this crypto
-        const allPositions = Object.entries(this.livePositions).filter(([k, p]) => p.crypto === crypto);
-        if (allPositions.length > 0) {
-            this.logger.log(`[LiveTrader] 🔍 MONITOR: ${crypto} has ${allPositions.length} tracked positions, tick epoch=${windowEpoch}`);
-        }
+        // Count positions for this crypto (log only if we have any)
+        const cryptoPositions = Object.values(this.livePositions).filter(p => p.crypto === crypto && p.windowEpoch === windowEpoch);
+        // Note: Position count logged in periodic status, not every tick
 
         // Check all positions for this crypto
         for (const [positionKey, position] of Object.entries(this.livePositions)) {
             if (position.crypto !== crypto) continue;
 
-            // CRITICAL BUG FIX: Monitor positions even from previous windows!
-            // Old logic skipped positions with different windowEpoch, causing orphaned positions
-            // Now we monitor ALL positions for this crypto, regardless of window
+            // Skip positions from different windows - they resolve automatically at window end
             if (position.windowEpoch !== windowEpoch) {
-                this.logger.warn(`[LiveTrader] ⚠️ STALE POSITION: ${positionKey} | pos.epoch=${position.windowEpoch} != tick.epoch=${windowEpoch} | STILL MONITORING`);
-                // Don't continue - we need to monitor and potentially exit this position!
+                continue;
             }
 
             // Skip if already exiting (prevents duplicate triggers)
@@ -445,8 +440,10 @@ export class LiveTrader extends EventEmitter {
             // 1. STOP LOSS - ALWAYS CHECK FIRST (safety net, catches gaps)
             // ═══════════════════════════════════════════════════════════════
 
-            // DEBUG: Log EVERY tick's TP/SL check (remove after debugging)
-            this.logger.log(`[LiveTrader] 🎯 CHECK: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: $${entryPrice.toFixed(3)} → Current: $${currentPrice.toFixed(3)} | P&L: ${(pnlPct * 100).toFixed(1)}% | StopLoss triggers at: ${(-stopLossThreshold * 100).toFixed(0)}% | Trail: ${(trailPct * 100).toFixed(0)}%`);
+            // Log when approaching stop loss (> 30% loss) or significant profit (> 15%)
+            if (pnlPct <= -0.30 || pnlPct >= 0.15) {
+                this.logger.log(`[LiveTrader] 🎯 CHECK: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: $${entryPrice.toFixed(3)} → Current: $${currentPrice.toFixed(3)} | P&L: ${(pnlPct * 100).toFixed(1)}% | StopLoss: -${(stopLossThreshold * 100).toFixed(0)}% | Trail: ${(trailPct * 100).toFixed(0)}%`);
+            }
 
             if (pnlPct <= -stopLossThreshold) {
                 this.logger.log(`[LiveTrader] 🛑 STOP LOSS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Loss: ${(pnlPct * 100).toFixed(1)}% <= -${(stopLossThreshold * 100).toFixed(0)}%`);
@@ -649,8 +646,27 @@ export class LiveTrader extends EventEmitter {
                 return true;  // Return true so we don't retry forever
             }
 
+            // CRITICAL: Validate shares before attempting sell
+            if (!sharesToSell || sharesToSell <= 0 || isNaN(sharesToSell)) {
+                this.logger.error(`[LiveTrader] ❌ INVALID SHARES: ${sharesToSell} for ${position.strategyName} ${position.crypto}`);
+                return false;
+            }
+
             this.stats.ordersPlaced++;
-            const response = await this.client.sell(position.tokenId, sharesToSell, exitPrice, 'FOK');
+
+            // Try FOK first (fastest), then fall back to more aggressive price if it fails
+            let response = await this.client.sell(position.tokenId, sharesToSell, exitPrice, 'FOK');
+
+            // If FOK fails, try again with MUCH more aggressive price (sell at 1¢ to guarantee fill)
+            if (!response.filled && response.shares === 0) {
+                this.logger.warn(`[LiveTrader] ⚠️ FOK FAILED at ${exitPrice.toFixed(2)}, trying aggressive exit at 1¢`);
+                const aggressivePrice = 0.01; // Sell at minimum to guarantee fill
+                response = await this.client.sell(position.tokenId, sharesToSell, aggressivePrice, 'FOK');
+
+                if (response.filled) {
+                    this.logger.log(`[LiveTrader] ✅ AGGRESSIVE EXIT FILLED at ${(response.avgPrice || aggressivePrice).toFixed(3)}`);
+                }
+            }
 
             if (response.filled || response.shares > 0) {
                 this.stats.ordersFilled++;
@@ -997,10 +1013,11 @@ export class LiveTrader extends EventEmitter {
                 
                 // FACTOR 2: POST-TRADE BALANCE VERIFICATION WITH RETRIES
                 // Blockchain state may not propagate immediately - retry with delays
+                // Increased retries and delay to handle RPC lag (Jan 29 2026)
                 let balanceVerified = false;
                 let postTradeBalance = 0;
-                const MAX_RETRIES = 3;
-                const RETRY_DELAY_MS = 500;
+                const MAX_RETRIES = 5;      // Increased from 3
+                const RETRY_DELAY_MS = 800; // Increased from 500
                 
                 for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                     try {
@@ -1023,23 +1040,30 @@ export class LiveTrader extends EventEmitter {
                     }
                 }
                 
-                // Jan 29 2026: Balance is source of truth, NOT tx hash
-                // TX hashes can exist for reverted transactions or approvals
-                // If balance is 0 after 3 checks, the trade did NOT succeed
+                // Jan 29 2026: Balance is source of truth, BUT if we have strong on-chain proof, trust it
+                // TX hash + success=true + status=matched is strong evidence the trade succeeded
                 if (!balanceVerified) {
-                    // Log for analysis - how often do we get TX hash but no balance?
-                    if (response.tx && response.txHashes?.length > 0) {
-                        this.logger.error(`[LiveTrader] ❌ TX HASH EXISTS BUT NO BALANCE - trade likely reverted`);
-                        this.logger.error(`[LiveTrader] TX: ${response.tx} | Status: ${response.status} | Success: ${response.success}`);
-                        this.logger.error(`[LiveTrader] This indicates the order was submitted but did not fill or reverted on-chain`);
-                        // Track this metric for future analysis
-                        this.stats.txHashNoBalance = (this.stats.txHashNoBalance || 0) + 1;
+                    const hasStrongProof = response.tx &&
+                                          response.txHashes?.length > 0 &&
+                                          response.success === true &&
+                                          response.status === 'matched';
+
+                    if (hasStrongProof) {
+                        // RPC lag - balance check failed but trade clearly succeeded
+                        // TRUST THE TX and track the position anyway
+                        this.logger.warn(`[LiveTrader] ⚠️ BALANCE LAG: TX=${response.tx?.slice(0,16)}... success=true status=matched BUT balance=0`);
+                        this.logger.warn(`[LiveTrader] 🔧 PROCEEDING WITH TX PROOF - position will be tracked despite balance lag`);
+                        balanceVerified = true; // Override to proceed
+                        this.stats.balanceLagOverrides = (this.stats.balanceLagOverrides || 0) + 1;
                     } else {
-                        this.logger.error(`[LiveTrader] ❌ TRADE VERIFICATION FAILED - no tx hash and no balance`);
+                        // Weak proof or no proof - reject
+                        this.logger.error(`[LiveTrader] ❌ TRADE VERIFICATION FAILED`);
+                        this.logger.error(`[LiveTrader] TX: ${response.tx || 'none'} | Status: ${response.status} | Success: ${response.success}`);
+                        this.logger.error(`[LiveTrader] Response: ${JSON.stringify(response)}`);
+                        this.stats.txHashNoBalance = (this.stats.txHashNoBalance || 0) + 1;
+                        this.stats.ordersRejected++;
+                        return null;
                     }
-                    this.logger.error(`[LiveTrader] Response: ${JSON.stringify(response)}`);
-                    this.stats.ordersRejected++;
-                    return null;
                 }
                 
                 this.stats.ordersFilled++;
