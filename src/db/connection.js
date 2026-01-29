@@ -969,6 +969,96 @@ export async function saveLiveTrade(trade, retryCount = 0) {
 }
 
 /**
+ * ORPHAN POSITION CLEANUP - Auto-close positions at window end
+ *
+ * Jan 29 2026: Positions sometimes fail to exit (Cloudflare blocks, timeouts, etc.)
+ * but they ALWAYS resolve at window end (binary = $1 if won, $0 if lost).
+ *
+ * This function finds entries without exits for a given window and creates
+ * synthetic exit records based on the actual outcome.
+ *
+ * @param {string} crypto - Crypto symbol (btc, eth, sol, xrp)
+ * @param {number} windowEpoch - Window epoch that just ended
+ * @param {string} outcome - 'up' or 'down' (which side won)
+ */
+export async function closeOrphanPositions(crypto, windowEpoch, outcome) {
+    if (!USE_POSTGRES || !pgPool) return { closed: 0 };
+
+    try {
+        // Find entries without corresponding exits for this window
+        const orphans = await pgPool.query(`
+            SELECT DISTINCT ON (e.strategy_name)
+                e.id,
+                e.strategy_name,
+                e.crypto,
+                e.side,
+                e.price as entry_price,
+                e.size,
+                e.timestamp as entry_timestamp
+            FROM live_trades e
+            WHERE e.type = 'entry'
+            AND e.crypto = $1
+            AND e.window_epoch = $2
+            AND NOT EXISTS (
+                SELECT 1 FROM live_trades x
+                WHERE x.strategy_name = e.strategy_name
+                AND x.crypto = e.crypto
+                AND x.window_epoch = e.window_epoch
+                AND x.type = 'exit'
+            )
+            ORDER BY e.strategy_name, e.timestamp DESC
+        `, [crypto, windowEpoch]);
+
+        if (orphans.rows.length === 0) {
+            return { closed: 0 };
+        }
+
+        console.log(`[OrphanCleanup] Found ${orphans.rows.length} orphan positions for ${crypto} window ${windowEpoch}`);
+
+        let closedCount = 0;
+        for (const orphan of orphans.rows) {
+            // Binary outcome: winning side gets $1, losing side gets $0
+            const won = orphan.side === outcome;
+            const exitPrice = won ? 1.0 : 0.0;
+            const pnl = (exitPrice - orphan.entry_price) * (orphan.size || 2);
+            const fee = (orphan.size || 2) * 0.001;
+            const netPnl = pnl - fee;
+
+            // Create synthetic exit record
+            await pgPool.query(`
+                INSERT INTO live_trades (
+                    type, strategy_name, crypto, side, window_epoch,
+                    price, size, entry_price, pnl, reason, outcome, timestamp, timestamp_et
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), $12)
+            `, [
+                'exit',
+                orphan.strategy_name,
+                crypto,
+                orphan.side,
+                windowEpoch,
+                exitPrice,
+                orphan.size || 2,
+                orphan.entry_price,
+                netPnl,
+                'window_expiry_cleanup',  // Distinguish from normal exits
+                outcome,
+                new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
+            ]);
+
+            const resultStr = won ? `WIN +$${netPnl.toFixed(2)}` : `LOSS $${netPnl.toFixed(2)}`;
+            console.log(`[OrphanCleanup] Closed ${orphan.strategy_name} ${crypto} ${orphan.side.toUpperCase()} @ ${orphan.entry_price.toFixed(3)} -> ${exitPrice} | ${resultStr}`);
+            closedCount++;
+        }
+
+        console.log(`[OrphanCleanup] Cleaned up ${closedCount} orphan positions for ${crypto}`);
+        return { closed: closedCount };
+    } catch (error) {
+        console.error(`[OrphanCleanup] Error cleaning orphans for ${crypto}:`, error.message);
+        return { closed: 0, error: error.message };
+    }
+}
+
+/**
  * Get live trades history
  */
 export async function getLiveTrades(options = {}) {
@@ -2291,6 +2381,7 @@ export default {
     getLiveEnabledStrategies,
     setLiveStrategyEnabled,
     saveLiveTrade,
+    closeOrphanPositions,  // Auto-close orphan positions at window end
     getLiveTrades,
     getStrategyPerformanceStats,
     getRunningPnL,

@@ -912,6 +912,18 @@ class TickCollector {
                         console.error('⚠️  Live trader window end error:', error.message);
                     }
 
+                    // ORPHAN CLEANUP: Auto-close any positions that failed to exit
+                    // This ensures database stays accurate even if exits fail (Cloudflare, timeouts, etc.)
+                    try {
+                        const { closeOrphanPositions } = await import('../db/connection.js');
+                        const result = await closeOrphanPositions(crypto, market.epoch, outcome);
+                        if (result.closed > 0) {
+                            console.log(`🧹 Cleaned ${result.closed} orphan positions for ${crypto}`);
+                        }
+                    } catch (error) {
+                        console.error('⚠️  Orphan cleanup error:', error.message);
+                    }
+
                     // Notify resolution service for Binance vs Chainlink vs Pyth accuracy tracking
                     if (this.resolutionService) {
                         try {
