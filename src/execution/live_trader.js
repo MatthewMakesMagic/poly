@@ -725,10 +725,18 @@ export class LiveTrader extends EventEmitter {
                 this.stats.ordersFilled++;
                 this.stats.tradesExecuted++;
 
-                const exitValue = response.value || (sharesToSell * exitPrice);
-                const pnl = exitValue - position.size;
+                // CRITICAL FIX: Use actual fill price for exit value calculation
+                const actualExitPrice = response.avgPrice || response.priceFilled || exitPrice;
+                const actualSharesSold = response.shares || sharesToSell;
+                const exitValue = actualSharesSold * actualExitPrice;
+
+                // P&L = what we got - what we paid (cost basis)
+                const costBasis = position.costBasis || position.size;
+                const pnl = exitValue - costBasis;
                 const fee = exitValue * 0.001;
                 const netPnl = pnl - fee;
+
+                this.logger.log(`[LiveTrader] 📊 P&L CALC: exitValue=$${exitValue.toFixed(2)} (${actualSharesSold} shares @ $${actualExitPrice.toFixed(3)}) - costBasis=$${costBasis.toFixed(2)} = $${pnl.toFixed(2)} gross, $${netPnl.toFixed(2)} net`);
 
                 this.stats.grossPnL += pnl;
                 this.stats.fees += fee;
@@ -1124,7 +1132,10 @@ export class LiveTrader extends EventEmitter {
                 // Record position with VALIDATED fields
                 const positionKey = `${strategyName}_${crypto}_${windowEpoch}`;
                 const finalEntryPrice = response.avgPrice || entryPrice;
-                const finalShares = response.shares || Math.ceil(actualSize / finalEntryPrice);
+
+                // CRITICAL FIX: Use SDK's shares if available, otherwise calculate from REQUESTED price
+                // Don't use finalEntryPrice (fill price) for recalculation - that changes the shares count
+                const finalShares = response.shares || Math.ceil(actualSize / entryPrice);
 
                 // CRITICAL: Validate all required fields before storing
                 if (!tokenId || !finalEntryPrice || finalEntryPrice <= 0 || !finalShares || finalShares <= 0) {
@@ -1132,6 +1143,12 @@ export class LiveTrader extends EventEmitter {
                     this.stats.ordersRejected++;
                     return null;
                 }
+
+                // Calculate actual cost paid (cost basis for P&L)
+                // This is what we ACTUALLY spent, not what the position is worth
+                const actualCostPaid = finalShares * finalEntryPrice;
+
+                this.logger.log(`[LiveTrader] 💰 POSITION COST: requested=$${actualSize.toFixed(2)} | actual=$${actualCostPaid.toFixed(2)} | shares=${finalShares} @ $${finalEntryPrice.toFixed(3)}`);
 
                 this.livePositions[positionKey] = {
                     strategyName,
@@ -1141,7 +1158,10 @@ export class LiveTrader extends EventEmitter {
                     tokenId,
                     entryPrice: finalEntryPrice,
                     entryTime: Date.now(),
-                    size: response.value || actualSize,
+                    // CRITICAL FIX: size = COST BASIS (what we paid), NOT market value
+                    size: actualCostPaid,           // Actual $ spent (shares * fill price)
+                    costBasis: actualCostPaid,      // Explicit cost basis field
+                    requestedSize: actualSize,      // What we requested to spend
                     shares: finalShares,
                     spotAtEntry: tick.spot_price,
                     orderId: response.orderId,
@@ -1475,11 +1495,20 @@ export class LiveTrader extends EventEmitter {
         for (const [key, position] of Object.entries(this.livePositions)) {
             if (position.crypto === crypto && position.windowEpoch === epoch) {
                 // Position expired at window end - binary resolution
+                // Winning side pays $1/share, losing side pays $0/share
                 const won = outcome === position.tokenSide.toLowerCase();
                 const finalPrice = won ? 1.0 : 0.0;
-                const pnl = (finalPrice - position.entryPrice) * position.size;
-                const fee = position.size * 0.001;
+
+                // CRITICAL FIX: Correct P&L formula for binary options
+                // exitValue = shares * finalPrice ($1 or $0 per share)
+                // pnl = exitValue - costBasis
+                const exitValue = position.shares * finalPrice;
+                const costBasis = position.costBasis || position.size;
+                const pnl = exitValue - costBasis;
+                const fee = exitValue * 0.001;  // Fee on proceeds, not cost
                 const netPnl = pnl - fee;
+
+                this.logger.log(`[LiveTrader] 📊 EXPIRY P&L: ${position.shares} shares @ $${finalPrice.toFixed(2)} = $${exitValue.toFixed(2)} - cost $${costBasis.toFixed(2)} = $${pnl.toFixed(2)}`);
                 
                 this.stats.grossPnL += pnl;
                 this.stats.fees += fee;
@@ -1489,12 +1518,12 @@ export class LiveTrader extends EventEmitter {
                 this.riskManager.recordTradeClose({
                     crypto,
                     windowEpoch: epoch,
-                    size: position.size
+                    size: costBasis
                 }, netPnl);
-                
+
                 const pnlStr = `${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)}`;
                 this.logger.log(`[LiveTrader] 🏁 WINDOW END: ${position.strategyName} | ${crypto} | Bet: ${position.tokenSide} | Outcome: ${outcome.toUpperCase()} | ${won ? 'WIN' : 'LOSS'} | P&L: ${pnlStr}`);
-                
+
                 // CRITICAL: Save exit to database for tracking
                 try {
                     await saveLiveTrade({
@@ -1503,14 +1532,14 @@ export class LiveTrader extends EventEmitter {
                         crypto,
                         side: position.tokenSide.toLowerCase(),
                         window_epoch: epoch,
-                        price: finalPrice,
-                        size: position.size,
-                        spot_price: null, // Window already ended
+                        price: finalPrice,  // $1.00 for win, $0.00 for loss
+                        size: costBasis,    // Use cost basis, not market value
+                        spot_price: null,   // Window already ended
                         time_remaining: 0,
                         reason: 'window_expiry',
                         entry_price: position.entryPrice,
                         pnl: netPnl,
-                        peak_price: position.highWaterMark,  // Track peak for analysis
+                        peak_price: position.highWaterMark,
                         outcome: outcome,
                         timestamp: new Date().toISOString()
                     });
