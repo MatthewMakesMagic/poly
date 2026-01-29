@@ -745,12 +745,16 @@ class TickCollector {
             
             // Use locked price_to_beat (should never be null after first tick)
             const priceToBeat = market.priceToBeat || spotPrice;
-            const spotDelta = spotPrice - priceToBeat;
+
+            // CRITICAL (Jan 29 2026): Use Pyth as primary spot price, NOT Binance!
+            // Binance can diverge $100+ from Polymarket's resolution oracle.
+            // Pyth tracks Chainlink within $1-30, making it much safer for trading decisions.
+            const effectiveSpotPrice = pythPrice || spotPrice;  // Pyth primary, Binance fallback
+            const spotDelta = effectiveSpotPrice - priceToBeat;
             const spotDeltaPct = priceToBeat > 0 ? (spotDelta / priceToBeat) * 100 : 0;
 
             // ORACLE PRICE: Best available oracle for strategy decisions
             // Priority: Chainlink (if fresh <5s) > Pyth > Binance
-            // This is what strategies should use for position decisions, NOT spot_price (Binance)
             const CHAINLINK_STALE_THRESHOLD = 5; // seconds
             const chainlinkFresh = chainlinkPrice && chainlinkStaleness !== null && chainlinkStaleness <= CHAINLINK_STALE_THRESHOLD;
             const oraclePrice = chainlinkFresh ? chainlinkPrice : (pythPrice || spotPrice);
@@ -780,7 +784,10 @@ class TickCollector {
                 down_ask_size: parseFloat(downBestAsk.size),
                 down_last_trade: downBook?.lastTradePrice ? parseFloat(downBook.lastTradePrice) : null,
                 
-                spot_price: spotPrice,
+                // CRITICAL: spot_price now uses Pyth (primary) with Binance fallback
+                // This ensures strategies make decisions based on oracle-aligned prices
+                spot_price: effectiveSpotPrice,
+                binance_price: spotPrice,  // Keep original Binance for reference/logging
                 price_to_beat: priceToBeat,
                 spot_delta: spotDelta,
                 spot_delta_pct: spotDeltaPct / 100,  // Convert to decimal for research engine
