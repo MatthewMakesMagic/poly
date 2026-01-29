@@ -2800,14 +2800,17 @@ export class SpotLag_TimeAwareStrategy {
         // ═══════════════════════════════════════════════════════════════════════════
         const edgeCalc = calculateTheoreticalEdge(spotDeltaPct, timeRemaining, marketProb, crypto);
 
-        // Minimum edge required - don't trade just because there's a lag
-        const MIN_EDGE = this.options.minEdge || 0.03;  // Default 3% minimum edge
+        // DYNAMIC EDGE THRESHOLD (Jan 29 2026)
+        // Require more edge at extreme prices to account for asymmetric risk/reward
+        const baseMinEdge = this.options.minEdge || 0.03;
+        const MIN_EDGE = calculateDynamicMinEdge(baseMinEdge, edgeCalc.marketSideProb);
         if (edgeCalc.edge < MIN_EDGE) {
             return this.createSignal('hold', null, 'insufficient_bs_edge', {
                 edge: (edgeCalc.edge * 100).toFixed(1) + '%',
                 bsProb: (edgeCalc.theoreticalSideProb * 100).toFixed(1) + '%',
                 marketProb: (edgeCalc.marketSideProb * 100).toFixed(1) + '%',
-                minRequired: (MIN_EDGE * 100) + '%'
+                minRequired: (MIN_EDGE * 100).toFixed(1) + '%',
+                baseRequired: (baseMinEdge * 100) + '%'
             });
         }
 
@@ -3181,11 +3184,14 @@ export class SpotLag_ProbabilityEdgeStrategy {
             });
         }
 
-        if (edge < this.options.minEdge) {
+        // DYNAMIC EDGE THRESHOLD (Jan 29 2026)
+        const dynamicMinEdge = calculateDynamicMinEdge(this.options.minEdge, sideProb);
+        if (edge < dynamicMinEdge) {
             return this.createSignal('hold', null, 'insufficient_edge', {
                 edge: (edge * 100).toFixed(1) + '%',
                 expected: (expectedSideProb * 100).toFixed(1) + '%',
-                market: (sideProb * 100).toFixed(1) + '%'
+                market: (sideProb * 100).toFixed(1) + '%',
+                minRequired: (dynamicMinEdge * 100).toFixed(1) + '%'
             });
         }
 
@@ -3325,8 +3331,10 @@ export class SpotLag_TrailStrategy {
         const timeRemaining = tick.time_remaining_sec || 0;
         const windowEpoch = tick.window_epoch;
 
-        // Update history
-        state.spotHistory.push(tick.spot_price);
+        // Update history - USE ORACLE PRICE (Chainlink/Pyth) not Binance
+        // Jan 29 2026: Binance can be $119 off for BTC, causing wrong-side trades
+        const oraclePrice = tick.oracle_price || tick.spot_price;
+        state.spotHistory.push(oraclePrice);
         state.marketHistory.push(tick.up_mid);
         state.timestamps.push(Date.now());
 
@@ -4063,6 +4071,44 @@ function calculateExpectedProbabilityAdvanced(spotDeltaPct, timeRemainingSec, cr
 }
 
 /**
+ * DYNAMIC EDGE THRESHOLD - Risk-adjusted minimum edge based on price extremity
+ *
+ * Jan 29 2026: Quant-style improvement to account for asymmetric risk/reward at extreme prices.
+ *
+ * KEY INSIGHT: 3% edge at 50¢ is fundamentally different from 3% edge at 89¢:
+ * - At 50¢: Risk/reward is 1:1, need 50% win rate to break even
+ * - At 89¢: Risk/reward is 8:1, need 89% win rate to break even
+ *
+ * This function increases the required edge when prices are extreme, accounting for:
+ * 1. Asymmetric payoff structure of binary options
+ * 2. Model uncertainty being more costly at extreme prices
+ * 3. The market price containing information we might be missing
+ *
+ * Formula: adjustedMinEdge = baseMinEdge * (1 + priceExtremity * riskMultiplier)
+ * Where priceExtremity = |marketProb - 0.5| / 0.5 (0 at 50¢, 1 at 0¢/100¢)
+ *
+ * @param {number} baseMinEdge - Strategy's base minimum edge (e.g., 0.03 for 3%)
+ * @param {number} marketProb - Market probability (token price, 0-1)
+ * @param {number} riskMultiplier - How much to scale edge at extremes (default 0.5 = 50% more at 75¢)
+ * @returns {number} Risk-adjusted minimum edge threshold
+ */
+function calculateDynamicMinEdge(baseMinEdge, marketProb, riskMultiplier = 0.5) {
+    // Price extremity: 0 at 50¢, 1 at 0¢ or 100¢
+    const priceExtremity = Math.abs(marketProb - 0.5) / 0.5;
+
+    // Adjusted edge = base * (1 + extremity * multiplier)
+    // At 50¢: 1 + 0 * 0.5 = 1.0x (no adjustment)
+    // At 65¢: 1 + 0.3 * 0.5 = 1.15x
+    // At 75¢: 1 + 0.5 * 0.5 = 1.25x
+    // At 85¢: 1 + 0.7 * 0.5 = 1.35x
+    // At 90¢: 1 + 0.8 * 0.5 = 1.40x
+    // At 95¢: 1 + 0.9 * 0.5 = 1.45x
+    const adjustedMinEdge = baseMinEdge * (1 + priceExtremity * riskMultiplier);
+
+    return adjustedMinEdge;
+}
+
+/**
  * ENHANCED: Calculate theoretical edge with uncertainty-adjusted requirements
  *
  * KEY INSIGHT: If our vol estimate has 20% uncertainty, our probability estimate
@@ -4222,7 +4268,9 @@ export class PureProb_BaseStrategy {
         const timeRemaining = tick.time_remaining_sec || 0;
         const windowEpoch = tick.window_epoch;
         const strike = tick.price_to_beat;
-        const spotPrice = tick.spot_price;
+        // USE ORACLE PRICE (Chainlink/Pyth) not Binance - Jan 29 2026
+        // Binance can be $119 off for BTC, causing wrong-side trades
+        const spotPrice = tick.oracle_price || tick.spot_price;
 
         // ═══════════════════════════════════════════════════════════════════════════
         // CRITICAL: Validate price data exists - DO NOT DEFAULT TO 0.5!
@@ -4311,11 +4359,14 @@ export class PureProb_BaseStrategy {
             });
         }
 
-        if (edge < this.options.minEdge) {
+        // DYNAMIC EDGE THRESHOLD (Jan 29 2026)
+        const dynamicMinEdge = calculateDynamicMinEdge(this.options.minEdge, sideProb);
+        if (edge < dynamicMinEdge) {
             return this.createSignal('hold', null, 'insufficient_edge', this.options.basePosition, {
                 edge: (edge * 100).toFixed(1) + '%',
                 expected: (expectedSideProb * 100).toFixed(1) + '%',
-                market: (sideProb * 100).toFixed(1) + '%'
+                market: (sideProb * 100).toFixed(1) + '%',
+                minRequired: (dynamicMinEdge * 100).toFixed(1) + '%'
             });
         }
 
@@ -4535,8 +4586,11 @@ export class LagProb_BaseStrategy {
         }
         const marketProb = tick.up_mid;
 
-        // Update history
-        state.spotHistory.push(tick.spot_price);
+        // Update history - USE ORACLE PRICE (Chainlink/Pyth) not Binance
+        // Jan 29 2026: Binance can be $119 off for BTC, causing wrong-side trades
+        // Oracle price is Chainlink if fresh (<5s stale), else Pyth
+        const oraclePrice = tick.oracle_price || tick.spot_price;
+        state.spotHistory.push(oraclePrice);
         state.marketHistory.push(marketProb);
         state.timestamps.push(Date.now());
 
@@ -4621,15 +4675,45 @@ export class LagProb_BaseStrategy {
             return this.createSignal('hold', null, 'spot_not_moving', this.options.basePosition);
         }
 
-        // Calculate market lag
+        // ═══════════════════════════════════════════════════════════════════════════
+        // IMPROVED LAG DETECTION (Jan 28 2026) - Using Black-Scholes
+        //
+        // OLD (broken): expectedMove = spotMove * 10 (arbitrary, never triggered)
+        // NEW: Use BS to calculate what market SHOULD be given spot position vs strike
+        //
+        // True lag = difference between actual market prob and BS-implied prob
+        // This accounts for time remaining and volatility correctly
+        // ═══════════════════════════════════════════════════════════════════════════
         const oldMarket = state.marketHistory[state.marketHistory.length - this.options.lookbackTicks];
         const newMarket = state.marketHistory[state.marketHistory.length - 1];
-        const marketMove = newMarket - oldMarket;
-        const expectedMove = spotMove * 10;
-        const lagRatio = Math.abs(marketMove) / Math.abs(expectedMove);
+        const actualMarketMove = newMarket - oldMarket;
+
+        // Calculate what BS says market SHOULD be given current spot vs strike
+        const spotDeltaPctForLag = strike > 0 ? ((newSpot - strike) / strike) * 100 : 0;
+        const bsImpliedProb = calculateExpectedProbability(spotDeltaPctForLag, timeRemaining, crypto);
+        const bsImpliedMove = bsImpliedProb - oldMarket;
+
+        // Lag ratio: how much of the "correct" move has market made?
+        // 0 = market hasn't moved at all (maximum lag, opportunity)
+        // 1 = market fully reflects new information (no lag)
+        // > 1 = market overreacted
+        const lagRatio = Math.abs(bsImpliedMove) > 0.001
+            ? Math.abs(actualMarketMove) / Math.abs(bsImpliedMove)
+            : 1.0;  // No expected move = no lag opportunity
 
         if (lagRatio > this.options.marketLagRatio) {
             return this.createSignal('hold', null, 'market_caught_up', this.options.basePosition);
+        }
+
+        // DIAGNOSTIC: Log when lag is detected (every 50 ticks)
+        if (!this._lagLogCounter) this._lagLogCounter = {};
+        if (!this._lagLogCounter[crypto]) this._lagLogCounter[crypto] = 0;
+        this._lagLogCounter[crypto]++;
+        if (this._lagLogCounter[crypto] % 50 === 1) {
+            console.log(`[${this.name}] LAG DETECTED ${crypto}: ` +
+                `spotDelta=${spotDeltaPctForLag.toFixed(3)}% | ` +
+                `mktMove=${(actualMarketMove * 100).toFixed(2)}% vs bsExpected=${(bsImpliedMove * 100).toFixed(2)}% | ` +
+                `lagRatio=${lagRatio.toFixed(2)} < ${this.options.marketLagRatio}`);
         }
 
         // Determine side
@@ -4653,12 +4737,18 @@ export class LagProb_BaseStrategy {
         const expectedSideProb = edgeCalc.theoreticalSideProb;
         const edge = edgeCalc.edge;
 
-        // Edge validation
-        if (this.options.useEdgeValidation && edge < this.options.minEdge) {
+        // DYNAMIC EDGE THRESHOLD (Jan 29 2026)
+        const dynamicMinEdge = calculateDynamicMinEdge(this.options.minEdge, sideProb);
+        if (this.options.useEdgeValidation && edge < dynamicMinEdge) {
+            // DIAGNOSTIC: Log when edge is insufficient
+            if (this._lagLogCounter[crypto] % 50 === 1) {
+                console.log(`[${this.name}] REJECTED ${crypto}: insufficient_edge ${(edge * 100).toFixed(1)}% < ${(dynamicMinEdge * 100).toFixed(1)}% (base ${(this.options.minEdge * 100).toFixed(0)}%)`);
+            }
             return this.createSignal('hold', null, 'insufficient_edge', this.options.basePosition, {
                 edge: (edge * 100).toFixed(1) + '%',
                 bsProb: (expectedSideProb * 100).toFixed(1) + '%',
-                marketProb: (sideProb * 100).toFixed(1) + '%'
+                marketProb: (sideProb * 100).toFixed(1) + '%',
+                minRequired: (dynamicMinEdge * 100).toFixed(1) + '%'
             });
         }
 
@@ -4679,6 +4769,10 @@ export class LagProb_BaseStrategy {
         const rightSideOfStrike = (bettingUp && spotAboveStrike) || (!bettingUp && !spotAboveStrike);
 
         if (this.options.requireRightSide && !rightSideOfStrike) {
+            // DIAGNOSTIC: Log when wrong side blocks entry
+            if (this._lagLogCounter[crypto] % 50 === 1) {
+                console.log(`[${this.name}] REJECTED ${crypto}: wrong_side (betting ${side}, spot ${spotAboveStrike ? 'above' : 'below'} strike)`);
+            }
             return this.createSignal('hold', null, 'wrong_side', this.options.basePosition);
         }
 
@@ -4813,6 +4907,120 @@ export function createLagProbAggressive(capital = 100) {
 
 export function createLagProbRightSide(capital = 100) {
     return new LagProb_RightSideStrategy({ basePosition: capital * 2 });
+}
+
+// =============================================================================
+// EXECUTION TEST STRATEGY - Verify trading system works end-to-end
+// Makes 5 x $1 trades on BTC, 30 seconds apart, betting with spot direction
+// =============================================================================
+
+export class ExecutionTestStrategy {
+    constructor(options = {}) {
+        this.name = options.name || 'ExecutionTest';
+        this.options = {
+            maxTrades: 5,              // Total trades to make
+            tradeIntervalSec: 30,      // Seconds between trades
+            positionSize: 100,         // $1 in production (100 strategy units)
+            enabledCryptos: ['btc'],   // BTC only
+            minTimeRemaining: 120,     // Don't trade in final 2 min
+            ...options
+        };
+
+        this.tradesThisWindow = 0;
+        this.lastTradeTime = 0;
+        this.windowEpoch = null;
+        this.stats = { signals: 0, trades: 0 };
+    }
+
+    getName() { return this.name; }
+
+    onTick(tick, position = null, context = {}) {
+        const crypto = tick.crypto;
+
+        if (!this.options.enabledCryptos.includes(crypto)) {
+            return this.createSignal('hold', null, 'crypto_disabled');
+        }
+
+        const timeRemaining = tick.time_remaining_sec || 0;
+        const windowEpoch = tick.window_epoch;
+        const strike = tick.price_to_beat;
+        const spotPrice = tick.spot_price;
+
+        // Reset on new window
+        if (this.windowEpoch !== windowEpoch) {
+            this.windowEpoch = windowEpoch;
+            this.tradesThisWindow = 0;
+            this.lastTradeTime = 0;
+        }
+
+        // If we have a position, just hold
+        if (position) {
+            return this.createSignal('hold', null, 'holding_position');
+        }
+
+        // Check if we've done enough trades
+        if (this.tradesThisWindow >= this.options.maxTrades) {
+            return this.createSignal('hold', null, 'max_trades_reached');
+        }
+
+        // Time filter
+        if (timeRemaining < this.options.minTimeRemaining) {
+            return this.createSignal('hold', null, 'too_late');
+        }
+
+        // Check interval since last trade
+        const now = Date.now();
+        const secSinceLastTrade = (now - this.lastTradeTime) / 1000;
+        if (this.lastTradeTime > 0 && secSinceLastTrade < this.options.tradeIntervalSec) {
+            return this.createSignal('hold', null, 'waiting_interval', {
+                secRemaining: (this.options.tradeIntervalSec - secSinceLastTrade).toFixed(0)
+            });
+        }
+
+        // Validate price data
+        if (!tick.up_mid || tick.up_mid <= 0.01 || tick.up_mid >= 0.99) {
+            return this.createSignal('hold', null, 'invalid_price');
+        }
+
+        // Determine side based on spot vs strike
+        const side = spotPrice > strike ? 'up' : 'down';
+        const sidePrice = side === 'up' ? tick.up_ask : tick.down_ask;
+
+        // Execute trade
+        this.tradesThisWindow++;
+        this.lastTradeTime = now;
+        this.stats.signals++;
+
+        console.log(`[${this.name}] 🧪 TEST TRADE #${this.tradesThisWindow}/${this.options.maxTrades}: ` +
+            `${crypto.toUpperCase()} ${side.toUpperCase()} @ ${(sidePrice * 100).toFixed(1)}¢ | ` +
+            `spot=${spotPrice.toFixed(2)} strike=${strike.toFixed(2)} | time=${timeRemaining.toFixed(0)}s`);
+
+        return this.createSignal('buy', side, 'execution_test', this.options.positionSize, {
+            tradeNum: this.tradesThisWindow,
+            maxTrades: this.options.maxTrades,
+            spotPrice,
+            strike,
+            crypto
+        });
+    }
+
+    createSignal(action, side, reason, size = 0, analysis = {}) {
+        return { action, side, reason, size, ...analysis };
+    }
+
+    onWindowStart(windowInfo) {
+        this.tradesThisWindow = 0;
+        this.lastTradeTime = 0;
+        this.windowEpoch = windowInfo?.epoch;
+    }
+
+    onWindowEnd(windowInfo, outcome) {}
+
+    getStats() { return { name: this.name, ...this.stats }; }
+}
+
+export function createExecutionTest(capital = 100) {
+    return new ExecutionTestStrategy({ positionSize: capital });  // $1 trades
 }
 
 export default SpotLagSimpleStrategy;

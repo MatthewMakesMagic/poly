@@ -15,19 +15,35 @@ dotenv.config(); // Also try .env as fallback
 
 console.log(`🔧 DATABASE_URL loaded: ${!!process.env.DATABASE_URL}`);
 
-// ENABLE LIVE TRADING - Set env var if not already set
+// ENABLE LIVE TRADING
 if (!process.env.LIVE_TRADING_ENABLED) {
     process.env.LIVE_TRADING_ENABLED = 'true';
     console.log('🔴 LIVE TRADING ENABLED (set automatically)');
 }
 
-// Initialize global proxy agent for all HTTP/HTTPS requests (bypasses Cloudflare blocks)
+// Configure proxy for axios (HTTP calls) - NOT for WebSockets
+// This allows Polymarket/Binance WebSocket connections to work while
+// only routing API order submissions through the proxy
 if (process.env.PROXY_URL) {
-    const { bootstrap } = await import('global-agent');
-    bootstrap();
-    process.env.GLOBAL_AGENT_HTTP_PROXY = process.env.PROXY_URL;
-    process.env.GLOBAL_AGENT_HTTPS_PROXY = process.env.PROXY_URL;
-    console.log(`🔒 Proxy enabled: ${process.env.PROXY_URL.replace(/:[^:@]+@/, ':***@')}`);
+    // Allow proxy SSL inspection (residential proxies may intercept SSL)
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+    // Parse proxy URL: http://user:pass@host:port
+    const proxyUrl = new URL(process.env.PROXY_URL);
+    const { default: axios } = await import('axios');
+
+    // Configure axios to use proxy directly (avoids circular reference issues with agent)
+    axios.defaults.proxy = {
+        protocol: proxyUrl.protocol.replace(':', ''),
+        host: proxyUrl.hostname,
+        port: parseInt(proxyUrl.port),
+        auth: proxyUrl.username ? {
+            username: decodeURIComponent(proxyUrl.username),
+            password: decodeURIComponent(proxyUrl.password)
+        } : undefined
+    };
+
+    console.log(`🔒 Proxy configured for axios: ${proxyUrl.host}`);
 }
 
 // DYNAMIC IMPORTS: Load these AFTER dotenv so DATABASE_URL is available
@@ -97,6 +113,18 @@ async function runMigrations() {
             'SpotLag_Trail_V3',        // 2% min edge
             'Endgame',                 // High conviction end-of-window
             'Endgame_Conservative',    // Conservative endgame
+
+            // LAG PROB - simpler lag detection but with BS edge validation
+            // Right side only = maximum conviction, only trades when spot confirms direction
+            'LagProb_RightSide',       // 3% min edge, RIGHT side only
+
+            // PURE PROB - edge-only strategies (no lag requirement, just BS edge)
+            // These have been generating real 8-13% edge signals in production
+            'PureProb_Late',           // 3% min edge, last 2 min only, 20% stop loss
+            'PureProb_Conservative',   // 5% min edge (very selective)
+
+            // EXECUTION TEST - DISABLED (confirmed working on Railway Jan 29)
+            // 'ExecutionTest',           // 5 x $1 trades on BTC, 30s apart
         ];
 
         for (const strat of toEnable) {
@@ -108,8 +136,9 @@ async function runMigrations() {
         // DISABLED STRATEGIES - All others disabled for risk reduction
         // =================================================================
         const toDisable = [
-            // TEST STRATEGY
+            // TEST STRATEGIES
             'TP_SL_Test',
+            'ExecutionTest',           // Disabled after confirming Railway works
 
             // DISABLED Jan 28 2026 - bets against market sentiment, lost money
             'SpotLag_ProbEdge',     // Entry logic wrong - ignores market probability
@@ -117,13 +146,13 @@ async function runMigrations() {
             // PREVIOUSLY ENABLED CORE - disabled for now
             'SpotLag_TimeAware',    // Needs more testing with BS edge
             'SpotLag_LateOnly',     // Needs more testing
-            'PureProb_Late',        // Needs more testing
+            // 'PureProb_Late' - enabled above
 
             // DISABLED - need BS edge validation first
             'SpotLag_TimeAwareAggro', 'SpotLag_TimeAwareSafe', 'SpotLag_TimeAwareTP',
             'SpotLag_Trail_V4', 'SpotLag_Trail_V5',  // V4/V5 more aggressive, enable later
-            'PureProb_Base', 'PureProb_Conservative', 'PureProb_Aggressive',
-            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive', 'LagProb_RightSide',
+            'PureProb_Base', 'PureProb_Aggressive',  // PureProb_Conservative enabled above
+            'LagProb_Base', 'LagProb_Conservative', 'LagProb_Aggressive',  // LagProb_RightSide enabled above
             'Endgame_Aggressive', 'Endgame_Safe', 'Endgame_Momentum',
 
             // OLD/DEPRECATED STRATEGIES

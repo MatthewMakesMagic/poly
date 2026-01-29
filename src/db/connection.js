@@ -872,7 +872,17 @@ async function ensureLiveTradesSchema() {
             'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS tx_hash TEXT',
             'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS condition_id TEXT',
             'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS timestamp_et TEXT',
-            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS peak_price REAL'
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS peak_price REAL',
+            // LAG ANALYTICS COLUMNS - Jan 29 2026
+            // Track when trades entered due to lag and edge calculation accuracy
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS oracle_price REAL',      // Oracle price at entry (Chainlink/Pyth)
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS oracle_source TEXT',     // Source: chainlink, pyth, binance
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS chainlink_staleness REAL', // Chainlink staleness in seconds
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS lag_ratio REAL',         // Market lag ratio at entry
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS bs_prob REAL',           // Black-Scholes expected probability
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS market_prob REAL',       // Market probability at entry
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS edge_at_entry REAL',     // Calculated edge (bs_prob - market_prob)
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS price_to_beat REAL'      // Strike price for this window
         ];
 
         for (const sql of migrations) {
@@ -909,14 +919,25 @@ export async function saveLiveTrade(trade, retryCount = 0) {
 
     try {
         await pgPool.query(`
-            INSERT INTO live_trades (type, strategy_name, crypto, side, window_epoch, price, size, spot_price, time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id, timestamp, timestamp_et, peak_price)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            INSERT INTO live_trades (
+                type, strategy_name, crypto, side, window_epoch, price, size, spot_price,
+                time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id,
+                timestamp, timestamp_et, peak_price,
+                oracle_price, oracle_source, chainlink_staleness, lag_ratio,
+                bs_prob, market_prob, edge_at_entry, price_to_beat
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
         `, [
             trade.type, trade.strategy_name, trade.crypto, trade.side,
             trade.window_epoch, trade.price, trade.size, trade.spot_price,
             trade.time_remaining, trade.reason, trade.entry_price, trade.pnl,
             trade.outcome || null, trade.tx_hash || null, trade.condition_id || null,
-            trade.timestamp, trade.timestamp_et, trade.peak_price || null
+            trade.timestamp, trade.timestamp_et, trade.peak_price || null,
+            // Lag analytics fields
+            trade.oracle_price || null, trade.oracle_source || null,
+            trade.chainlink_staleness || null, trade.lag_ratio || null,
+            trade.bs_prob || null, trade.market_prob || null,
+            trade.edge_at_entry || null, trade.price_to_beat || null
         ]);
 
         console.log(`[LiveTrade] ✅ Saved: ${trade.type} ${trade.strategy_name} ${trade.crypto} ${trade.side} @ ${trade.price}`);
@@ -1158,6 +1179,270 @@ export async function getRunningPnL() {
     } catch (error) {
         console.error('Failed to get running P&L:', error.message);
         return { total: 0, byStrategy: {}, error: error.message };
+    }
+}
+
+// ============================================================================
+// LAG ANALYTICS - Track lag-based entry performance (Jan 29 2026)
+// ============================================================================
+
+/**
+ * Analyze lag-based trades to understand when lag detection leads to good outcomes
+ *
+ * Returns:
+ * - Overall stats for trades with lag data
+ * - Win rate by lag_ratio buckets
+ * - Win rate by edge_at_entry buckets
+ * - Win rate by oracle_source
+ * - Win rate by chainlink staleness buckets
+ * - Recent lag-based trades with outcomes
+ */
+export async function getLagAnalytics(options = {}) {
+    if (!USE_POSTGRES || !pgPool) {
+        return { error: 'PostgreSQL not available' };
+    }
+
+    try {
+        const { hours = 24 } = options;
+        const timeFilter = `timestamp > NOW() - INTERVAL '${hours} hours'`;
+
+        // 1. Overall lag-based trade stats
+        const overallStats = await pgPool.query(`
+            SELECT
+                COUNT(*) as total_entries,
+                COUNT(CASE WHEN lag_ratio IS NOT NULL THEN 1 END) as with_lag_data,
+                COUNT(CASE WHEN edge_at_entry IS NOT NULL THEN 1 END) as with_edge_data,
+                AVG(lag_ratio) as avg_lag_ratio,
+                AVG(edge_at_entry) as avg_edge,
+                AVG(chainlink_staleness) as avg_chainlink_staleness
+            FROM live_trades
+            WHERE type = 'entry'
+            AND ${timeFilter}
+        `);
+
+        // 2. Win rate by lag_ratio buckets (for entries with corresponding exits)
+        const lagRatioBuckets = await pgPool.query(`
+            WITH entry_exit AS (
+                SELECT
+                    e.id as entry_id,
+                    e.strategy_name,
+                    e.crypto,
+                    e.window_epoch,
+                    e.lag_ratio,
+                    e.edge_at_entry,
+                    e.oracle_source,
+                    e.chainlink_staleness,
+                    e.bs_prob,
+                    e.market_prob,
+                    x.pnl,
+                    CASE WHEN x.pnl > 0 THEN 1 ELSE 0 END as won
+                FROM live_trades e
+                JOIN live_trades x ON
+                    x.strategy_name = e.strategy_name
+                    AND x.crypto = e.crypto
+                    AND x.window_epoch = e.window_epoch
+                    AND x.type = 'exit'
+                WHERE e.type = 'entry'
+                AND e.lag_ratio IS NOT NULL
+                AND e.${timeFilter}
+            )
+            SELECT
+                CASE
+                    WHEN lag_ratio < 0.3 THEN '< 0.3 (strong lag)'
+                    WHEN lag_ratio < 0.5 THEN '0.3 - 0.5 (moderate lag)'
+                    WHEN lag_ratio < 0.7 THEN '0.5 - 0.7 (weak lag)'
+                    ELSE '>= 0.7 (no lag)'
+                END as lag_bucket,
+                COUNT(*) as trades,
+                SUM(won) as wins,
+                ROUND((SUM(won)::decimal / COUNT(*) * 100)::numeric, 1) as win_rate,
+                ROUND(SUM(pnl)::numeric, 2) as total_pnl,
+                ROUND(AVG(pnl)::numeric, 3) as avg_pnl
+            FROM entry_exit
+            GROUP BY CASE
+                WHEN lag_ratio < 0.3 THEN '< 0.3 (strong lag)'
+                WHEN lag_ratio < 0.5 THEN '0.3 - 0.5 (moderate lag)'
+                WHEN lag_ratio < 0.7 THEN '0.5 - 0.7 (weak lag)'
+                ELSE '>= 0.7 (no lag)'
+            END
+            ORDER BY lag_bucket
+        `);
+
+        // 3. Win rate by edge_at_entry buckets
+        const edgeBuckets = await pgPool.query(`
+            WITH entry_exit AS (
+                SELECT
+                    e.edge_at_entry,
+                    x.pnl,
+                    CASE WHEN x.pnl > 0 THEN 1 ELSE 0 END as won
+                FROM live_trades e
+                JOIN live_trades x ON
+                    x.strategy_name = e.strategy_name
+                    AND x.crypto = e.crypto
+                    AND x.window_epoch = e.window_epoch
+                    AND x.type = 'exit'
+                WHERE e.type = 'entry'
+                AND e.edge_at_entry IS NOT NULL
+                AND e.${timeFilter}
+            )
+            SELECT
+                CASE
+                    WHEN edge_at_entry < 0.02 THEN '< 2%'
+                    WHEN edge_at_entry < 0.03 THEN '2% - 3%'
+                    WHEN edge_at_entry < 0.05 THEN '3% - 5%'
+                    WHEN edge_at_entry < 0.10 THEN '5% - 10%'
+                    ELSE '>= 10%'
+                END as edge_bucket,
+                COUNT(*) as trades,
+                SUM(won) as wins,
+                ROUND((SUM(won)::decimal / COUNT(*) * 100)::numeric, 1) as win_rate,
+                ROUND(SUM(pnl)::numeric, 2) as total_pnl,
+                ROUND(AVG(pnl)::numeric, 3) as avg_pnl
+            FROM entry_exit
+            GROUP BY CASE
+                WHEN edge_at_entry < 0.02 THEN '< 2%'
+                WHEN edge_at_entry < 0.03 THEN '2% - 3%'
+                WHEN edge_at_entry < 0.05 THEN '3% - 5%'
+                WHEN edge_at_entry < 0.10 THEN '5% - 10%'
+                ELSE '>= 10%'
+            END
+            ORDER BY edge_bucket
+        `);
+
+        // 4. Win rate by oracle_source
+        const byOracleSource = await pgPool.query(`
+            WITH entry_exit AS (
+                SELECT
+                    e.oracle_source,
+                    x.pnl,
+                    CASE WHEN x.pnl > 0 THEN 1 ELSE 0 END as won
+                FROM live_trades e
+                JOIN live_trades x ON
+                    x.strategy_name = e.strategy_name
+                    AND x.crypto = e.crypto
+                    AND x.window_epoch = e.window_epoch
+                    AND x.type = 'exit'
+                WHERE e.type = 'entry'
+                AND e.oracle_source IS NOT NULL
+                AND e.${timeFilter}
+            )
+            SELECT
+                COALESCE(oracle_source, 'unknown') as oracle_source,
+                COUNT(*) as trades,
+                SUM(won) as wins,
+                ROUND((SUM(won)::decimal / COUNT(*) * 100)::numeric, 1) as win_rate,
+                ROUND(SUM(pnl)::numeric, 2) as total_pnl
+            FROM entry_exit
+            GROUP BY oracle_source
+            ORDER BY trades DESC
+        `);
+
+        // 5. Win rate by chainlink staleness buckets
+        const stalenessBuckets = await pgPool.query(`
+            WITH entry_exit AS (
+                SELECT
+                    e.chainlink_staleness,
+                    x.pnl,
+                    CASE WHEN x.pnl > 0 THEN 1 ELSE 0 END as won
+                FROM live_trades e
+                JOIN live_trades x ON
+                    x.strategy_name = e.strategy_name
+                    AND x.crypto = e.crypto
+                    AND x.window_epoch = e.window_epoch
+                    AND x.type = 'exit'
+                WHERE e.type = 'entry'
+                AND e.chainlink_staleness IS NOT NULL
+                AND e.${timeFilter}
+            )
+            SELECT
+                CASE
+                    WHEN chainlink_staleness <= 5 THEN 'Fresh (<= 5s)'
+                    WHEN chainlink_staleness <= 15 THEN 'Moderate (5-15s)'
+                    WHEN chainlink_staleness <= 30 THEN 'Stale (15-30s)'
+                    ELSE 'Very Stale (> 30s)'
+                END as staleness_bucket,
+                COUNT(*) as trades,
+                SUM(won) as wins,
+                ROUND((SUM(won)::decimal / COUNT(*) * 100)::numeric, 1) as win_rate,
+                ROUND(SUM(pnl)::numeric, 2) as total_pnl
+            FROM entry_exit
+            GROUP BY CASE
+                WHEN chainlink_staleness <= 5 THEN 'Fresh (<= 5s)'
+                WHEN chainlink_staleness <= 15 THEN 'Moderate (5-15s)'
+                WHEN chainlink_staleness <= 30 THEN 'Stale (15-30s)'
+                ELSE 'Very Stale (> 30s)'
+            END
+            ORDER BY staleness_bucket
+        `);
+
+        // 6. Recent lag-based trades with full details
+        const recentTrades = await pgPool.query(`
+            WITH entry_exit AS (
+                SELECT
+                    e.strategy_name,
+                    e.crypto,
+                    e.side,
+                    e.window_epoch,
+                    e.timestamp as entry_time,
+                    e.price as entry_price,
+                    e.lag_ratio,
+                    e.edge_at_entry,
+                    e.bs_prob,
+                    e.market_prob,
+                    e.oracle_source,
+                    e.chainlink_staleness,
+                    e.price_to_beat,
+                    e.oracle_price,
+                    e.spot_price,
+                    x.price as exit_price,
+                    x.pnl,
+                    x.reason as exit_reason,
+                    CASE WHEN x.pnl > 0 THEN 'WIN' ELSE 'LOSS' END as outcome
+                FROM live_trades e
+                JOIN live_trades x ON
+                    x.strategy_name = e.strategy_name
+                    AND x.crypto = e.crypto
+                    AND x.window_epoch = e.window_epoch
+                    AND x.type = 'exit'
+                WHERE e.type = 'entry'
+                AND e.${timeFilter}
+            )
+            SELECT
+                strategy_name,
+                crypto,
+                side,
+                TO_CHAR(entry_time, 'MM-DD HH24:MI') as entry_time,
+                ROUND(entry_price::numeric, 3) as entry_price,
+                ROUND(exit_price::numeric, 3) as exit_price,
+                ROUND(pnl::numeric, 2) as pnl,
+                outcome,
+                exit_reason,
+                ROUND(lag_ratio::numeric, 2) as lag_ratio,
+                ROUND((edge_at_entry * 100)::numeric, 1) as edge_pct,
+                ROUND((bs_prob * 100)::numeric, 1) as bs_prob_pct,
+                ROUND((market_prob * 100)::numeric, 1) as market_prob_pct,
+                oracle_source,
+                ROUND(chainlink_staleness::numeric, 1) as chainlink_staleness_sec,
+                ROUND(price_to_beat::numeric, 2) as strike_price,
+                ROUND(oracle_price::numeric, 2) as oracle_price
+            FROM entry_exit
+            ORDER BY entry_time DESC
+            LIMIT 20
+        `);
+
+        return {
+            overall: overallStats.rows[0] || {},
+            byLagRatio: lagRatioBuckets.rows,
+            byEdge: edgeBuckets.rows,
+            byOracleSource: byOracleSource.rows,
+            byChainlinkStaleness: stalenessBuckets.rows,
+            recentTrades: recentTrades.rows,
+            period_hours: hours,
+            generated_at: new Date().toISOString()
+        };
+    } catch (error) {
+        console.error('Failed to get lag analytics:', error.message);
+        return { error: error.message };
     }
 }
 
@@ -2009,6 +2294,7 @@ export default {
     getLiveTrades,
     getStrategyPerformanceStats,
     getRunningPnL,
+    getLagAnalytics,  // Lag-based trade analytics (Jan 29 2026)
     getOpenPositions,
     // OracleOverseer & Resolution
     initOracleResolutionTables,

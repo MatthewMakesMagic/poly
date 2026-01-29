@@ -712,17 +712,51 @@ class TickCollector {
             }
 
             // LOCK IN price_to_beat on first tick of window
-            // This is the strike price - it should NOT change during the window!
-            if (!market.priceToBeatLocked && spotPrice > 0) {
-                market.priceToBeat = spotPrice;
-                market.priceToBeatLocked = true;
-                console.log(`📌 ${crypto} window ${market.epoch}: price_to_beat locked at $${spotPrice.toFixed(2)}`);
+            // CRITICAL FIX (Jan 29 2026): Use oracle prices, not Binance!
+            // Polymarket resolves based on Chainlink, so strike must match oracle at window start
+            // Priority: Chainlink > Pyth > Binance (last resort)
+            // Note: XRP has NO Chainlink feed on Polygon, so Pyth is primary for XRP
+            if (!market.priceToBeatLocked) {
+                let strikePrice = null;
+                let source = 'unknown';
+
+                // 1. Chainlink (primary for BTC/ETH/SOL - what Polymarket uses)
+                if (chainlinkPrice && chainlinkPrice > 0) {
+                    strikePrice = chainlinkPrice;
+                    source = 'Chainlink';
+                }
+                // 2. Pyth (best fallback - tracks Chainlink within $1-30, primary for XRP)
+                else if (pythPrice && pythPrice > 0) {
+                    strikePrice = pythPrice;
+                    source = 'Pyth';
+                }
+                // 3. Binance (last resort - can be $119+ off for BTC!)
+                else if (spotPrice > 0) {
+                    strikePrice = spotPrice;
+                    source = 'Binance (WARNING: may differ from resolution)';
+                }
+
+                if (strikePrice > 0) {
+                    market.priceToBeat = strikePrice;
+                    market.priceToBeatLocked = true;
+                    console.log(`📌 ${crypto} window ${market.epoch}: price_to_beat locked at $${strikePrice.toFixed(2)} [${source}]`);
+                }
             }
             
             // Use locked price_to_beat (should never be null after first tick)
             const priceToBeat = market.priceToBeat || spotPrice;
             const spotDelta = spotPrice - priceToBeat;
             const spotDeltaPct = priceToBeat > 0 ? (spotDelta / priceToBeat) * 100 : 0;
+
+            // ORACLE PRICE: Best available oracle for strategy decisions
+            // Priority: Chainlink (if fresh <5s) > Pyth > Binance
+            // This is what strategies should use for position decisions, NOT spot_price (Binance)
+            const CHAINLINK_STALE_THRESHOLD = 5; // seconds
+            const chainlinkFresh = chainlinkPrice && chainlinkStaleness !== null && chainlinkStaleness <= CHAINLINK_STALE_THRESHOLD;
+            const oraclePrice = chainlinkFresh ? chainlinkPrice : (pythPrice || spotPrice);
+            const oracleSource = chainlinkFresh ? 'chainlink' : (pythPrice ? 'pyth' : 'binance');
+            const oracleDelta = oraclePrice - priceToBeat;
+            const oracleDeltaPct = priceToBeat > 0 ? (oracleDelta / priceToBeat) * 100 : 0;
             
             // Prepare tick data
             const tick = {
@@ -750,6 +784,13 @@ class TickCollector {
                 price_to_beat: priceToBeat,
                 spot_delta: spotDelta,
                 spot_delta_pct: spotDeltaPct / 100,  // Convert to decimal for research engine
+
+                // ORACLE PRICE: Best oracle for strategy decisions (Chainlink if fresh, else Pyth)
+                // Strategies should use this instead of spot_price for position decisions
+                oracle_price: oraclePrice,
+                oracle_source: oracleSource,
+                oracle_delta: oracleDelta,
+                oracle_delta_pct: oracleDeltaPct / 100,  // Convert to decimal
                 
                 spread,
                 spread_pct: spreadPct,

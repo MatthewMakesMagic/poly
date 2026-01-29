@@ -1259,10 +1259,30 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Save live trade to database
-     * Now includes tx_hash and condition_id for reconciliation with Polymarket
+     * Now includes tx_hash, condition_id, and LAG ANALYTICS for strategy review
+     *
+     * LAG ANALYTICS (Jan 29 2026):
+     * - oracle_price: Chainlink/Pyth price at entry (what determines resolution)
+     * - oracle_source: 'chainlink', 'pyth', or 'binance'
+     * - chainlink_staleness: How stale Chainlink was at entry (seconds)
+     * - lag_ratio: Market lag ratio (how much market is lagging oracle)
+     * - bs_prob: Black-Scholes expected probability
+     * - market_prob: Actual market probability at entry
+     * - edge_at_entry: Calculated edge (bs_prob - market_prob)
+     * - price_to_beat: Strike price for this window
      */
     async saveTrade(type, strategyName, signal, tick, price, position = null, pnl = null, txHash = null) {
         try {
+            // Extract lag analytics from signal metadata
+            // Signals include: lagRatio, edge, expected (BS prob), market (market prob)
+            const lagRatio = signal.lagRatio ? parseFloat(signal.lagRatio) : null;
+            const edgeStr = signal.edge || signal.edgeAtEntry;
+            const edgeAtEntry = edgeStr ? parseFloat(edgeStr.replace('%', '')) / 100 : null;
+            const bsProbStr = signal.expected || signal.bsProb;
+            const bsProb = bsProbStr ? parseFloat(bsProbStr.replace('%', '')) / 100 : null;
+            const marketProbStr = signal.market || signal.marketProb;
+            const marketProb = marketProbStr ? parseFloat(marketProbStr.replace('%', '')) / 100 : null;
+
             await saveLiveTrade({
                 type,
                 strategy_name: strategyName,
@@ -1278,7 +1298,17 @@ export class LiveTrader extends EventEmitter {
                 pnl,
                 tx_hash: txHash,
                 condition_id: tick.condition_id || null,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                // LAG ANALYTICS - from tick data
+                oracle_price: tick.oracle_price || null,
+                oracle_source: tick.oracle_source || null,
+                chainlink_staleness: tick.chainlink_staleness || null,
+                price_to_beat: tick.price_to_beat || null,
+                // LAG ANALYTICS - from signal data
+                lag_ratio: lagRatio,
+                bs_prob: bsProb,
+                market_prob: marketProb,
+                edge_at_entry: edgeAtEntry
             });
         } catch (error) {
             // saveLiveTrade now has retry logic, this is a final fallback log
