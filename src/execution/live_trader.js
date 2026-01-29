@@ -420,9 +420,22 @@ export class LiveTrader extends EventEmitter {
                 continue;
             }
 
-            // Calculate current price and PnL
-            const currentPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
+            // CRITICAL: Get LIVE price from order book - this is the source of truth
+            // Tick data can be stale or missing, order book is what we'll actually trade at
+            let currentPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
             const entryPrice = position.entryPrice;
+
+            // If tick price is invalid, fetch LIVE from order book
+            if (!currentPrice || currentPrice <= 0) {
+                try {
+                    const liveBook = await this.client.getBestPrices(position.tokenId);
+                    currentPrice = liveBook.bid;
+                    this.logger.log(`[LiveTrader] 📡 LIVE PRICE: ${positionKey} | tick had no price, fetched bid=${currentPrice?.toFixed(3)} from order book`);
+                } catch (bookErr) {
+                    this.logger.error(`[LiveTrader] ❌ FAILED TO GET LIVE PRICE: ${positionKey} | ${bookErr.message}`);
+                    continue;
+                }
+            }
 
             // Validate price data
             if (!currentPrice || currentPrice <= 0 || !entryPrice || entryPrice <= 0) {
@@ -626,7 +639,25 @@ export class LiveTrader extends EventEmitter {
                 return false;
             }
 
-            const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
+            // CRITICAL: Get LIVE price from order book - this is the actual price we'll trade at
+            // Tick data can be stale, order book is source of truth
+            let rawPrice = position.tokenSide === 'UP' ? tick?.up_bid : tick?.down_bid;
+
+            // Always fetch fresh from order book for exits - we need accurate price
+            try {
+                const liveBook = await this.client.getBestPrices(position.tokenId);
+                const liveBid = liveBook.bid;
+                if (liveBid && liveBid > 0) {
+                    // Use live price if available
+                    if (rawPrice && Math.abs(liveBid - rawPrice) > 0.02) {
+                        this.logger.warn(`[LiveTrader] 📡 PRICE DIFF: tick=${rawPrice?.toFixed(3)} vs live=${liveBid.toFixed(3)} - using LIVE`);
+                    }
+                    rawPrice = liveBid;
+                }
+            } catch (bookErr) {
+                this.logger.warn(`[LiveTrader] ⚠️ Could not fetch live price, using tick: ${bookErr.message}`);
+            }
+
             this.logger.log(`[LiveTrader] 📊 EXIT DETAILS: rawPrice=${rawPrice?.toFixed(3)} | shares=${position.shares} | tokenId=${position.tokenId?.slice(0, 16)}...`);
 
             // DYNAMIC EXIT BUFFER: Use smaller buffer when prices are low to ensure exits work
