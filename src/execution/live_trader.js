@@ -926,12 +926,12 @@ export class LiveTrader extends EventEmitter {
                 }
                 
             } else if (signal.action === 'sell') {
-                // Check if we have a position to exit
-                if (!this.livePositions[positionKey]) {
-                    return null; // No position to exit
-                }
-                
-                return await this.executeExit(strategyName, signal, tick, market);
+                // CRITICAL FIX: IGNORE strategy sell signals for live positions!
+                // Strategies track PAPER positions with different entry prices.
+                // LiveTrader's monitorPositions handles ALL exits based on actual live entry prices.
+                // This prevents exiting at a loss when paper position shows profit.
+                this.logger.log(`[LiveTrader] 🚫 IGNORING strategy sell signal for ${positionKey} - monitorPositions handles exits`);
+                return null;
             }
         } catch (error) {
             this.logger.error(`[LiveTrader] Error processing signal for ${strategyName}:`, error.message);
