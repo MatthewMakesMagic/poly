@@ -375,10 +375,23 @@ export class LiveTrader extends EventEmitter {
         const crypto = tick.crypto;
         const windowEpoch = tick.window_epoch;
 
+        // DEBUG: Log all positions we're tracking for this crypto
+        const allPositions = Object.entries(this.livePositions).filter(([k, p]) => p.crypto === crypto);
+        if (allPositions.length > 0) {
+            this.logger.log(`[LiveTrader] 🔍 MONITOR: ${crypto} has ${allPositions.length} tracked positions, tick epoch=${windowEpoch}`);
+        }
+
         // Check all positions for this crypto
         for (const [positionKey, position] of Object.entries(this.livePositions)) {
             if (position.crypto !== crypto) continue;
-            if (position.windowEpoch !== windowEpoch) continue;
+
+            // CRITICAL BUG FIX: Monitor positions even from previous windows!
+            // Old logic skipped positions with different windowEpoch, causing orphaned positions
+            // Now we monitor ALL positions for this crypto, regardless of window
+            if (position.windowEpoch !== windowEpoch) {
+                this.logger.warn(`[LiveTrader] ⚠️ STALE POSITION: ${positionKey} | pos.epoch=${position.windowEpoch} != tick.epoch=${windowEpoch} | STILL MONITORING`);
+                // Don't continue - we need to monitor and potentially exit this position!
+            }
 
             // Skip if already exiting (prevents duplicate triggers)
             if (position.state === PositionState.EXITING) {
@@ -431,6 +444,10 @@ export class LiveTrader extends EventEmitter {
             // ═══════════════════════════════════════════════════════════════
             // 1. STOP LOSS - ALWAYS CHECK FIRST (safety net, catches gaps)
             // ═══════════════════════════════════════════════════════════════
+
+            // DEBUG: Log EVERY tick's TP/SL check (remove after debugging)
+            this.logger.log(`[LiveTrader] 🎯 CHECK: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: $${entryPrice.toFixed(3)} → Current: $${currentPrice.toFixed(3)} | P&L: ${(pnlPct * 100).toFixed(1)}% | StopLoss triggers at: ${(-stopLossThreshold * 100).toFixed(0)}% | Trail: ${(trailPct * 100).toFixed(0)}%`);
+
             if (pnlPct <= -stopLossThreshold) {
                 this.logger.log(`[LiveTrader] 🛑 STOP LOSS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | Loss: ${(pnlPct * 100).toFixed(1)}% <= -${(stopLossThreshold * 100).toFixed(0)}%`);
 
@@ -581,6 +598,8 @@ export class LiveTrader extends EventEmitter {
      * Execute exit directly (for TP/SL monitoring)
      */
     async executeExitDirect(position, tick, market, reason) {
+        this.logger.log(`[LiveTrader] 🚨 EXECUTING EXIT: ${position.strategyName} | ${position.crypto} ${position.tokenSide} | Reason: ${reason}`);
+
         try {
             // CRITICAL: Validate we have tokenId before attempting exit
             if (!position.tokenId) {
@@ -589,6 +608,7 @@ export class LiveTrader extends EventEmitter {
             }
 
             const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
+            this.logger.log(`[LiveTrader] 📊 EXIT DETAILS: rawPrice=${rawPrice?.toFixed(3)} | shares=${position.shares} | tokenId=${position.tokenId?.slice(0, 16)}...`);
 
             // DYNAMIC EXIT BUFFER: Use smaller buffer when prices are low to ensure exits work
             // At low prices (< 30¢), a 2¢ buffer can make order too small to execute
