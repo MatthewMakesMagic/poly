@@ -48,6 +48,38 @@ const BINANCE_SYMBOLS = Object.fromEntries(
     Object.entries(CRYPTO_CONFIG).map(([k, v]) => [k, v.binanceSymbol])
 );
 
+/**
+ * Fetch actual resolution from Polymarket's API
+ * This is the GROUND TRUTH - what Polymarket actually resolved to
+ * (based on Chainlink Data Streams)
+ */
+async function fetchActualResolution(crypto, epoch) {
+    const slug = `${crypto.toLowerCase()}-updown-15m-${epoch}`;
+
+    try {
+        const response = await axios.get(`${GAMMA_API}/markets?slug=${slug}`);
+        const markets = response.data;
+
+        if (markets && markets.length > 0) {
+            const market = markets[0];
+
+            // Check if market is resolved (closed with final prices)
+            if (market.closed) {
+                const prices = JSON.parse(market.outcomePrices || '[]');
+                const upPrice = parseFloat(prices[0]);
+
+                // UP won if UP token = $1 (>0.9), DOWN won if UP token = $0 (<0.1)
+                if (upPrice > 0.9) return 'up';
+                if (upPrice < 0.1) return 'down';
+            }
+        }
+    } catch (error) {
+        console.error(`[DataCollector] Error fetching resolution for ${slug}:`, error.message);
+    }
+
+    return null; // Not yet resolved
+}
+
 export class DataCollector {
     constructor(options = {}) {
         this.cryptos = options.cryptos || ['BTC'];
@@ -647,14 +679,44 @@ export class DataCollector {
             
             // Check for window end
             if (timeRemaining <= 0) {
-                this.onWindowEnd({ 
-                    crypto, 
-                    epoch: market.epoch, 
+                // CRITICAL FIX (Jan 29 2026): Don't calculate outcome from spot price!
+                // Polymarket resolves based on Chainlink, not Binance/Pyth.
+                // Use market sentiment (upMid) as preliminary - it reflects market's view
+                // of resolution, which is informed by Chainlink.
+                const marketPrediction = book?.up?.midpoint >= 0.5 ? 'up' : 'down';
+
+                const windowInfo = {
+                    crypto,
+                    epoch: market.epoch,
                     market,
                     priceToBeat: state.priceToBeat,
                     finalPrice: spot,
-                    outcome: spot >= state.priceToBeat ? 'up' : 'down'
-                });
+                    // Use market's prediction as preliminary outcome
+                    // (Market makers have Chainlink data, so this is more accurate than our spot)
+                    outcome: marketPrediction,
+                    // Also pass our spot-based calculation for comparison
+                    spotBasedOutcome: spot >= state.priceToBeat ? 'up' : 'down',
+                    finalUpMid: book?.up?.midpoint || 0.5
+                };
+
+                this.onWindowEnd(windowInfo);
+
+                // ASYNC: Fetch actual resolution from Polymarket API (ground truth)
+                // This happens after a delay since resolution takes time to propagate
+                setTimeout(async () => {
+                    const actualOutcome = await fetchActualResolution(crypto, market.epoch);
+                    if (actualOutcome) {
+                        const matched = actualOutcome === marketPrediction;
+                        const spotMatched = actualOutcome === windowInfo.spotBasedOutcome;
+                        if (!matched || !spotMatched) {
+                            console.log(`[DataCollector] RESOLUTION TRUTH: ${crypto} epoch=${market.epoch}`);
+                            console.log(`   Actual (Polymarket API): ${actualOutcome.toUpperCase()}`);
+                            console.log(`   Market prediction: ${marketPrediction.toUpperCase()} ${matched ? '✓' : '✗'}`);
+                            console.log(`   Spot-based (old): ${windowInfo.spotBasedOutcome.toUpperCase()} ${spotMatched ? '✓' : '✗'}`);
+                        }
+                    }
+                }, 30000); // Check 30s after window end
+
                 continue;
             }
             
