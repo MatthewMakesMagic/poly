@@ -504,6 +504,13 @@ export class LiveTrader extends EventEmitter {
             // ═══════════════════════════════════════════════════════════════
             const dropFromPeak = (position.highWaterMark - currentPrice) / position.highWaterMark;
 
+            // DEBUG: Log every trailing check when there's significant drop (>5% from peak)
+            if (dropFromPeak > 0.05) {
+                this.logger.log(`[LiveTrader] 🔍 TRAIL CHECK: ${position.strategyName} | ${crypto} ${position.tokenSide} | Drop: ${(dropFromPeak * 100).toFixed(1)}% vs trail=${(trailPct * 100).toFixed(0)}% | P&L: ${(pnlPct * 100).toFixed(1)}% vs floor=${(position.profitFloor * 100).toFixed(0)}% | Would trigger: ${dropFromPeak >= trailPct} && ${pnlPct > position.profitFloor} = ${dropFromPeak >= trailPct && pnlPct > position.profitFloor}`);
+            }
+
+            // NOTE: Trailing only triggers if ABOVE floor (floor check takes priority for locking profits)
+            // If profitFloor=0 and pnlPct<0, trailing won't trigger - stop loss handles losses
             if (dropFromPeak >= trailPct && pnlPct > position.profitFloor) {
                 // Only trail-exit if we're still above the floor (floor takes priority)
                 const capturedPct = position.peakPnlPct > 0 ? (pnlPct / position.peakPnlPct * 100) : 100;
@@ -531,7 +538,9 @@ export class LiveTrader extends EventEmitter {
 
             // Log periodic status for debugging (every 60 ticks = ~1 minute)
             if (position.ticksMonitored % 60 === 0) {
-                this.logger.log(`[LiveTrader] 📊 STATUS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: ${entryPrice.toFixed(3)} | Current: ${currentPrice.toFixed(3)} | P&L: ${(pnlPct * 100).toFixed(1)}% | Peak: +${(position.peakPnlPct * 100).toFixed(1)}% | Floor: +${(position.profitFloor * 100).toFixed(0)}% | Ticks: ${position.ticksMonitored}`);
+                const dropPct = dropFromPeak * 100;
+                const trailTriggerPct = trailPct * 100;
+                this.logger.log(`[LiveTrader] 📊 STATUS: ${position.strategyName} | ${crypto} ${position.tokenSide} | Entry: $${entryPrice.toFixed(3)} → Current: $${currentPrice.toFixed(3)} (HWM: $${position.highWaterMark.toFixed(3)}) | P&L: ${(pnlPct * 100).toFixed(1)}% | Drop: ${dropPct.toFixed(1)}%/${trailTriggerPct.toFixed(0)}% | Floor: +${(position.profitFloor * 100).toFixed(0)}% | StopLoss: -${(stopLossThreshold * 100).toFixed(0)}%`);
             }
         }
 
@@ -1067,7 +1076,11 @@ export class LiveTrader extends EventEmitter {
                 });
                 
                 // Save to database with tx_hash for reconciliation
-                await this.saveTrade('entry', strategyName, signal, tick, response.avgPrice || entryPrice, null, null, response.tx || response.txHashes?.[0]);
+                await this.saveTrade('entry', strategyName, signal, tick, response.avgPrice || entryPrice, null, null, response.tx || response.txHashes?.[0], {
+                    priceRequested: response.priceRequested || entryPrice,
+                    priceFilled: response.priceFilled || response.avgPrice || entryPrice,
+                    fillDetails: response.fillDetails
+                });
                 
                 return response;
             } else {
@@ -1150,7 +1163,11 @@ export class LiveTrader extends EventEmitter {
                             wasRetry: true
                         });
                         
-                        await this.saveTrade('entry', strategyName, signal, tick, retryResponse.avgPrice || retryPrice, null, null, retryResponse.tx || retryResponse.txHashes?.[0]);
+                        await this.saveTrade('entry', strategyName, signal, tick, retryResponse.avgPrice || retryPrice, null, null, retryResponse.tx || retryResponse.txHashes?.[0], {
+                            priceRequested: retryResponse.priceRequested || retryPrice,
+                            priceFilled: retryResponse.priceFilled || retryResponse.avgPrice || retryPrice,
+                            fillDetails: retryResponse.fillDetails
+                        });
                         return retryResponse;
                     }
                 } catch (retryError) {
@@ -1245,7 +1262,11 @@ export class LiveTrader extends EventEmitter {
                 });
                 
                 // Save to database
-                await this.saveTrade('exit', strategyName, signal, tick, response.avgPrice || price, position, netPnl);
+                await this.saveTrade('exit', strategyName, signal, tick, response.avgPrice || price, position, netPnl, response.tx || null, {
+                    priceRequested: response.priceRequested || price,
+                    priceFilled: response.priceFilled || response.avgPrice || price,
+                    fillDetails: response.fillDetails
+                });
                 
                 return response;
             } else {
@@ -1263,7 +1284,7 @@ export class LiveTrader extends EventEmitter {
     
     /**
      * Save live trade to database
-     * Now includes tx_hash, condition_id, and LAG ANALYTICS for strategy review
+     * Now includes tx_hash, condition_id, LAG ANALYTICS, and EXECUTION PRICE TRACKING
      *
      * LAG ANALYTICS (Jan 29 2026):
      * - oracle_price: Chainlink/Pyth price at entry (what determines resolution)
@@ -1274,8 +1295,13 @@ export class LiveTrader extends EventEmitter {
      * - market_prob: Actual market probability at entry
      * - edge_at_entry: Calculated edge (bs_prob - market_prob)
      * - price_to_beat: Strike price for this window
+     *
+     * EXECUTION PRICE TRACKING (Jan 29 2026):
+     * - price_requested: Price we sent to the API (willing to pay)
+     * - price_filled: Actual execution price (may be better due to price improvement)
+     * - fill_details: JSON with source of fill price determination
      */
-    async saveTrade(type, strategyName, signal, tick, price, position = null, pnl = null, txHash = null) {
+    async saveTrade(type, strategyName, signal, tick, price, position = null, pnl = null, txHash = null, priceData = null) {
         try {
             // Extract lag analytics from signal metadata
             // Signals include: lagRatio, edge, expected (BS prob), market (market prob)
@@ -1312,7 +1338,11 @@ export class LiveTrader extends EventEmitter {
                 lag_ratio: lagRatio,
                 bs_prob: bsProb,
                 market_prob: marketProb,
-                edge_at_entry: edgeAtEntry
+                edge_at_entry: edgeAtEntry,
+                // EXECUTION PRICE TRACKING - from SDK response
+                price_requested: priceData?.priceRequested || null,
+                price_filled: priceData?.priceFilled || null,
+                fill_details: priceData?.fillDetails || null
             });
         } catch (error) {
             // saveLiveTrade now has retry logic, this is a final fallback log

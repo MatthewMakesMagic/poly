@@ -262,20 +262,64 @@ export class SDKClient {
                 this.logger.warn(`[SDKClient] ⚠️ ORDER NOT FILLED: ${order?.orderID} (status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess})`);
             }
             
+            // Extract actual fill price from order response if available
+            // Polymarket FOK orders can get price improvement (fill at better than requested)
+            // The API may return: takingAmount, makingAmount, or fills array
+            let actualFillPrice = price; // Default to requested price
+            let fillDetails = null;
+
+            if (order) {
+                // Log raw response for debugging
+                this.logger.log(`[SDKClient] RAW ORDER RESPONSE: ${JSON.stringify(order)}`);
+
+                // Try to extract actual fill price from various possible fields
+                if (order.avgPrice) {
+                    actualFillPrice = parseFloat(order.avgPrice);
+                    fillDetails = { source: 'avgPrice' };
+                } else if (order.takingAmount && order.makingAmount) {
+                    // takingAmount is what we paid, makingAmount is shares we got
+                    const taking = parseFloat(order.takingAmount) / 1_000_000; // USDC has 6 decimals
+                    const making = parseFloat(order.makingAmount) / 1_000_000;
+                    if (making > 0) {
+                        actualFillPrice = taking / making;
+                        fillDetails = { source: 'takingAmount/makingAmount', taking, making };
+                    }
+                } else if (order.fills && order.fills.length > 0) {
+                    // Average across all fills
+                    let totalCost = 0;
+                    let totalShares = 0;
+                    for (const fill of order.fills) {
+                        totalCost += parseFloat(fill.price || 0) * parseFloat(fill.size || 0);
+                        totalShares += parseFloat(fill.size || 0);
+                    }
+                    if (totalShares > 0) {
+                        actualFillPrice = totalCost / totalShares;
+                        fillDetails = { source: 'fills', numFills: order.fills.length };
+                    }
+                }
+
+                if (fillDetails && actualFillPrice !== price) {
+                    const improvement = (price - actualFillPrice) * 100; // in cents
+                    this.logger.log(`[SDKClient] 💰 PRICE IMPROVEMENT: Requested ${price.toFixed(4)} → Filled ${actualFillPrice.toFixed(4)} (${improvement > 0 ? '+' : ''}${improvement.toFixed(2)}¢)`);
+                }
+            }
+
             return {
                 orderId: order?.orderID,
                 status: order?.status || 'killed',
                 shares: filled ? shares : 0,
                 sharesRequested: shares,  // What we calculated and sent
                 price: price,
-                priceRequested: price,    // What price we used
+                priceRequested: price,    // What price we sent to API
+                priceFilled: filled ? actualFillPrice : null,  // Actual execution price
                 cost: filled ? actualCost : 0,
-                value: filled ? actualCost : 0,  // Alias for compatibility
-                avgPrice: price,          // Use requested price (no slippage data from API)
+                value: filled ? (actualFillPrice * shares) : 0,  // Use actual fill price for value
+                avgPrice: filled ? actualFillPrice : price,  // Actual fill price (for compatibility)
                 filled: filled,
                 tx: order?.transactionsHashes?.[0] || null,
                 txHashes: order?.transactionsHashes || [],
                 success: order?.success,
+                fillDetails,  // Debug info about how we determined fill price
                 raw: order
             };
         } catch (error) {
@@ -352,21 +396,62 @@ export class SDKClient {
             const filled = hasTxHash && hasSuccess && hasGoodStatus;
             
             this.logger.log(`[SDKClient] Order ${order?.orderID}: status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess} → FILLED=${filled}`);
-            
+
             if (!filled && order?.orderID) {
                 this.logger.warn(`[SDKClient] ⚠️ SELL NOT FILLED: ${order?.orderID} (status=${order?.status}, hasTx=${hasTxHash}, success=${hasSuccess})`);
             }
-            
+
+            // Extract actual fill price from order response if available
+            let actualFillPrice = price;
+            let fillDetails = null;
+
+            if (order && filled) {
+                this.logger.log(`[SDKClient] RAW SELL RESPONSE: ${JSON.stringify(order)}`);
+
+                if (order.avgPrice) {
+                    actualFillPrice = parseFloat(order.avgPrice);
+                    fillDetails = { source: 'avgPrice' };
+                } else if (order.takingAmount && order.makingAmount) {
+                    const taking = parseFloat(order.takingAmount) / 1_000_000;
+                    const making = parseFloat(order.makingAmount) / 1_000_000;
+                    if (making > 0) {
+                        actualFillPrice = taking / making;
+                        fillDetails = { source: 'takingAmount/makingAmount', taking, making };
+                    }
+                } else if (order.fills && order.fills.length > 0) {
+                    let totalValue = 0;
+                    let totalShares = 0;
+                    for (const fill of order.fills) {
+                        totalValue += parseFloat(fill.price || 0) * parseFloat(fill.size || 0);
+                        totalShares += parseFloat(fill.size || 0);
+                    }
+                    if (totalShares > 0) {
+                        actualFillPrice = totalValue / totalShares;
+                        fillDetails = { source: 'fills', numFills: order.fills.length };
+                    }
+                }
+
+                if (fillDetails && actualFillPrice !== price) {
+                    const improvement = (actualFillPrice - price) * 100; // For sells, higher fill is better
+                    this.logger.log(`[SDKClient] 💰 SELL PRICE: Requested ${price.toFixed(4)} → Filled ${actualFillPrice.toFixed(4)} (${improvement > 0 ? '+' : ''}${improvement.toFixed(2)}¢)`);
+                }
+            }
+
             return {
                 orderId: order?.orderID,
                 status: order?.status || 'killed',
                 shares: filled ? actualShares : 0,
+                sharesRequested: actualShares,
                 price: price,
-                value: filled ? expectedValue : 0,
+                priceRequested: price,
+                priceFilled: filled ? actualFillPrice : null,
+                value: filled ? (actualFillPrice * actualShares) : 0,
+                avgPrice: filled ? actualFillPrice : price,
                 filled: filled,
                 tx: order?.transactionsHashes?.[0] || null,
                 txHashes: order?.transactionsHashes || [],
                 success: order?.success,
+                fillDetails,
                 raw: order
             };
         } catch (error) {

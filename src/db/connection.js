@@ -882,7 +882,12 @@ async function ensureLiveTradesSchema() {
             'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS bs_prob REAL',           // Black-Scholes expected probability
             'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS market_prob REAL',       // Market probability at entry
             'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS edge_at_entry REAL',     // Calculated edge (bs_prob - market_prob)
-            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS price_to_beat REAL'      // Strike price for this window
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS price_to_beat REAL',     // Strike price for this window
+            // EXECUTION PRICE TRACKING - Jan 29 2026
+            // Track requested vs actual fill prices for execution quality analysis
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS price_requested REAL',   // Price we sent to API (willing to pay)
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS price_filled REAL',      // Actual execution price (may be better)
+            'ALTER TABLE live_trades ADD COLUMN IF NOT EXISTS fill_details TEXT'       // JSON with fill source/details
         ];
 
         for (const sql of migrations) {
@@ -924,9 +929,10 @@ export async function saveLiveTrade(trade, retryCount = 0) {
                 time_remaining, reason, entry_price, pnl, outcome, tx_hash, condition_id,
                 timestamp, timestamp_et, peak_price,
                 oracle_price, oracle_source, chainlink_staleness, lag_ratio,
-                bs_prob, market_prob, edge_at_entry, price_to_beat
+                bs_prob, market_prob, edge_at_entry, price_to_beat,
+                price_requested, price_filled, fill_details
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
         `, [
             trade.type, trade.strategy_name, trade.crypto, trade.side,
             trade.window_epoch, trade.price, trade.size, trade.spot_price,
@@ -937,7 +943,10 @@ export async function saveLiveTrade(trade, retryCount = 0) {
             trade.oracle_price || null, trade.oracle_source || null,
             trade.chainlink_staleness || null, trade.lag_ratio || null,
             trade.bs_prob || null, trade.market_prob || null,
-            trade.edge_at_entry || null, trade.price_to_beat || null
+            trade.edge_at_entry || null, trade.price_to_beat || null,
+            // Execution price tracking
+            trade.price_requested || null, trade.price_filled || null,
+            trade.fill_details ? JSON.stringify(trade.fill_details) : null
         ]);
 
         console.log(`[LiveTrade] ✅ Saved: ${trade.type} ${trade.strategy_name} ${trade.crypto} ${trade.side} @ ${trade.price}`);
