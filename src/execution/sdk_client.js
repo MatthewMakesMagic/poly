@@ -264,7 +264,8 @@ export class SDKClient {
             
             // Extract actual fill price from order response if available
             // Polymarket FOK orders can get price improvement (fill at better than requested)
-            // The API may return: takingAmount, makingAmount, or fills array
+            // CRITICAL: Binary options prices MUST be between 0.01 and 0.99
+            // If extracted price is outside this range, it's WRONG - use requested price
             let actualFillPrice = price; // Default to requested price
             let fillDetails = null;
 
@@ -272,17 +273,20 @@ export class SDKClient {
                 // Log raw response for debugging
                 this.logger.log(`[SDKClient] RAW ORDER RESPONSE: ${JSON.stringify(order)}`);
 
+                let extractedPrice = null;
+
                 // Try to extract actual fill price from various possible fields
                 if (order.avgPrice) {
-                    actualFillPrice = parseFloat(order.avgPrice);
-                    fillDetails = { source: 'avgPrice' };
+                    extractedPrice = parseFloat(order.avgPrice);
+                    fillDetails = { source: 'avgPrice', raw: order.avgPrice };
                 } else if (order.takingAmount && order.makingAmount) {
-                    // takingAmount is what we paid, makingAmount is shares we got
-                    const taking = parseFloat(order.takingAmount) / 1_000_000; // USDC has 6 decimals
+                    // takingAmount is what we paid (USDC), makingAmount is shares we got
+                    // Both have 6 decimals on Polymarket
+                    const taking = parseFloat(order.takingAmount) / 1_000_000;
                     const making = parseFloat(order.makingAmount) / 1_000_000;
                     if (making > 0) {
-                        actualFillPrice = taking / making;
-                        fillDetails = { source: 'takingAmount/makingAmount', taking, making };
+                        extractedPrice = taking / making;
+                        fillDetails = { source: 'takingAmount/makingAmount', taking, making, raw: { takingAmount: order.takingAmount, makingAmount: order.makingAmount } };
                     }
                 } else if (order.fills && order.fills.length > 0) {
                     // Average across all fills
@@ -293,12 +297,25 @@ export class SDKClient {
                         totalShares += parseFloat(fill.size || 0);
                     }
                     if (totalShares > 0) {
-                        actualFillPrice = totalCost / totalShares;
+                        extractedPrice = totalCost / totalShares;
                         fillDetails = { source: 'fills', numFills: order.fills.length };
                     }
                 }
 
-                if (fillDetails && actualFillPrice !== price) {
+                // SANITY CHECK: Binary option prices must be 0.01-0.99
+                // If extracted price is outside this range, it's WRONG (likely position value, not price)
+                if (extractedPrice !== null) {
+                    if (extractedPrice >= 0.01 && extractedPrice <= 0.99) {
+                        actualFillPrice = extractedPrice;
+                        this.logger.log(`[SDKClient] ✅ VALID FILL PRICE: ${actualFillPrice.toFixed(4)} (source: ${fillDetails?.source})`);
+                    } else {
+                        this.logger.warn(`[SDKClient] ⚠️ INVALID FILL PRICE EXTRACTED: ${extractedPrice.toFixed(4)} - using requested price ${price.toFixed(4)} instead`);
+                        this.logger.warn(`[SDKClient] ⚠️ Fill details: ${JSON.stringify(fillDetails)}`);
+                        fillDetails = { source: 'fallback_to_requested', invalidExtracted: extractedPrice };
+                    }
+                }
+
+                if (actualFillPrice !== price) {
                     const improvement = (price - actualFillPrice) * 100; // in cents
                     this.logger.log(`[SDKClient] 💰 PRICE IMPROVEMENT: Requested ${price.toFixed(4)} → Filled ${actualFillPrice.toFixed(4)} (${improvement > 0 ? '+' : ''}${improvement.toFixed(2)}¢)`);
                 }
@@ -402,20 +419,23 @@ export class SDKClient {
             }
 
             // Extract actual fill price from order response if available
+            // CRITICAL: Binary options prices MUST be between 0.01 and 0.99
             let actualFillPrice = price;
             let fillDetails = null;
 
             if (order && filled) {
                 this.logger.log(`[SDKClient] RAW SELL RESPONSE: ${JSON.stringify(order)}`);
 
+                let extractedPrice = null;
+
                 if (order.avgPrice) {
-                    actualFillPrice = parseFloat(order.avgPrice);
-                    fillDetails = { source: 'avgPrice' };
+                    extractedPrice = parseFloat(order.avgPrice);
+                    fillDetails = { source: 'avgPrice', raw: order.avgPrice };
                 } else if (order.takingAmount && order.makingAmount) {
                     const taking = parseFloat(order.takingAmount) / 1_000_000;
                     const making = parseFloat(order.makingAmount) / 1_000_000;
                     if (making > 0) {
-                        actualFillPrice = taking / making;
+                        extractedPrice = taking / making;
                         fillDetails = { source: 'takingAmount/makingAmount', taking, making };
                     }
                 } else if (order.fills && order.fills.length > 0) {
@@ -426,12 +446,23 @@ export class SDKClient {
                         totalShares += parseFloat(fill.size || 0);
                     }
                     if (totalShares > 0) {
-                        actualFillPrice = totalValue / totalShares;
+                        extractedPrice = totalValue / totalShares;
                         fillDetails = { source: 'fills', numFills: order.fills.length };
                     }
                 }
 
-                if (fillDetails && actualFillPrice !== price) {
+                // SANITY CHECK: Binary option prices must be 0.01-0.99
+                if (extractedPrice !== null) {
+                    if (extractedPrice >= 0.01 && extractedPrice <= 0.99) {
+                        actualFillPrice = extractedPrice;
+                        this.logger.log(`[SDKClient] ✅ VALID SELL PRICE: ${actualFillPrice.toFixed(4)} (source: ${fillDetails?.source})`);
+                    } else {
+                        this.logger.warn(`[SDKClient] ⚠️ INVALID SELL PRICE EXTRACTED: ${extractedPrice.toFixed(4)} - using requested price ${price.toFixed(4)} instead`);
+                        fillDetails = { source: 'fallback_to_requested', invalidExtracted: extractedPrice };
+                    }
+                }
+
+                if (actualFillPrice !== price) {
                     const improvement = (actualFillPrice - price) * 100; // For sells, higher fill is better
                     this.logger.log(`[SDKClient] 💰 SELL PRICE: Requested ${price.toFixed(4)} → Filled ${actualFillPrice.toFixed(4)} (${improvement > 0 ? '+' : ''}${improvement.toFixed(2)}¢)`);
                 }
