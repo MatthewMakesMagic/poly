@@ -5,6 +5,7 @@ node_modules/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/last-known-state.json
 *.db
 *.sqlite
 
