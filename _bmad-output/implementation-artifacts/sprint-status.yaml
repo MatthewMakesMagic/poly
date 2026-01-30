@@ -45,8 +45,8 @@ development_status:
   1-1-project-structure-configuration: done
   1-2-sqlite-database-core-schema: done
   1-3-write-ahead-logging: done
-  1-4-logger-module: backlog
-  1-5-state-reconciliation-on-startup: backlog
+  1-4-logger-module: done
+  1-5-state-reconciliation-on-startup: ready-for-dev
   epic-1-retrospective: optional
 
   # Epic 2: Trading Operations
