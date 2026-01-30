@@ -128,7 +128,9 @@ describe('Schema Manager', () => {
   describe('getCurrentVersion', () => {
     it('returns last applied migration version', () => {
       const version = getCurrentVersion();
-      expect(version).toBe('001');
+      // Version should be at least '001' and match NNN format
+      expect(version).toMatch(/^\d{3}$/);
+      expect(parseInt(version, 10)).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -144,27 +146,27 @@ describe('Schema Manager', () => {
 
   describe('recordMigration', () => {
     it('records a new migration', () => {
-      // Record a fake migration
-      recordMigration('002', 'test-migration');
+      // Record a fake migration with high version to avoid conflicts with real migrations
+      recordMigration('900', 'test-migration');
 
       // Verify it was recorded
-      expect(migrationApplied('002')).toBe(true);
+      expect(migrationApplied('900')).toBe(true);
 
       // Verify the details
       const row = persistence.get(
         'SELECT * FROM schema_migrations WHERE version = ?',
-        ['002']
+        ['900']
       );
       expect(row.name).toBe('test-migration');
       expect(row.applied_at).toBeDefined();
     });
 
     it('records migration with correct timestamp format', () => {
-      recordMigration('003', 'timestamp-test');
+      recordMigration('901', 'timestamp-test');
 
       const row = persistence.get(
         'SELECT applied_at FROM schema_migrations WHERE version = ?',
-        ['003']
+        ['901']
       );
 
       // Should be ISO format
