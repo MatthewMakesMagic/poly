@@ -34,7 +34,9 @@
     "docker:build": "docker build -t poly-trading .",
     "docker:run": "docker-compose up -d",
     "docker:logs": "docker-compose logs -f",
-    "docker:stop": "docker-compose down"
+    "docker:stop": "docker-compose down",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
@@ -48,12 +50,13 @@
     "pg": "^8.17.2",
     "simple-statistics": "^7.8.0",
     "uuid": "^9.0.0",
-    "ws": "^8.16.0"
+    "ws": "^8.16.0",
+    "better-sqlite3": "^9.6.0"
   },
-  "optionalDependencies": {
-    "better-sqlite3": "^9.4.0"
-  },
-  "engines": {
+    "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18"
   }
 }

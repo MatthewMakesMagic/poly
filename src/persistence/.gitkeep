@@ -1,0 +1,2 @@
+# Persistence layer - database access and write-ahead logging
+# Files to be added: index.js, schema.sql, write-ahead.js
