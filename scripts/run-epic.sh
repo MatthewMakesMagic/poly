@@ -26,10 +26,10 @@ echo -e "${BLUE}═════════════════════�
 echo -e "${BLUE}  BMAD Epic Runner - Epic $EPIC${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 
-# Extract backlog stories for the epic from sprint-status.yaml
+# Extract stories that need work (backlog or ready-for-dev) for the epic
 get_backlog_stories() {
     local epic=$1
-    grep "^  ${epic}-" "$SPRINT_STATUS" 2>/dev/null | grep ": backlog" | sed 's/:.*//' | sed 's/^ *//' || true
+    grep "^  ${epic}-" "$SPRINT_STATUS" 2>/dev/null | grep -E ": (backlog|ready-for-dev)" | sed 's/:.*//' | sed 's/^ *//' || true
 }
 
 # Check if story file exists (ready-for-dev)

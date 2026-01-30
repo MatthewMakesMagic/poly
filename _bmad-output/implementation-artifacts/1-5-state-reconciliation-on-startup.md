@@ -1,6 +1,6 @@
 # Story 1.5: State Reconciliation on Startup
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -84,65 +84,65 @@ So that **I can reconcile state and ensure no orphaned positions (FR17, FR18, FR
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1: Create State Reconciler Module Structure** (AC: 6)
-  - [ ] 1.1 Create `src/modules/state-reconciler/index.js` as public interface
-  - [ ] 1.2 Create `src/modules/state-reconciler/logic.js` for reconciliation logic
-  - [ ] 1.3 Create `src/modules/state-reconciler/types.js` for type definitions
-  - [ ] 1.4 Ensure module follows folder-per-module architecture pattern
+- [x] **Task 1: Create State Reconciler Module Structure** (AC: 6)
+  - [x] 1.1 Create `src/modules/state-reconciler/index.js` as public interface
+  - [x] 1.2 Create `src/modules/state-reconciler/logic.js` for reconciliation logic
+  - [x] 1.3 Create `src/modules/state-reconciler/types.js` for type definitions
+  - [x] 1.4 Ensure module follows folder-per-module architecture pattern
 
-- [ ] **Task 2: Implement checkStartupState Function** (AC: 1, 4, 7, 8)
-  - [ ] 2.1 Import getIncompleteIntents from write-ahead module
-  - [ ] 2.2 Query for intents with status='executing'
-  - [ ] 2.3 Calculate duration of check
-  - [ ] 2.4 Return ReconciliationResult object with clean, incompleteCount, etc.
-  - [ ] 2.5 Ensure function completes within 10 seconds (NFR3)
+- [x] **Task 2: Implement checkStartupState Function** (AC: 1, 4, 7, 8)
+  - [x] 2.1 Import getIncompleteIntents from write-ahead module
+  - [x] 2.2 Query for intents with status='executing'
+  - [x] 2.3 Calculate duration of check
+  - [x] 2.4 Return ReconciliationResult object with clean, incompleteCount, etc.
+  - [x] 2.5 Ensure function completes within 10 seconds (NFR3)
 
-- [ ] **Task 3: Implement Warning Logging for Incomplete Intents** (AC: 2)
-  - [ ] 3.1 Import logger module (child logger for 'state-reconciler')
-  - [ ] 3.2 Log each incomplete intent with level='warn'
-  - [ ] 3.3 Include intent_type, window_id, created_at, payload in log
-  - [ ] 3.4 Use event name 'incomplete_intent_detected'
+- [x] **Task 3: Implement Warning Logging for Incomplete Intents** (AC: 2)
+  - [x] 3.1 Import logger module (child logger for 'state-reconciler')
+  - [x] 3.2 Log each incomplete intent with level='warn'
+  - [x] 3.3 Include intent_type, window_id, created_at, payload in log
+  - [x] 3.4 Use event name 'incomplete_intent_detected'
 
-- [ ] **Task 4: Implement Clean Startup Logging** (AC: 4)
-  - [ ] 4.1 Log info "State reconciliation complete - no incomplete intents" when clean
-  - [ ] 4.2 Include duration_ms in the success log
-  - [ ] 4.3 Use event name 'reconciliation_complete'
+- [x] **Task 4: Implement Clean Startup Logging** (AC: 4)
+  - [x] 4.1 Log info "State reconciliation complete - no incomplete intents" when clean
+  - [x] 4.2 Include duration_ms in the success log
+  - [x] 4.3 Use event name 'reconciliation_complete'
 
-- [ ] **Task 5: Implement No-Retry Behavior** (AC: 3)
-  - [ ] 5.1 Document that manual reconciliation is required (in logs)
-  - [ ] 5.2 Return result but do NOT call any retry/execute functions
-  - [ ] 5.3 Log summary: "X incomplete intents found - manual reconciliation required"
+- [x] **Task 5: Implement No-Retry Behavior** (AC: 3)
+  - [x] 5.1 Document that manual reconciliation is required (in logs)
+  - [x] 5.2 Return result but do NOT call any retry/execute functions
+  - [x] 5.3 Log summary: "X incomplete intents found - manual reconciliation required"
 
-- [ ] **Task 6: Implement markIntentReconciled Function** (AC: 6)
-  - [ ] 6.1 Accept intentId and resolution object
-  - [ ] 6.2 Update intent status to 'failed' with resolution in result field
-  - [ ] 6.3 Set completed_at timestamp
-  - [ ] 6.4 Log the manual reconciliation action
-  - [ ] 6.5 Validate intent exists and is in 'executing' status
+- [x] **Task 6: Implement markIntentReconciled Function** (AC: 6)
+  - [x] 6.1 Accept intentId and resolution object
+  - [x] 6.2 Update intent status to 'failed' with resolution in result field
+  - [x] 6.3 Set completed_at timestamp
+  - [x] 6.4 Log the manual reconciliation action
+  - [x] 6.5 Validate intent exists and is in 'executing' status
 
-- [ ] **Task 7: Implement State Divergence Detection** (AC: 5)
-  - [ ] 7.1 Create detectDivergence(memoryState, dbState) function
-  - [ ] 7.2 Compare position counts and key fields
-  - [ ] 7.3 Log divergence with level='error' if found
-  - [ ] 7.4 Include both states in log for debugging
-  - [ ] 7.5 Return list of divergences found
+- [x] **Task 7: Implement State Divergence Detection** (AC: 5)
+  - [x] 7.1 Create detectDivergence(memoryState, dbState) function
+  - [x] 7.2 Compare position counts and key fields
+  - [x] 7.3 Log divergence with level='error' if found
+  - [x] 7.4 Include both states in log for debugging
+  - [x] 7.5 Return list of divergences found
 
-- [ ] **Task 8: Implement Module init, getState, shutdown** (AC: 6)
-  - [ ] 8.1 Implement init(config) to store config and set up logger
-  - [ ] 8.2 Implement getState() returning config, lastReconciliation, stats
-  - [ ] 8.3 Implement shutdown() for clean module shutdown
-  - [ ] 8.4 Track stats: totalChecks, incompleteFound, divergencesDetected
+- [x] **Task 8: Implement Module init, getState, shutdown** (AC: 6)
+  - [x] 8.1 Implement init(config) to store config and set up logger
+  - [x] 8.2 Implement getState() returning config, lastReconciliation, stats
+  - [x] 8.3 Implement shutdown() for clean module shutdown
+  - [x] 8.4 Track stats: totalChecks, incompleteFound, divergencesDetected
 
-- [ ] **Task 9: Write Tests** (AC: all)
-  - [ ] 9.1 Create `src/modules/state-reconciler/__tests__/index.test.js`
-  - [ ] 9.2 Test checkStartupState with no incomplete intents (clean)
-  - [ ] 9.3 Test checkStartupState with incomplete intents (warns, returns list)
-  - [ ] 9.4 Test no automatic retry occurs
-  - [ ] 9.5 Test markIntentReconciled updates status correctly
-  - [ ] 9.6 Test detectDivergence identifies differences
-  - [ ] 9.7 Test performance under 10 seconds with many intents
-  - [ ] 9.8 Test getState returns expected structure
-  - [ ] 9.9 Test logging includes required fields
+- [x] **Task 9: Write Tests** (AC: all)
+  - [x] 9.1 Create `src/modules/state-reconciler/__tests__/index.test.js`
+  - [x] 9.2 Test checkStartupState with no incomplete intents (clean)
+  - [x] 9.3 Test checkStartupState with incomplete intents (warns, returns list)
+  - [x] 9.4 Test no automatic retry occurs
+  - [x] 9.5 Test markIntentReconciled updates status correctly
+  - [x] 9.6 Test detectDivergence identifies differences
+  - [x] 9.7 Test performance under 10 seconds with many intents
+  - [x] 9.8 Test getState returns expected structure
+  - [x] 9.9 Test logging includes required fields
 
 ## Dev Notes
 
@@ -517,12 +517,37 @@ When incomplete intents are found, operator should:
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Claude Opus 4.5 (claude-opus-4-5-20251101)
 
 ### Debug Log References
 
+- All 225 tests pass (8 test files)
+- State reconciler tests: 56 tests (20 logic + 36 integration)
+- No regressions in existing persistence, write-ahead, or logger tests
+
 ### Completion Notes List
+
+- Implemented state-reconciler module following folder-per-module architecture pattern
+- Module exports: init, checkStartupState, getIncompleteIntents, markIntentReconciled, detectDivergence, getState, shutdown (AC6)
+- checkStartupState queries for intents with status='executing' via write-ahead module (AC1)
+- Each incomplete intent logged with level='warn' including intent_type, window_id, created_at, payload (AC2)
+- Event name 'incomplete_intent_detected' used for warnings (AC2)
+- No automatic retry - summary message indicates manual reconciliation required (AC3)
+- Clean startup logs info "State reconciliation complete - no incomplete intents" with duration_ms (AC4)
+- Event name 'reconciliation_complete' used for clean startup (AC4)
+- detectDivergence compares memory vs DB positions, logs divergences at error level with actionable messages (AC5)
+- ReconciliationResult includes: clean, incompleteCount, incompleteIntents, timestamp, duration_ms (AC7)
+- Performance test verifies completion within 10 seconds with 100 intents (AC8/NFR3)
+- markIntentReconciled validates intent exists and is in 'executing' status before updating to 'failed' (AC6)
 
 ### Change Log
 
+- 2026-01-30: Implemented state-reconciler module (Story 1.5) - all tasks complete
+
 ### File List
+
+- src/modules/state-reconciler/index.js (new)
+- src/modules/state-reconciler/logic.js (new)
+- src/modules/state-reconciler/types.js (new)
+- src/modules/state-reconciler/__tests__/index.test.js (new)
+- src/modules/state-reconciler/__tests__/logic.test.js (new)
