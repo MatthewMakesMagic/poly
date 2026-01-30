@@ -105,6 +105,15 @@ export class PersistenceError extends PolyError {
   }
 }
 
+/**
+ * Intent/write-ahead logging errors
+ */
+export class IntentError extends PolyError {
+  constructor(code, message, context = {}) {
+    super(code, message, context);
+  }
+}
+
 // Common error codes
 export const ErrorCodes = {
   // Position errors
@@ -148,4 +157,10 @@ export const ErrorCodes = {
   DB_SCHEMA_ERROR: 'DB_SCHEMA_ERROR',
   DB_NOT_INITIALIZED: 'DB_NOT_INITIALIZED',
   DB_MIGRATION_FAILED: 'DB_MIGRATION_FAILED',
+
+  // Intent/write-ahead logging errors
+  INVALID_INTENT_TYPE: 'INVALID_INTENT_TYPE',
+  INVALID_PAYLOAD: 'INVALID_PAYLOAD',
+  INTENT_NOT_FOUND: 'INTENT_NOT_FOUND',
+  INVALID_STATUS_TRANSITION: 'INVALID_STATUS_TRANSITION',
 };

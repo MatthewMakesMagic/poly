@@ -44,7 +44,7 @@ development_status:
   epic-1: in-progress
   1-1-project-structure-configuration: done
   1-2-sqlite-database-core-schema: done
-  1-3-write-ahead-logging: backlog
+  1-3-write-ahead-logging: done
   1-4-logger-module: backlog
   1-5-state-reconciliation-on-startup: backlog
   epic-1-retrospective: optional
