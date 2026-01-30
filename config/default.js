@@ -13,6 +13,8 @@ export default {
     apiKey: process.env.POLYMARKET_API_KEY,
     apiSecret: process.env.POLYMARKET_API_SECRET,
     passphrase: process.env.POLYMARKET_PASSPHRASE,
+    privateKey: process.env.POLYMARKET_PRIVATE_KEY,
+    funder: process.env.POLYMARKET_FUNDER_ADDRESS,
   },
 
   // Spot price feed configuration

@@ -50,8 +50,8 @@ development_status:
   epic-1-retrospective: optional
 
   # Epic 2: Trading Operations
-  epic-2: backlog
-  2-1-polymarket-api-client-integration: backlog
+  epic-2: in-progress
+  2-1-polymarket-api-client-integration: done
   2-2-order-manager-place-track-orders: backlog
   2-3-order-manager-partial-fills-cancellation: backlog
   2-4-spot-price-feed-integration: backlog
