@@ -22,7 +22,10 @@ const stats = {
   ordersFilled: 0,
   ordersCancelled: 0,
   ordersRejected: 0,
+  ordersPartiallyFilled: 0,
   totalLatencyMs: 0,
+  cancelLatencyMs: 0,
+  cancelCount: 0,
   lastOrderTime: null,
 };
 
@@ -118,6 +121,22 @@ export function recordLatency(latencyMs) {
 }
 
 /**
+ * Record cancel operation latency
+ * @param {number} latencyMs - Latency in milliseconds
+ */
+export function recordCancelLatency(latencyMs) {
+  stats.cancelLatencyMs += latencyMs;
+  stats.cancelCount++;
+}
+
+/**
+ * Record a partial fill event
+ */
+export function recordPartialFill() {
+  stats.ordersPartiallyFilled++;
+}
+
+/**
  * Get current state statistics
  * @returns {Object} State statistics
  */
@@ -127,6 +146,10 @@ export function getStats() {
     stats.ordersPlaced > 0
       ? Math.round(stats.totalLatencyMs / stats.ordersPlaced)
       : 0;
+  const avgCancelLatencyMs =
+    stats.cancelCount > 0
+      ? Math.round(stats.cancelLatencyMs / stats.cancelCount)
+      : 0;
 
   return {
     cachedOrderCount,
@@ -134,7 +157,9 @@ export function getStats() {
     ordersFilled: stats.ordersFilled,
     ordersCancelled: stats.ordersCancelled,
     ordersRejected: stats.ordersRejected,
+    ordersPartiallyFilled: stats.ordersPartiallyFilled,
     avgLatencyMs,
+    avgCancelLatencyMs,
     lastOrderTime: stats.lastOrderTime,
   };
 }
@@ -149,7 +174,10 @@ export function clearCache() {
   stats.ordersFilled = 0;
   stats.ordersCancelled = 0;
   stats.ordersRejected = 0;
+  stats.ordersPartiallyFilled = 0;
   stats.totalLatencyMs = 0;
+  stats.cancelLatencyMs = 0;
+  stats.cancelCount = 0;
   stats.lastOrderTime = null;
 }
 

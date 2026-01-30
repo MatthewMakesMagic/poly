@@ -16,6 +16,8 @@ export const OrderManagerErrorCodes = {
   NOT_FOUND: 'ORDER_NOT_FOUND',
   INVALID_STATUS_TRANSITION: 'INVALID_ORDER_STATUS_TRANSITION',
   DATABASE_ERROR: 'ORDER_DATABASE_ERROR',
+  CANCEL_FAILED: 'ORDER_CANCEL_FAILED',
+  INVALID_CANCEL_STATE: 'ORDER_INVALID_CANCEL_STATE',
 };
 
 /**
@@ -74,7 +76,7 @@ export const Side = {
 export const ValidStatusTransitions = {
   [OrderStatus.PENDING]: [OrderStatus.OPEN, OrderStatus.FILLED, OrderStatus.REJECTED],
   [OrderStatus.OPEN]: [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
-  [OrderStatus.PARTIALLY_FILLED]: [OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+  [OrderStatus.PARTIALLY_FILLED]: [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
   [OrderStatus.FILLED]: [], // Terminal state
   [OrderStatus.CANCELLED]: [], // Terminal state
   [OrderStatus.EXPIRED]: [], // Terminal state

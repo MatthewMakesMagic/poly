@@ -112,6 +112,48 @@ export function getOrdersByWindow(windowId) {
 }
 
 /**
+ * Cancel an open order
+ *
+ * Uses write-ahead logging before calling Polymarket API.
+ * Records cancellation latency for monitoring.
+ *
+ * @param {string} orderId - Order ID to cancel
+ * @returns {Promise<Object>} Cancel result { orderId, latencyMs, intentId }
+ * @throws {OrderManagerError} If order not found, invalid state, or API error
+ */
+export async function cancelOrder(orderId) {
+  ensureInitialized();
+  return logic.cancelOrder(orderId, log);
+}
+
+/**
+ * Handle a partial fill event for an order
+ *
+ * Updates filled_size, avg_fill_price, and status.
+ * Transitions to 'filled' when complete.
+ *
+ * @param {string} orderId - Order ID
+ * @param {number} fillSize - Size of this fill
+ * @param {number} fillPrice - Price of this fill
+ * @returns {Object} Updated order
+ * @throws {OrderManagerError} If order not found or invalid state
+ */
+export function handlePartialFill(orderId, fillSize, fillPrice) {
+  ensureInitialized();
+  return logic.handlePartialFill(orderId, fillSize, fillPrice, log);
+}
+
+/**
+ * Get all partially filled orders
+ *
+ * @returns {Object[]} Array of partially filled orders
+ */
+export function getPartiallyFilledOrders() {
+  ensureInitialized();
+  return logic.getPartiallyFilledOrders();
+}
+
+/**
  * Get current module state
  *
  * @returns {Object} Current state including initialization status and stats

@@ -24,6 +24,8 @@ import {
   getCachedOpenOrders,
   getCachedOrders,
   recordLatency,
+  recordCancelLatency,
+  recordPartialFill,
   loadOrdersIntoCache,
 } from './state.js';
 
@@ -449,4 +451,197 @@ export function loadRecentOrders(log) {
 
   loadOrdersIntoCache(recentOrders);
   log.info('orders_loaded_to_cache', { count: recentOrders.length });
+}
+
+/**
+ * Cancel an open order with write-ahead logging
+ *
+ * Flow:
+ * 1. Validate order exists and is in cancellable state
+ * 2. Log intent BEFORE API call
+ * 3. Mark intent as executing
+ * 4. Call Polymarket API
+ * 5. Record latency and update order status
+ * 6. Mark intent completed/failed
+ *
+ * @param {string} orderId - Order ID to cancel
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Cancel result { orderId, latencyMs, intentId }
+ * @throws {OrderManagerError} If order not found, invalid state, or API error
+ */
+export async function cancelOrder(orderId, log) {
+  // 1. Get order and validate it exists
+  const order = getOrder(orderId);
+  if (!order) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.NOT_FOUND,
+      `Order not found: ${orderId}`,
+      { orderId }
+    );
+  }
+
+  // 2. Validate order is in a cancellable state
+  const cancellableStates = [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED];
+  if (!cancellableStates.includes(order.status)) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.INVALID_CANCEL_STATE,
+      `Cannot cancel order in ${order.status} state`,
+      { orderId, currentStatus: order.status }
+    );
+  }
+
+  // 3. Log intent BEFORE API call
+  const intentId = writeAhead.logIntent(
+    writeAhead.INTENT_TYPES.CANCEL_ORDER,
+    order.window_id,
+    { orderId, orderStatus: order.status, requestedAt: new Date().toISOString() }
+  );
+
+  log.info('cancel_intent_logged', { intentId, orderId, currentStatus: order.status });
+
+  // 4. Mark as executing
+  writeAhead.markExecuting(intentId);
+
+  // 5. Record start time for latency
+  const startTime = Date.now();
+
+  try {
+    // 6. Call Polymarket API
+    await polymarketClient.cancelOrder(orderId);
+
+    // 7. Calculate latency
+    const latencyMs = Date.now() - startTime;
+    recordCancelLatency(latencyMs);
+
+    // 8. Update order status
+    updateOrderStatus(orderId, OrderStatus.CANCELLED, {
+      cancelled_at: new Date().toISOString(),
+    }, log);
+
+    // 9. Mark intent completed
+    writeAhead.markCompleted(intentId, { orderId, latencyMs });
+
+    log.info('order_cancelled', { orderId, latencyMs, intentId });
+
+    return { orderId, latencyMs, intentId };
+  } catch (err) {
+    const latencyMs = Date.now() - startTime;
+
+    // ALWAYS mark failed on error
+    writeAhead.markFailed(intentId, {
+      code: err.code || 'CANCEL_FAILED',
+      message: err.message,
+      latencyMs,
+    });
+
+    log.error('order_cancel_failed', {
+      orderId,
+      error: err.message,
+      code: err.code,
+      latencyMs,
+    });
+
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.CANCEL_FAILED,
+      `Cancel order failed: ${err.message}`,
+      { orderId, originalError: err.message, intentId }
+    );
+  }
+}
+
+/**
+ * Handle a partial fill event for an order
+ *
+ * Updates filled_size, avg_fill_price, and status based on fill progression.
+ *
+ * @param {string} orderId - Order ID
+ * @param {number} fillSize - Size of this fill
+ * @param {number} fillPrice - Price of this fill
+ * @param {Object} log - Logger instance
+ * @returns {Object} Updated order
+ * @throws {OrderManagerError} If order not found or invalid state
+ */
+export function handlePartialFill(orderId, fillSize, fillPrice, log) {
+  // 1. Get order and validate it exists
+  const order = getOrder(orderId);
+  if (!order) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.NOT_FOUND,
+      `Order not found: ${orderId}`,
+      { orderId }
+    );
+  }
+
+  // 2. Validate order is in a fillable state
+  const fillableStates = [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED];
+  if (!fillableStates.includes(order.status)) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.INVALID_STATUS_TRANSITION,
+      `Cannot fill order in ${order.status} state`,
+      { orderId, currentStatus: order.status }
+    );
+  }
+
+  // 3. Calculate new cumulative filled size
+  const previousFilledSize = order.filled_size || 0;
+  const previousAvgPrice = order.avg_fill_price || fillPrice;
+  const newFilledSize = previousFilledSize + fillSize;
+
+  // 4. Calculate weighted average price
+  // (previousSize * previousPrice + newSize * newPrice) / totalSize
+  const newAvgPrice =
+    previousFilledSize > 0
+      ? (previousFilledSize * previousAvgPrice + fillSize * fillPrice) / newFilledSize
+      : fillPrice;
+
+  // 5. Determine new status
+  const isFullyFilled = newFilledSize >= order.size;
+  const newStatus = isFullyFilled ? OrderStatus.FILLED : OrderStatus.PARTIALLY_FILLED;
+
+  // 6. Build updates
+  const updates = {
+    filled_size: newFilledSize,
+    avg_fill_price: newAvgPrice,
+  };
+
+  if (isFullyFilled) {
+    updates.filled_at = new Date().toISOString();
+  }
+
+  // 7. Update order (uses existing updateOrderStatus which handles DB + cache)
+  updateOrderStatus(orderId, newStatus, updates, log);
+
+  // 8. Update stats for partial fills
+  if (newStatus === OrderStatus.PARTIALLY_FILLED) {
+    recordPartialFill();
+  }
+
+  log.info('partial_fill_processed', {
+    orderId,
+    fillSize,
+    fillPrice,
+    newFilledSize,
+    newAvgPrice,
+    newStatus,
+  });
+
+  return getOrder(orderId);
+}
+
+/**
+ * Get all partially filled orders
+ *
+ * @returns {Object[]} Array of partially filled orders
+ */
+export function getPartiallyFilledOrders() {
+  // Sync cache from database to ensure consistency
+  const dbOrders = persistence.all(
+    'SELECT * FROM orders WHERE status = ?',
+    [OrderStatus.PARTIALLY_FILLED]
+  );
+
+  // Update cache with database state
+  loadOrdersIntoCache(dbOrders);
+
+  return getCachedOrders((order) => order.status === OrderStatus.PARTIALLY_FILLED);
 }

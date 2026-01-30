@@ -53,7 +53,7 @@ development_status:
   epic-2: in-progress
   2-1-polymarket-api-client-integration: done
   2-2-order-manager-place-track-orders: done
-  2-3-order-manager-partial-fills-cancellation: backlog
+  2-3-order-manager-partial-fills-cancellation: done
   2-4-spot-price-feed-integration: backlog
   2-5-position-manager-track-positions: backlog
   2-6-position-manager-reconciliation-limits: backlog

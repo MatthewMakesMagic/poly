@@ -23,7 +23,10 @@ vi.mock('../../../persistence/write-ahead.js', () => ({
   markExecuting: vi.fn(),
   markCompleted: vi.fn(),
   markFailed: vi.fn(),
-  INTENT_TYPES: { PLACE_ORDER: 'place_order' },
+  INTENT_TYPES: {
+    PLACE_ORDER: 'place_order',
+    CANCEL_ORDER: 'cancel_order',
+  },
 }));
 
 vi.mock('../../../clients/polymarket/index.js', () => ({
@@ -35,6 +38,9 @@ vi.mock('../../../clients/polymarket/index.js', () => ({
   sell: vi.fn().mockResolvedValue({
     orderID: 'order-456',
     status: 'matched',
+    success: true,
+  }),
+  cancelOrder: vi.fn().mockResolvedValue({
     success: true,
   }),
 }));
@@ -408,6 +414,335 @@ describe('Order Manager Logic', () => {
       logic.loadRecentOrders(mockLog);
 
       expect(mockLog.info).toHaveBeenCalledWith('orders_loaded_to_cache', { count: 1 });
+    });
+  });
+
+  describe('cancelOrder()', () => {
+    beforeEach(() => {
+      // Set up a cached open order
+      state.cacheOrder({
+        order_id: 'cancel-1',
+        intent_id: 1,
+        status: 'open',
+        window_id: 'window-1',
+      });
+    });
+
+    it('throws for non-existent order', async () => {
+      await expect(logic.cancelOrder('non-existent', mockLog)).rejects.toThrow(
+        'Order not found'
+      );
+    });
+
+    it('throws for order in terminal state (filled)', async () => {
+      state.cacheOrder({
+        order_id: 'filled-1',
+        status: 'filled',
+        window_id: 'window-1',
+      });
+
+      await expect(logic.cancelOrder('filled-1', mockLog)).rejects.toThrow(
+        'Cannot cancel order in filled state'
+      );
+    });
+
+    it('throws for order in terminal state (cancelled)', async () => {
+      state.cacheOrder({
+        order_id: 'cancelled-1',
+        status: 'cancelled',
+        window_id: 'window-1',
+      });
+
+      await expect(logic.cancelOrder('cancelled-1', mockLog)).rejects.toThrow(
+        'Cannot cancel order in cancelled state'
+      );
+    });
+
+    it('throws for order in terminal state (expired)', async () => {
+      state.cacheOrder({
+        order_id: 'expired-1',
+        status: 'expired',
+        window_id: 'window-1',
+      });
+
+      await expect(logic.cancelOrder('expired-1', mockLog)).rejects.toThrow(
+        'Cannot cancel order in expired state'
+      );
+    });
+
+    it('throws for order in terminal state (rejected)', async () => {
+      state.cacheOrder({
+        order_id: 'rejected-1',
+        status: 'rejected',
+        window_id: 'window-1',
+      });
+
+      await expect(logic.cancelOrder('rejected-1', mockLog)).rejects.toThrow(
+        'Cannot cancel order in rejected state'
+      );
+    });
+
+    it('allows cancelling open orders', async () => {
+      const result = await logic.cancelOrder('cancel-1', mockLog);
+
+      expect(result.orderId).toBe('cancel-1');
+      expect(polymarketClient.cancelOrder).toHaveBeenCalledWith('cancel-1');
+    });
+
+    it('allows cancelling partially filled orders', async () => {
+      state.cacheOrder({
+        order_id: 'partial-1',
+        status: 'partially_filled',
+        window_id: 'window-1',
+      });
+
+      const result = await logic.cancelOrder('partial-1', mockLog);
+
+      expect(result.orderId).toBe('partial-1');
+      expect(polymarketClient.cancelOrder).toHaveBeenCalledWith('partial-1');
+    });
+
+    it('logs intent BEFORE API call', async () => {
+      await logic.cancelOrder('cancel-1', mockLog);
+
+      // Check call order
+      const intentOrder = writeAhead.logIntent.mock.invocationCallOrder[0];
+      const executingOrder = writeAhead.markExecuting.mock.invocationCallOrder[0];
+      const cancelOrder = polymarketClient.cancelOrder.mock.invocationCallOrder[0];
+
+      expect(intentOrder).toBeLessThan(executingOrder);
+      expect(executingOrder).toBeLessThan(cancelOrder);
+    });
+
+    it('logs intent with cancel_order type', async () => {
+      await logic.cancelOrder('cancel-1', mockLog);
+
+      expect(writeAhead.logIntent).toHaveBeenCalledWith(
+        'cancel_order',
+        'window-1',
+        expect.objectContaining({
+          orderId: 'cancel-1',
+          orderStatus: 'open',
+          requestedAt: expect.any(String),
+        })
+      );
+    });
+
+    it('updates order status to cancelled', async () => {
+      await logic.cancelOrder('cancel-1', mockLog);
+
+      const cached = state.getCachedOrder('cancel-1');
+      expect(cached.status).toBe('cancelled');
+      expect(cached.cancelled_at).toBeDefined();
+    });
+
+    it('records latency on success', async () => {
+      const result = await logic.cancelOrder('cancel-1', mockLog);
+
+      expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+      expect(result.intentId).toBe(1);
+    });
+
+    it('marks intent completed on success', async () => {
+      await logic.cancelOrder('cancel-1', mockLog);
+
+      expect(writeAhead.markCompleted).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          orderId: 'cancel-1',
+          latencyMs: expect.any(Number),
+        })
+      );
+    });
+
+    it('marks intent failed on API error', async () => {
+      polymarketClient.cancelOrder.mockRejectedValueOnce(new Error('API Error'));
+
+      await expect(logic.cancelOrder('cancel-1', mockLog)).rejects.toThrow(
+        'Cancel order failed'
+      );
+
+      expect(writeAhead.markFailed).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          message: 'API Error',
+          latencyMs: expect.any(Number),
+        })
+      );
+    });
+
+    it('does not update order status on API error', async () => {
+      polymarketClient.cancelOrder.mockRejectedValueOnce(new Error('API Error'));
+
+      await expect(logic.cancelOrder('cancel-1', mockLog)).rejects.toThrow();
+
+      const cached = state.getCachedOrder('cancel-1');
+      expect(cached.status).toBe('open'); // Status should remain unchanged
+    });
+
+    it('logs error on API failure', async () => {
+      polymarketClient.cancelOrder.mockRejectedValueOnce(new Error('Network Error'));
+
+      await expect(logic.cancelOrder('cancel-1', mockLog)).rejects.toThrow();
+
+      expect(mockLog.error).toHaveBeenCalledWith(
+        'order_cancel_failed',
+        expect.objectContaining({
+          orderId: 'cancel-1',
+          error: 'Network Error',
+        })
+      );
+    });
+  });
+
+  describe('handlePartialFill()', () => {
+    beforeEach(() => {
+      // Set up a cached open order with no fills
+      state.cacheOrder({
+        order_id: 'partial-order-1',
+        intent_id: 1,
+        status: 'open',
+        window_id: 'window-1',
+        size: 100,
+        filled_size: 0,
+        avg_fill_price: null,
+      });
+    });
+
+    it('throws for non-existent order', () => {
+      expect(() =>
+        logic.handlePartialFill('non-existent', 10, 0.5, mockLog)
+      ).toThrow('Order not found');
+    });
+
+    it('throws for order in terminal state', () => {
+      state.cacheOrder({
+        order_id: 'filled-order',
+        status: 'filled',
+        window_id: 'window-1',
+        size: 100,
+      });
+
+      expect(() =>
+        logic.handlePartialFill('filled-order', 10, 0.5, mockLog)
+      ).toThrow('Cannot fill order in filled state');
+    });
+
+    it('updates filled_size correctly for first fill', () => {
+      const result = logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+
+      expect(result.filled_size).toBe(25);
+    });
+
+    it('updates filled_size cumulatively', () => {
+      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+      const result = logic.handlePartialFill('partial-order-1', 30, 0.6, mockLog);
+
+      expect(result.filled_size).toBe(55);
+    });
+
+    it('calculates avg_fill_price for first fill', () => {
+      const result = logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+
+      expect(result.avg_fill_price).toBe(0.5);
+    });
+
+    it('calculates weighted avg_fill_price for multiple fills', () => {
+      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+      const result = logic.handlePartialFill('partial-order-1', 75, 0.6, mockLog);
+
+      // Weighted average: (25 * 0.5 + 75 * 0.6) / 100 = (12.5 + 45) / 100 = 0.575
+      expect(result.avg_fill_price).toBeCloseTo(0.575);
+    });
+
+    it('transitions to partially_filled status', () => {
+      const result = logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+
+      expect(result.status).toBe('partially_filled');
+    });
+
+    it('transitions to filled when complete', () => {
+      const result = logic.handlePartialFill('partial-order-1', 100, 0.5, mockLog);
+
+      expect(result.status).toBe('filled');
+      expect(result.filled_at).toBeDefined();
+    });
+
+    it('transitions to filled when fill exceeds size', () => {
+      const result = logic.handlePartialFill('partial-order-1', 120, 0.5, mockLog);
+
+      expect(result.status).toBe('filled');
+    });
+
+    it('allows partial fill from partially_filled state', () => {
+      // First partial fill
+      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+
+      // Second partial fill should work
+      const result = logic.handlePartialFill('partial-order-1', 25, 0.6, mockLog);
+
+      expect(result.filled_size).toBe(50);
+      expect(result.status).toBe('partially_filled');
+    });
+
+    it('logs partial fill event', () => {
+      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+
+      expect(mockLog.info).toHaveBeenCalledWith(
+        'partial_fill_processed',
+        expect.objectContaining({
+          orderId: 'partial-order-1',
+          fillSize: 25,
+          fillPrice: 0.5,
+          newFilledSize: 25,
+          newAvgPrice: 0.5,
+          newStatus: 'partially_filled',
+        })
+      );
+    });
+
+    it('persists updates to database', () => {
+      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+
+      expect(persistence.run).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE orders SET'),
+        expect.any(Array)
+      );
+    });
+  });
+
+  describe('getPartiallyFilledOrders()', () => {
+    it('returns partially filled orders from database', () => {
+      persistence.all.mockReturnValueOnce([
+        { order_id: 'pf-1', status: 'partially_filled' },
+        { order_id: 'pf-2', status: 'partially_filled' },
+      ]);
+
+      const orders = logic.getPartiallyFilledOrders();
+
+      expect(orders).toHaveLength(2);
+      expect(orders[0].status).toBe('partially_filled');
+    });
+
+    it('queries with correct status filter', () => {
+      persistence.all.mockReturnValueOnce([]);
+
+      logic.getPartiallyFilledOrders();
+
+      expect(persistence.all).toHaveBeenCalledWith(
+        expect.stringContaining('status = ?'),
+        ['partially_filled']
+      );
+    });
+
+    it('caches orders from database', () => {
+      persistence.all.mockReturnValueOnce([
+        { order_id: 'pf-3', status: 'partially_filled' },
+      ]);
+
+      logic.getPartiallyFilledOrders();
+
+      expect(state.getCachedOrder('pf-3')).toBeDefined();
     });
   });
 });
