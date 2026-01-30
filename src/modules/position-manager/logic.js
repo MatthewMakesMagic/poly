@@ -21,6 +21,9 @@ import {
   updateCachedPosition,
   getCachedOpenPositions,
   loadPositionsIntoCache,
+  calculateTotalExposure,
+  countPositionsByMarket,
+  setLastReconciliation,
 } from './state.js';
 
 /**
@@ -83,6 +86,57 @@ export function calculateUnrealizedPnl(position) {
 }
 
 /**
+ * Check if a new position would exceed configured limits
+ *
+ * @param {Object} params - Position parameters
+ * @param {number} params.size - Position size
+ * @param {number} params.entryPrice - Entry price
+ * @param {string} params.marketId - Market ID
+ * @param {Object} riskConfig - Risk configuration
+ * @param {number} riskConfig.maxPositionSize - Maximum size per single position
+ * @param {number} riskConfig.maxExposure - Maximum total exposure
+ * @param {number} riskConfig.positionLimitPerMarket - Maximum positions per market
+ * @returns {{ allowed: boolean, reason?: string, limit?: string }}
+ */
+export function checkLimits(params, riskConfig) {
+  const { size, entryPrice, marketId } = params;
+  const { maxPositionSize, maxExposure, positionLimitPerMarket } = riskConfig;
+
+  // Check 1: Position size limit
+  if (size > maxPositionSize) {
+    return {
+      allowed: false,
+      reason: `Position size ${size} exceeds maximum ${maxPositionSize}`,
+      limit: 'maxPositionSize',
+    };
+  }
+
+  // Check 2: Total exposure limit
+  const currentExposure = calculateTotalExposure();
+  const newPositionExposure = size * entryPrice;
+  const newTotalExposure = currentExposure + newPositionExposure;
+  if (newTotalExposure > maxExposure) {
+    return {
+      allowed: false,
+      reason: `Total exposure would be ${newTotalExposure.toFixed(2)}, exceeding maximum ${maxExposure}`,
+      limit: 'maxExposure',
+    };
+  }
+
+  // Check 3: Positions per market limit
+  const marketPositions = countPositionsByMarket(marketId);
+  if (marketPositions >= positionLimitPerMarket) {
+    return {
+      allowed: false,
+      reason: `Market ${marketId} already has ${marketPositions} positions, limit is ${positionLimitPerMarket}`,
+      limit: 'positionLimitPerMarket',
+    };
+  }
+
+  return { allowed: true };
+}
+
+/**
  * Add a new position with write-ahead logging
  *
  * @param {Object} params - Position parameters
@@ -94,15 +148,31 @@ export function calculateUnrealizedPnl(position) {
  * @param {number} params.entryPrice - Entry price
  * @param {string} params.strategyId - Strategy ID
  * @param {Object} log - Logger instance
+ * @param {Object} [riskConfig] - Optional risk configuration for limit checking
  * @returns {Promise<Object>} Created position with id
  */
-export async function addPosition(params, log) {
+export async function addPosition(params, log, riskConfig = null) {
   const { windowId, marketId, tokenId, side, size, entryPrice, strategyId } = params;
 
   // 1. Validate parameters
   validatePositionParams(params);
 
-  // 2. Log intent BEFORE any action
+  // 2. Check limits if riskConfig provided
+  if (riskConfig) {
+    const limitCheck = checkLimits(params, riskConfig);
+    if (!limitCheck.allowed) {
+      throw new PositionManagerError(
+        PositionManagerErrorCodes.POSITION_LIMIT_EXCEEDED,
+        limitCheck.reason,
+        {
+          limit: limitCheck.limit,
+          params: { size, entryPrice, marketId },
+        }
+      );
+    }
+  }
+
+  // 3. Log intent BEFORE any action
   const intentPayload = {
     windowId,
     marketId,
@@ -122,13 +192,13 @@ export async function addPosition(params, log) {
 
   log.info('position_intent_logged', { intentId, windowId, marketId, tokenId, side, size });
 
-  // 3. Mark intent as executing
+  // 4. Mark intent as executing
   writeAhead.markExecuting(intentId);
 
   try {
     const openedAt = new Date().toISOString();
 
-    // 4. Insert to database
+    // 5. Insert to database
     const result = persistence.run(
       `INSERT INTO positions (
         window_id, market_id, token_id, side, size, entry_price,
@@ -150,7 +220,7 @@ export async function addPosition(params, log) {
 
     const positionId = Number(result.lastInsertRowid);
 
-    // 5. Build position record
+    // 6. Build position record
     const positionRecord = {
       id: positionId,
       window_id: windowId,
@@ -169,10 +239,10 @@ export async function addPosition(params, log) {
       exchange_verified_at: null,
     };
 
-    // 6. Cache the position
+    // 7. Cache the position
     cachePosition(positionRecord);
 
-    // 7. Mark intent completed
+    // 8. Mark intent completed
     writeAhead.markCompleted(intentId, { positionId });
 
     log.info('position_created', {
@@ -333,4 +403,212 @@ export function loadPositionsFromDb(log) {
 
   loadPositionsIntoCache(openPositions);
   log.info('positions_loaded_to_cache', { count: openPositions.length });
+}
+
+/**
+ * Close a position with write-ahead logging
+ *
+ * @param {number} positionId - Position ID
+ * @param {Object} params - Close parameters
+ * @param {boolean} [params.emergency=false] - Use market order for emergency close
+ * @param {number} [params.closePrice] - Override close price (optional)
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Closed position with pnl
+ * @throws {PositionManagerError} If position not found or invalid status
+ */
+export async function closePosition(positionId, params, log) {
+  const { emergency = false, closePrice } = params;
+  const position = getCachedPosition(positionId);
+
+  // Validate position exists
+  if (!position) {
+    throw new PositionManagerError(
+      PositionManagerErrorCodes.NOT_FOUND,
+      `Position not found: ${positionId}`,
+      { positionId }
+    );
+  }
+
+  // Validate position is open
+  if (position.status !== PositionStatus.OPEN) {
+    throw new PositionManagerError(
+      PositionManagerErrorCodes.INVALID_STATUS_TRANSITION,
+      `Cannot close position with status: ${position.status}`,
+      { positionId, currentStatus: position.status }
+    );
+  }
+
+  // 1. Log intent BEFORE any action
+  const intentPayload = {
+    positionId,
+    windowId: position.window_id,
+    marketId: position.market_id,
+    tokenId: position.token_id,
+    size: position.size,
+    entryPrice: position.entry_price,
+    emergency,
+    requestedAt: new Date().toISOString(),
+  };
+
+  const intentId = writeAhead.logIntent(
+    writeAhead.INTENT_TYPES.CLOSE_POSITION,
+    position.window_id,
+    intentPayload
+  );
+
+  if (emergency) {
+    log.warn('position_emergency_close_started', { intentId, positionId });
+  } else {
+    log.info('position_close_started', { intentId, positionId });
+  }
+
+  // 2. Mark intent as executing
+  writeAhead.markExecuting(intentId);
+
+  try {
+    const closedAt = new Date().toISOString();
+    const actualClosePrice = closePrice || position.current_price;
+
+    // Calculate P&L
+    const priceDiff = actualClosePrice - position.entry_price;
+    const direction = position.side === Side.LONG ? 1 : -1;
+    const pnl = priceDiff * position.size * direction;
+
+    // 3. Update database
+    persistence.run(
+      `UPDATE positions
+       SET status = ?, close_price = ?, closed_at = ?, pnl = ?
+       WHERE id = ?`,
+      [PositionStatus.CLOSED, actualClosePrice, closedAt, pnl, positionId]
+    );
+
+    // 4. Update cache
+    const closedPosition = {
+      ...position,
+      status: PositionStatus.CLOSED,
+      close_price: actualClosePrice,
+      closed_at: closedAt,
+      pnl,
+    };
+    updateCachedPosition(positionId, closedPosition);
+
+    // 5. Mark intent completed
+    writeAhead.markCompleted(intentId, { positionId, closePrice: actualClosePrice, pnl });
+
+    log.info('position_closed', {
+      positionId,
+      closePrice: actualClosePrice,
+      pnl,
+      emergency,
+    });
+
+    return closedPosition;
+  } catch (err) {
+    writeAhead.markFailed(intentId, {
+      code: err.code || PositionManagerErrorCodes.CLOSE_FAILED,
+      message: err.message,
+    });
+
+    log.error('position_close_failed', {
+      intentId,
+      positionId,
+      error: err.message,
+    });
+
+    throw new PositionManagerError(
+      PositionManagerErrorCodes.CLOSE_FAILED,
+      `Failed to close position: ${err.message}`,
+      { positionId, intentId, originalError: err.message }
+    );
+  }
+}
+
+/**
+ * Reconcile local position state with exchange
+ *
+ * Compares local database positions with exchange balances and reports
+ * divergences. Updates exchange_verified_at for matching positions.
+ *
+ * @param {Object} polymarketClient - Initialized Polymarket client with getBalance()
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Reconciliation result
+ */
+export async function reconcile(polymarketClient, log) {
+  const openPositions = getPositions();
+  const divergences = [];
+  let verified = 0;
+  const now = new Date().toISOString();
+
+  log.info('reconciliation_started', { positionCount: openPositions.length });
+
+  for (const position of openPositions) {
+    try {
+      // Query exchange for token balance
+      const exchangeBalance = await polymarketClient.getBalance(position.token_id);
+
+      // Compare with tolerance for floating point precision
+      if (Math.abs(exchangeBalance - position.size) < 0.0001) {
+        // Match - update verification timestamp
+        persistence.run(
+          'UPDATE positions SET exchange_verified_at = ? WHERE id = ?',
+          [now, position.id]
+        );
+        updateCachedPosition(position.id, { exchange_verified_at: now });
+        verified++;
+      } else {
+        // Divergence detected
+        const divergenceType = exchangeBalance === 0 ? 'MISSING_ON_EXCHANGE' : 'SIZE_MISMATCH';
+        const divergence = {
+          positionId: position.id,
+          tokenId: position.token_id,
+          windowId: position.window_id,
+          localState: {
+            size: position.size,
+            status: position.status,
+          },
+          exchangeState: {
+            balance: exchangeBalance,
+          },
+          type: divergenceType,
+        };
+        divergences.push(divergence);
+
+        log.warn('reconciliation_divergence', {
+          positionId: position.id,
+          localSize: position.size,
+          exchangeBalance,
+          type: divergenceType,
+        });
+      }
+    } catch (err) {
+      log.error('reconciliation_error', {
+        positionId: position.id,
+        tokenId: position.token_id,
+        error: err.message,
+      });
+      divergences.push({
+        positionId: position.id,
+        tokenId: position.token_id,
+        type: 'API_ERROR',
+        error: err.message,
+      });
+    }
+  }
+
+  const result = {
+    verified,
+    divergences,
+    timestamp: now,
+    success: divergences.length === 0,
+  };
+
+  // Store last reconciliation result
+  setLastReconciliation(result);
+
+  log.info('reconciliation_completed', {
+    verified,
+    divergenceCount: divergences.length,
+  });
+
+  return result;
 }

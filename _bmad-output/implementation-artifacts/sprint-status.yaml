@@ -56,7 +56,7 @@ development_status:
   2-3-order-manager-partial-fills-cancellation: done
   2-4-spot-price-feed-integration: done
   2-5-position-manager-track-positions: done
-  2-6-position-manager-reconciliation-limits: backlog
+  2-6-position-manager-reconciliation-limits: done
   epic-2-retrospective: optional
 
   # Epic 3: Strategy Execution

@@ -252,6 +252,32 @@ describe('Position Manager Module', () => {
         })
       );
     });
+
+    it('fails when limits exceeded with risk config', async () => {
+      await positionManager.shutdown();
+
+      // Initialize with risk config
+      await positionManager.init({
+        risk: {
+          maxPositionSize: 100,
+          maxExposure: 500,
+          positionLimitPerMarket: 1,
+        },
+      });
+
+      // Try to add position exceeding maxPositionSize
+      await expect(
+        positionManager.addPosition({
+          windowId: 'window-1',
+          marketId: 'market-1',
+          tokenId: 'token-1',
+          side: 'long',
+          size: 150, // Exceeds maxPositionSize of 100
+          entryPrice: 0.5,
+          strategyId: 'strategy-1',
+        })
+      ).rejects.toThrow('Position size 150 exceeds maximum 100');
+    });
   });
 
   describe('validation', () => {
@@ -451,6 +477,277 @@ describe('Position Manager Module', () => {
     });
   });
 
+  describe('closePosition()', () => {
+    beforeEach(async () => {
+      await positionManager.init({});
+    });
+
+    it('throws when called before init', async () => {
+      await positionManager.shutdown();
+
+      await expect(positionManager.closePosition(1, {})).rejects.toThrow(
+        'Position manager not initialized'
+      );
+    });
+
+    it('throws if position not found', async () => {
+      await expect(positionManager.closePosition(999, {})).rejects.toThrow(
+        'Position not found: 999'
+      );
+    });
+
+    it('closes position with normal close flow', async () => {
+      // First add a position
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      vi.clearAllMocks();
+
+      // Close the position
+      const result = await positionManager.closePosition(1, {});
+
+      expect(result.status).toBe('closed');
+      expect(result.pnl).toBeDefined();
+      expect(writeAhead.logIntent).toHaveBeenCalledWith(
+        'close_position',
+        'window-1',
+        expect.objectContaining({
+          positionId: 1,
+          emergency: false,
+        })
+      );
+    });
+
+    it('closes position with emergency flag', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      vi.clearAllMocks();
+
+      const result = await positionManager.closePosition(1, { emergency: true });
+
+      expect(result.status).toBe('closed');
+      expect(writeAhead.logIntent).toHaveBeenCalledWith(
+        'close_position',
+        'window-1',
+        expect.objectContaining({
+          emergency: true,
+        })
+      );
+    });
+
+    it('updates position status, pnl, and closed_at', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      // Update price to create P&L
+      positionManager.updatePrice(1, 0.6);
+
+      const result = await positionManager.closePosition(1, {});
+
+      expect(result.status).toBe('closed');
+      expect(result.close_price).toBe(0.6);
+      expect(result.closed_at).toBeDefined();
+      // (0.6 - 0.5) * 100 * 1 = 10
+      expect(result.pnl).toBeCloseTo(10, 5);
+    });
+
+    it('rejects closing already closed position', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      await positionManager.closePosition(1, {});
+
+      await expect(positionManager.closePosition(1, {})).rejects.toThrow(
+        'Cannot close position with status: closed'
+      );
+    });
+  });
+
+  describe('reconcile()', () => {
+    beforeEach(async () => {
+      await positionManager.init({});
+    });
+
+    it('throws when called before init', async () => {
+      await positionManager.shutdown();
+
+      const mockClient = { getBalance: vi.fn() };
+      await expect(positionManager.reconcile(mockClient)).rejects.toThrow(
+        'Position manager not initialized'
+      );
+    });
+
+    it('detects divergence when exchange balance differs', async () => {
+      // Add a position
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      // Mock database to return our position
+      persistence.all.mockReturnValueOnce([
+        {
+          id: 1,
+          status: 'open',
+          window_id: 'window-1',
+          market_id: 'market-1',
+          token_id: 'token-1',
+          side: 'long',
+          size: 100,
+          entry_price: 0.5,
+          current_price: 0.5,
+        },
+      ]);
+
+      // Mock exchange returns different balance
+      const mockClient = { getBalance: vi.fn().mockResolvedValue(50) }; // Exchange says 50, local says 100
+
+      const result = await positionManager.reconcile(mockClient);
+
+      expect(result.divergences).toHaveLength(1);
+      expect(result.divergences[0].type).toBe('SIZE_MISMATCH');
+      expect(result.divergences[0].localState.size).toBe(100);
+      expect(result.divergences[0].exchangeState.balance).toBe(50);
+      expect(result.success).toBe(false);
+    });
+
+    it('updates exchange_verified_at on match', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      persistence.all.mockReturnValueOnce([
+        {
+          id: 1,
+          status: 'open',
+          window_id: 'window-1',
+          market_id: 'market-1',
+          token_id: 'token-1',
+          side: 'long',
+          size: 100,
+          entry_price: 0.5,
+          current_price: 0.5,
+        },
+      ]);
+
+      // Mock exchange returns matching balance
+      const mockClient = { getBalance: vi.fn().mockResolvedValue(100) };
+
+      const result = await positionManager.reconcile(mockClient);
+
+      expect(result.verified).toBe(1);
+      expect(result.divergences).toHaveLength(0);
+      expect(result.success).toBe(true);
+      expect(persistence.run).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE positions SET exchange_verified_at'),
+        expect.arrayContaining([1])
+      );
+    });
+
+    it('logs warning for orphaned exchange positions', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      persistence.all.mockReturnValueOnce([
+        {
+          id: 1,
+          status: 'open',
+          window_id: 'window-1',
+          market_id: 'market-1',
+          token_id: 'token-1',
+          side: 'long',
+          size: 100,
+          entry_price: 0.5,
+          current_price: 0.5,
+        },
+      ]);
+
+      // Mock exchange returns 0 (position missing on exchange)
+      const mockClient = { getBalance: vi.fn().mockResolvedValue(0) };
+
+      const result = await positionManager.reconcile(mockClient);
+
+      expect(result.divergences).toHaveLength(1);
+      expect(result.divergences[0].type).toBe('MISSING_ON_EXCHANGE');
+    });
+  });
+
+  describe('getCurrentExposure()', () => {
+    beforeEach(async () => {
+      await positionManager.init({});
+    });
+
+    it('throws when called before init', async () => {
+      await positionManager.shutdown();
+
+      expect(() => positionManager.getCurrentExposure()).toThrow(
+        'Position manager not initialized'
+      );
+    });
+
+    it('returns total exposure from open positions', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      // 100 * 0.5 = 50
+      expect(positionManager.getCurrentExposure()).toBe(50);
+    });
+  });
+
   describe('updatePrice()', () => {
     beforeEach(async () => {
       await positionManager.init({});
@@ -532,6 +829,37 @@ describe('Position Manager Module', () => {
       expect(state.positions.open).toBe(1);
       expect(state.stats).toBeDefined();
       expect(state.stats.totalOpened).toBe(1);
+    });
+
+    it('includes limits and lastReconciliation when config has risk settings', async () => {
+      await positionManager.init({
+        risk: {
+          maxPositionSize: 100,
+          maxExposure: 500,
+          positionLimitPerMarket: 1,
+        },
+      });
+
+      const state = positionManager.getState();
+      expect(state.limits).toBeDefined();
+      expect(state.limits.maxPositionSize).toBe(100);
+      expect(state.limits.maxExposure).toBe(500);
+      expect(state.limits.currentExposure).toBe(0);
+      expect(state.limits.positionLimitPerMarket).toBe(1);
+    });
+
+    it('includes lastReconciliation after reconcile()', async () => {
+      await positionManager.init({});
+
+      persistence.all.mockReturnValueOnce([]);
+
+      const mockClient = { getBalance: vi.fn() };
+      await positionManager.reconcile(mockClient);
+
+      const state = positionManager.getState();
+      expect(state.lastReconciliation).toBeDefined();
+      expect(state.lastReconciliation.timestamp).toBeDefined();
+      expect(state.lastReconciliation.success).toBe(true);
     });
   });
 

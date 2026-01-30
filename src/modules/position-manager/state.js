@@ -24,6 +24,12 @@ const stats = {
 };
 
 /**
+ * Last reconciliation result
+ * @type {Object|null}
+ */
+let lastReconciliation = null;
+
+/**
  * Add a position to the cache
  * @param {Object} position - Position object
  */
@@ -123,6 +129,7 @@ export function clearCache() {
   stats.totalOpened = 0;
   stats.totalClosed = 0;
   stats.totalPnl = 0;
+  lastReconciliation = null;
 }
 
 /**
@@ -133,4 +140,50 @@ export function loadPositionsIntoCache(positions) {
   for (const position of positions) {
     positionCache.set(position.id, { ...position });
   }
+}
+
+/**
+ * Calculate total exposure across all open positions
+ * Exposure is the sum of (size * entry_price) for all open positions
+ * @returns {number} Total exposure
+ */
+export function calculateTotalExposure() {
+  let totalExposure = 0;
+  for (const position of positionCache.values()) {
+    if (position.status === PositionStatus.OPEN) {
+      totalExposure += position.size * position.entry_price;
+    }
+  }
+  return totalExposure;
+}
+
+/**
+ * Count open positions for a specific market
+ * @param {string} marketId - Market ID
+ * @returns {number} Number of open positions in the market
+ */
+export function countPositionsByMarket(marketId) {
+  let count = 0;
+  for (const position of positionCache.values()) {
+    if (position.status === PositionStatus.OPEN && position.market_id === marketId) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Set the last reconciliation result
+ * @param {Object} result - Reconciliation result
+ */
+export function setLastReconciliation(result) {
+  lastReconciliation = result ? { ...result } : null;
+}
+
+/**
+ * Get the last reconciliation result
+ * @returns {Object|null} Last reconciliation result
+ */
+export function getLastReconciliation() {
+  return lastReconciliation ? { ...lastReconciliation } : null;
 }

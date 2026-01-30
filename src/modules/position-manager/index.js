@@ -15,7 +15,7 @@
 import { child } from '../logger/index.js';
 import { PositionManagerError, PositionManagerErrorCodes } from './types.js';
 import * as logic from './logic.js';
-import { getStats, clearCache } from './state.js';
+import { getStats, clearCache, calculateTotalExposure, getLastReconciliation } from './state.js';
 
 // Module state
 let log = null;
@@ -47,7 +47,7 @@ export async function init(cfg) {
 }
 
 /**
- * Add a new position
+ * Add a new position with optional limit checking
  *
  * @param {Object} params - Position parameters
  * @param {string} params.windowId - Window ID
@@ -58,11 +58,13 @@ export async function init(cfg) {
  * @param {number} params.entryPrice - Entry price
  * @param {string} params.strategyId - Strategy ID
  * @returns {Promise<Object>} Created position with id
- * @throws {PositionManagerError} If validation fails or database error
+ * @throws {PositionManagerError} If validation fails, limits exceeded, or database error
  */
 export async function addPosition(params) {
   ensureInitialized();
-  return logic.addPosition(params, log);
+  // Pass risk config if available for limit checking
+  const riskConfig = config?.risk || null;
+  return logic.addPosition(params, log, riskConfig);
 }
 
 /**
@@ -87,20 +89,18 @@ export function getPositions() {
 }
 
 /**
- * Close a position (stub - full implementation in Story 2.6)
+ * Close a position with write-ahead logging
  *
  * @param {number} positionId - Position ID
  * @param {Object} params - Close parameters
- * @returns {Promise<Object>} Closed position
+ * @param {boolean} [params.emergency=false] - Use market order for emergency close
+ * @param {number} [params.closePrice] - Override close price (optional)
+ * @returns {Promise<Object>} Closed position with pnl
+ * @throws {PositionManagerError} If position not found or invalid status
  */
-export async function closePosition(positionId, params) {
+export async function closePosition(positionId, params = {}) {
   ensureInitialized();
-  // Stub for Story 2.6
-  throw new PositionManagerError(
-    PositionManagerErrorCodes.NOT_FOUND,
-    'closePosition() will be implemented in Story 2.6',
-    { positionId, params }
-  );
+  return logic.closePosition(positionId, params, log);
 }
 
 /**
@@ -117,15 +117,57 @@ export function updatePrice(positionId, newPrice) {
 }
 
 /**
+ * Reconcile local position state with exchange
+ *
+ * Compares local database positions with exchange balances and reports
+ * divergences. Updates exchange_verified_at for matching positions.
+ *
+ * @param {Object} polymarketClient - Initialized Polymarket client with getBalance()
+ * @returns {Promise<Object>} Reconciliation result { verified, divergences, timestamp, success }
+ */
+export async function reconcile(polymarketClient) {
+  ensureInitialized();
+  return logic.reconcile(polymarketClient, log);
+}
+
+/**
+ * Get current total exposure across all open positions
+ *
+ * @returns {number} Total exposure (sum of size * entry_price for all open positions)
+ */
+export function getCurrentExposure() {
+  ensureInitialized();
+  return calculateTotalExposure();
+}
+
+/**
  * Get current module state
  *
- * @returns {Object} Current state including initialization status and stats
+ * @returns {Object} Current state including initialization status, stats, limits, and reconciliation
  */
 export function getState() {
-  return {
+  const state = {
     initialized,
     ...getStats(),
   };
+
+  // Add limits info if config available
+  if (config?.risk) {
+    state.limits = {
+      maxPositionSize: config.risk.maxPositionSize,
+      maxExposure: config.risk.maxExposure,
+      currentExposure: calculateTotalExposure(),
+      positionLimitPerMarket: config.risk.positionLimitPerMarket,
+    };
+  }
+
+  // Add last reconciliation info
+  const lastRecon = getLastReconciliation();
+  if (lastRecon) {
+    state.lastReconciliation = lastRecon;
+  }
+
+  return state;
 }
 
 /**
