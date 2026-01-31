@@ -75,19 +75,31 @@ export default {
     inflightTimeoutMs: 10000,       // Max wait for in-flight ops
   },
 
-  // Monitoring and diagnostic thresholds (Story 5.2, AC8)
+  // Monitoring and diagnostic thresholds (Story 5.2, AC8 + Story 5.3)
   monitoring: {
     latencyThresholdMs: 500,       // Flag events with latency > 500ms (per NFR1)
     slippageThresholdPct: 0.02,    // Flag events with slippage > 2% of expected price
     sizeImpactThreshold: 0.5,      // Flag events where size > 50% of available depth
+    partialFillThresholdPct: 0.1,  // Flag partial fills with >10% size difference (Story 5.3)
+    latencyComponentThresholds: {  // Individual latency component thresholds (Story 5.3)
+      decisionToSubmitMs: 100,     // Decision to submit should be fast (internal processing)
+      submitToAckMs: 200,          // Exchange ack should be quick (network + exchange)
+      ackToFillMs: 300,            // Fill after ack varies by liquidity
+    },
   },
 
-  // Trade event module configuration (Story 5.2)
+  // Trade event module configuration (Story 5.2 + Story 5.3)
   tradeEvent: {
     thresholds: {
       latencyThresholdMs: 500,       // Same as monitoring defaults
       slippageThresholdPct: 0.02,
       sizeImpactThreshold: 0.5,
+      partialFillThresholdPct: 0.1,  // 10% tolerance for partial fills (Story 5.3)
+      latencyComponentThresholds: {  // Individual component checks (Story 5.3)
+        decisionToSubmitMs: 100,
+        submitToAckMs: 200,
+        ackToFillMs: 300,
+      },
     },
   },
 

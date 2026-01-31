@@ -8,13 +8,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock the logger - must be hoisted
+// Create a single shared instance that all child() calls return
+const mockLoggerFns = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+};
+
 vi.mock('../../logger/index.js', () => ({
-  child: vi.fn().mockReturnValue({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
+  child: vi.fn(() => mockLoggerFns),
 }));
 
 // Mock the database - must be hoisted
@@ -33,13 +36,12 @@ import { child } from '../../logger/index.js';
 
 describe('Trade Event Module', () => {
   const mockConfig = {};
-  let mockLogger;
+  // Use the shared mock logger functions
+  const mockLogger = mockLoggerFns;
 
   beforeEach(() => {
     vi.clearAllMocks();
     resetState();
-    // Get reference to mocked logger
-    mockLogger = child();
     // Reset mock return values
     database.run.mockReturnValue({ lastInsertRowid: 1, changes: 1 });
     database.get.mockReturnValue(undefined);
@@ -246,6 +248,7 @@ describe('Trade Event Module', () => {
     });
 
     it('should log entry event with expected vs actual', async () => {
+      // Use timestamps within threshold to get info level log
       await tradeEvent.recordEntry({
         windowId: 'window-123',
         positionId: 1,
@@ -253,11 +256,11 @@ describe('Trade Event Module', () => {
         strategyId: 'spot-lag-v1',
         timestamps: {
           signalDetectedAt: '2026-01-31T10:00:00.000Z',
-          orderFilledAt: '2026-01-31T10:00:00.350Z',
+          orderFilledAt: '2026-01-31T10:00:00.200Z', // 200ms < 500ms threshold
         },
         prices: {
           priceAtSignal: 0.50,
-          priceAtFill: 0.51,
+          priceAtFill: 0.505, // 1% slippage < 2% threshold
           expectedPrice: 0.50,
         },
         sizes: {
@@ -276,7 +279,7 @@ describe('Trade Event Module', () => {
             size: 100,
           }),
           actual: expect.objectContaining({
-            price: 0.51,
+            price: 0.505,
             size: 100,
           }),
         }),
@@ -362,13 +365,22 @@ describe('Trade Event Module', () => {
     });
 
     it('should log exit event with expected vs actual', async () => {
+      // Use values within thresholds for info level log
       await tradeEvent.recordExit({
         windowId: 'window-123',
         positionId: 1,
         exitReason: 'take_profit',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.200Z', // 200ms < threshold
+        },
         prices: {
-          priceAtFill: 0.60,
+          priceAtFill: 0.55, // Matches expected
           expectedPrice: 0.55,
+        },
+        sizes: {
+          requestedSize: 100,
+          filledSize: 100,
         },
       });
 
@@ -744,10 +756,10 @@ describe('Trade Event Module', () => {
     });
 
     it('should calculate slippage example from Dev Notes', async () => {
-      // Example from story:
-      // Entry at 0.51 when expected 0.50
-      // slippage_signal_to_fill = 0.51 - 0.50 = 0.01
-      // slippage_vs_expected = 0.51 - 0.50 = 0.01
+      // Example from story with low slippage within threshold for info-level log:
+      // Entry at 0.505 when expected 0.50 (1% slippage < 2% threshold)
+      // slippage_signal_to_fill = 0.505 - 0.50 = 0.005
+      // slippage_vs_expected = 0.505 - 0.50 = 0.005
 
       await tradeEvent.recordEntry({
         windowId: 'window-123',
@@ -756,14 +768,14 @@ describe('Trade Event Module', () => {
         strategyId: 'spot-lag-v1',
         timestamps: {
           signalDetectedAt: '2026-01-31T10:00:00.000Z',
-          orderSubmittedAt: '2026-01-31T10:00:00.100Z',
-          orderAckedAt: '2026-01-31T10:00:00.200Z',
-          orderFilledAt: '2026-01-31T10:00:00.350Z',
+          orderSubmittedAt: '2026-01-31T10:00:00.050Z',
+          orderAckedAt: '2026-01-31T10:00:00.100Z',
+          orderFilledAt: '2026-01-31T10:00:00.200Z', // 200ms < 500ms threshold
         },
         prices: {
           priceAtSignal: 0.50,
-          priceAtSubmit: 0.505,
-          priceAtFill: 0.51,
+          priceAtSubmit: 0.502,
+          priceAtFill: 0.505, // 1% slippage < 2% threshold
           expectedPrice: 0.50,
         },
         sizes: {
@@ -777,9 +789,9 @@ describe('Trade Event Module', () => {
         'trade_entry',
         expect.objectContaining({
           expected: { price: 0.50, size: 100 },
-          actual: { price: 0.51, size: 100 },
-          slippage: 0.51 - 0.50, // 0.01
-          latency_ms: 350, // total latency
+          actual: { price: 0.505, size: 100 },
+          slippage: 0.505 - 0.50, // 0.005
+          latency_ms: 200, // total latency
         }),
         expect.any(Object)
       );
@@ -1137,6 +1149,326 @@ describe('Trade Event Module', () => {
       const flagsParam = params.find(p => p === null || (typeof p === 'string' && p.includes('high_')));
       // If null, no flags were set
       expect(flagsParam === null || !flagsParam.includes('high_')).toBe(true);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.3: DIVERGENCE DETECTION API
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('getDivergenceCheck() (Story 5.3, AC7)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init({
+        tradeEvent: {
+          thresholds: {
+            latencyThresholdMs: 500,
+            slippageThresholdPct: 0.02,
+            sizeImpactThreshold: 0.5,
+            partialFillThresholdPct: 0.1,
+          },
+        },
+      });
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getDivergenceCheck({})).toThrow('not initialized');
+    });
+
+    it('should detect divergence with structured result', () => {
+      const event = { latency_total_ms: 600 };
+
+      const result = tradeEvent.getDivergenceCheck(event);
+
+      expect(result.hasDivergence).toBe(true);
+      expect(result.flags).toContain('high_latency');
+      expect(result.divergences).toHaveLength(1);
+      expect(result.divergences[0].severity).toBe('warn');
+    });
+
+    it('should return no divergence when within thresholds', () => {
+      const event = {
+        latency_total_ms: 200,
+        slippage_vs_expected: 0.005,
+        expected_price: 1.0,
+      };
+
+      const result = tradeEvent.getDivergenceCheck(event);
+
+      expect(result.hasDivergence).toBe(false);
+      expect(result.flags).toHaveLength(0);
+    });
+
+    it('should accept custom thresholds override', () => {
+      const event = { latency_total_ms: 300 };
+
+      // Default threshold is 500ms, so this wouldn't normally trigger
+      const resultWithDefault = tradeEvent.getDivergenceCheck(event);
+      expect(resultWithDefault.hasDivergence).toBe(false);
+
+      // With custom lower threshold, it should trigger
+      const resultWithCustom = tradeEvent.getDivergenceCheck(event, { latencyThresholdMs: 200 });
+      expect(resultWithCustom.hasDivergence).toBe(true);
+    });
+  });
+
+  describe('getDivergentEvents() (Story 5.3, AC7)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getDivergentEvents()).toThrow('not initialized');
+    });
+
+    it('should return events with divergence flags', () => {
+      database.all.mockReturnValue([
+        { id: 1, diagnostic_flags: '["high_latency"]' },
+        { id: 2, diagnostic_flags: '["high_slippage", "size_impact"]' },
+      ]);
+
+      const events = tradeEvent.getDivergentEvents();
+
+      expect(events).toHaveLength(2);
+      expect(events[0].diagnostic_flags).toEqual(['high_latency']);
+    });
+
+    it('should filter by windowId', () => {
+      database.all.mockReturnValue([]);
+
+      tradeEvent.getDivergentEvents({ windowId: 'window-123' });
+
+      expect(database.all).toHaveBeenCalledWith(
+        expect.stringContaining('window_id = ?'),
+        expect.arrayContaining(['window-123'])
+      );
+    });
+
+    it('should filter by specific flags', () => {
+      database.all.mockReturnValue([
+        { id: 1, diagnostic_flags: '["high_latency"]' },
+        { id: 2, diagnostic_flags: '["high_slippage"]' },
+      ]);
+
+      const events = tradeEvent.getDivergentEvents({ flags: ['high_latency'] });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].id).toBe(1);
+    });
+  });
+
+  describe('getDivergenceSummary() (Story 5.3, AC7)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getDivergenceSummary()).toThrow('not initialized');
+    });
+
+    it('should return divergence counts and rates', () => {
+      database.all.mockReturnValue([
+        { diagnostic_flags: '["high_latency"]' },
+        { diagnostic_flags: '["high_slippage"]' },
+        { diagnostic_flags: '["high_latency", "size_impact"]' },
+      ]);
+      database.get.mockReturnValue({ count: 10 });
+
+      const summary = tradeEvent.getDivergenceSummary();
+
+      expect(summary.totalEvents).toBe(10);
+      expect(summary.eventsWithDivergence).toBe(3);
+      expect(summary.divergenceRate).toBeCloseTo(0.3);
+      expect(summary.flagCounts.high_latency).toBe(2);
+      expect(summary.flagRates.high_latency).toBeCloseTo(0.2);
+    });
+  });
+
+  describe('getStateDivergence() (Story 5.3, AC6)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getStateDivergence({}, {})).toThrow('not initialized');
+    });
+
+    it('should detect state mismatch between local and exchange', () => {
+      const local = { id: 1, size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, size: 80, side: 'long', status: 'open' };
+
+      const result = tradeEvent.getStateDivergence(local, exchange);
+
+      expect(result).not.toBeNull();
+      expect(result.divergences).toHaveLength(1);
+      expect(result.divergences[0].field).toBe('size');
+    });
+
+    it('should return null when states match', () => {
+      const local = { id: 1, size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, size: 100, side: 'long', status: 'open' };
+
+      const result = tradeEvent.getStateDivergence(local, exchange);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('getState() with divergence stats (Story 5.3)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should include divergence stats in state', () => {
+      database.all.mockReturnValue([
+        { diagnostic_flags: '["high_latency"]' },
+      ]);
+      database.get.mockReturnValue({ count: 5 });
+
+      const state = tradeEvent.getState();
+
+      expect(state.divergence).toBeDefined();
+      expect(state.divergence.eventsWithDivergence).toBe(1);
+      expect(state.divergence.divergenceRate).toBeCloseTo(0.2);
+      expect(state.divergence.flagCounts.high_latency).toBe(1);
+    });
+  });
+
+  describe('recordEntry with divergence logging (Story 5.3)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init({
+        tradeEvent: {
+          thresholds: {
+            latencyThresholdMs: 500,
+            slippageThresholdPct: 0.02,
+            partialFillThresholdPct: 0.1,
+          },
+        },
+      });
+    });
+
+    it('should log at warn level when divergence detected', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z', // 600ms > 500ms
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 100,
+          filledSize: 100,
+        },
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          diagnostic_flags: expect.arrayContaining(['high_latency']),
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should log at error level for size divergence', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {},
+        prices: {},
+        sizes: {
+          requestedSize: 100,
+          filledSize: 50, // 50% difference > 10% threshold
+        },
+      });
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          diagnostic_flags: expect.arrayContaining(['size_divergence']),
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should log at info level when no divergence', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.200Z', // 200ms < 500ms
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 100,
+          filledSize: 100,
+        },
+      });
+
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'trade_entry',
+        expect.any(Object),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('recordExit with divergence logging (Story 5.3)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init({
+        tradeEvent: {
+          thresholds: {
+            latencyThresholdMs: 500,
+            partialFillThresholdPct: 0.1,
+          },
+        },
+      });
+      database.get.mockReturnValue({ id: 1 }); // Position exists
+    });
+
+    it('should log at warn level when divergence detected on exit', async () => {
+      await tradeEvent.recordExit({
+        windowId: 'window-123',
+        positionId: 1,
+        exitReason: 'stop_loss',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z', // 600ms > 500ms
+        },
+        prices: {},
+        sizes: {},
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_exit_divergence',
+        expect.objectContaining({
+          diagnostic_flags: expect.arrayContaining(['high_latency']),
+        }),
+        expect.any(Object)
+      );
     });
   });
 });

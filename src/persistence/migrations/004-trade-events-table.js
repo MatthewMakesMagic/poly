@@ -53,6 +53,7 @@ export function up() {
       event TEXT NOT NULL,
       diagnostic_flags TEXT,
       notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (position_id) REFERENCES positions(id)
     )
   `);

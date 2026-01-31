@@ -38,6 +38,10 @@ import {
   querySlippageBySize,
   querySlippageBySpread,
   detectDiagnosticFlags,
+  checkDivergence,
+  detectStateDivergence,
+  queryDivergentEvents,
+  queryDivergenceSummary,
 } from '../logic.js';
 import { TradeEventErrorCodes } from '../types.js';
 import { resetState } from '../state.js';
@@ -121,6 +125,42 @@ describe('Trade Event Logic', () => {
       expect(latencies.latency_submit_to_ack_ms).toBe(1500);
       expect(latencies.latency_ack_to_fill_ms).toBe(3000);
       expect(latencies.latency_total_ms).toBe(5000);
+    });
+
+    it('should handle invalid timestamp strings gracefully', () => {
+      const timestamps = {
+        signalDetectedAt: 'not-a-date',
+        orderSubmittedAt: '2026-01-31T10:00:00.100Z',
+        orderAckedAt: 'invalid',
+        orderFilledAt: '2026-01-31T10:00:00.350Z',
+      };
+
+      const latencies = calculateLatencies(timestamps);
+
+      // Invalid timestamps should be treated as null
+      expect(latencies.latency_decision_to_submit_ms).toBeNull();
+      expect(latencies.latency_submit_to_ack_ms).toBeNull();
+      expect(latencies.latency_ack_to_fill_ms).toBeNull();
+      expect(latencies.latency_total_ms).toBeNull();
+    });
+
+    it('should handle mixed valid and invalid timestamps', () => {
+      const timestamps = {
+        signalDetectedAt: '2026-01-31T10:00:00.000Z',
+        orderSubmittedAt: '2026-01-31T10:00:00.100Z',
+        orderAckedAt: 'garbage',
+        orderFilledAt: '2026-01-31T10:00:00.350Z',
+      };
+
+      const latencies = calculateLatencies(timestamps);
+
+      // Valid pairs should work
+      expect(latencies.latency_decision_to_submit_ms).toBe(100);
+      // Invalid ack means these are null
+      expect(latencies.latency_submit_to_ack_ms).toBeNull();
+      expect(latencies.latency_ack_to_fill_ms).toBeNull();
+      // Total should work (signal to fill)
+      expect(latencies.latency_total_ms).toBe(350);
     });
   });
 
@@ -800,6 +840,402 @@ describe('Trade Event Logic', () => {
       expect(flags).toContain('high_latency');
       expect(flags).toContain('high_slippage');
       expect(flags).toContain('size_impact');
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STORY 5.3: EXTENDED DIVERGENCE DETECTION
+    // ═══════════════════════════════════════════════════════════════════════
+
+    it('should detect entry_slippage flag for entry events (Story 5.3)', () => {
+      const event = {
+        event_type: 'entry',
+        slippage_signal_to_fill: 0.02, // $0.02 slippage
+        price_at_signal: 0.50, // 4% slippage
+      };
+      const flags = detectDiagnosticFlags(event, { slippageThresholdPct: 0.02 });
+
+      expect(flags).toContain('entry_slippage');
+    });
+
+    it('should not detect entry_slippage for non-entry events (Story 5.3)', () => {
+      const event = {
+        event_type: 'exit',
+        slippage_signal_to_fill: 0.02,
+        price_at_signal: 0.50,
+      };
+      const flags = detectDiagnosticFlags(event, { slippageThresholdPct: 0.02 });
+
+      expect(flags).not.toContain('entry_slippage');
+    });
+
+    it('should detect size_divergence for partial fills (Story 5.3)', () => {
+      const event = {
+        requested_size: 100,
+        filled_size: 80, // 20% difference > 10% threshold
+      };
+      const flags = detectDiagnosticFlags(event, { partialFillThresholdPct: 0.1 });
+
+      expect(flags).toContain('size_divergence');
+    });
+
+    it('should not flag size_divergence when within tolerance (Story 5.3)', () => {
+      const event = {
+        requested_size: 100,
+        filled_size: 95, // 5% difference < 10% threshold
+      };
+      const flags = detectDiagnosticFlags(event, { partialFillThresholdPct: 0.1 });
+
+      expect(flags).not.toContain('size_divergence');
+    });
+
+    it('should detect individual latency component anomalies (Story 5.3)', () => {
+      const event = {
+        latency_decision_to_submit_ms: 150, // > 100ms threshold
+        latency_submit_to_ack_ms: 250, // > 200ms threshold
+        latency_ack_to_fill_ms: 400, // > 300ms threshold
+      };
+      const flags = detectDiagnosticFlags(event, {
+        latencyComponentThresholds: {
+          decisionToSubmitMs: 100,
+          submitToAckMs: 200,
+          ackToFillMs: 300,
+        },
+      });
+
+      expect(flags).toContain('slow_decision_to_submit');
+      expect(flags).toContain('slow_submit_to_ack');
+      expect(flags).toContain('slow_ack_to_fill');
+    });
+
+    it('should not flag latency components within thresholds (Story 5.3)', () => {
+      const event = {
+        latency_decision_to_submit_ms: 50,
+        latency_submit_to_ack_ms: 100,
+        latency_ack_to_fill_ms: 200,
+      };
+      const flags = detectDiagnosticFlags(event, {
+        latencyComponentThresholds: {
+          decisionToSubmitMs: 100,
+          submitToAckMs: 200,
+          ackToFillMs: 300,
+        },
+      });
+
+      expect(flags).not.toContain('slow_decision_to_submit');
+      expect(flags).not.toContain('slow_submit_to_ack');
+      expect(flags).not.toContain('slow_ack_to_fill');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.3: checkDivergence FUNCTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('checkDivergence() (Story 5.3, AC7)', () => {
+    it('should detect high latency divergence with severity and details', () => {
+      const event = { latency_total_ms: 600 };
+      const thresholds = { latencyThresholdMs: 500 };
+
+      const result = checkDivergence(event, thresholds);
+
+      expect(result.hasDivergence).toBe(true);
+      expect(result.flags).toContain('high_latency');
+      expect(result.divergences).toHaveLength(1);
+      expect(result.divergences[0].type).toBe('high_latency');
+      expect(result.divergences[0].severity).toBe('warn');
+      expect(result.divergences[0].details.latency_ms).toBe(600);
+      expect(result.divergences[0].details.threshold_ms).toBe(500);
+    });
+
+    it('should detect size divergence with error severity', () => {
+      const event = {
+        requested_size: 100,
+        filled_size: 50, // 50% difference
+      };
+      const thresholds = { partialFillThresholdPct: 0.1 };
+
+      const result = checkDivergence(event, thresholds);
+
+      expect(result.hasDivergence).toBe(true);
+      expect(result.flags).toContain('size_divergence');
+      const sizeDivergence = result.divergences.find(d => d.type === 'size_divergence');
+      expect(sizeDivergence.severity).toBe('error');
+      expect(sizeDivergence.details.requested).toBe(100);
+      expect(sizeDivergence.details.filled).toBe(50);
+    });
+
+    it('should detect multiple divergences simultaneously', () => {
+      const event = {
+        latency_total_ms: 600,
+        slippage_vs_expected: 0.05,
+        expected_price: 1.0,
+        requested_size: 100,
+        filled_size: 50,
+      };
+
+      const result = checkDivergence(event);
+
+      expect(result.hasDivergence).toBe(true);
+      expect(result.flags).toContain('high_latency');
+      expect(result.flags).toContain('high_slippage');
+      expect(result.flags).toContain('size_divergence');
+      expect(result.divergences.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('should return no divergence when within thresholds', () => {
+      const event = {
+        latency_total_ms: 200,
+        slippage_vs_expected: 0.005,
+        expected_price: 1.0,
+        requested_size: 100,
+        filled_size: 100,
+      };
+
+      const result = checkDivergence(event);
+
+      expect(result.hasDivergence).toBe(false);
+      expect(result.flags).toHaveLength(0);
+      expect(result.divergences).toHaveLength(0);
+    });
+
+    it('should include eventId and windowId when available', () => {
+      const event = {
+        id: 123,
+        window_id: 'window-456',
+        latency_total_ms: 600,
+      };
+
+      const result = checkDivergence(event, { latencyThresholdMs: 500 });
+
+      expect(result.eventId).toBe(123);
+      expect(result.windowId).toBe('window-456');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.3: detectStateDivergence FUNCTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('detectStateDivergence() (Story 5.3, AC6)', () => {
+    it('should detect size mismatch between local and exchange', () => {
+      const local = { id: 1, window_id: 'w1', size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, window_id: 'w1', size: 80, side: 'long', status: 'open' };
+
+      const result = detectStateDivergence(local, exchange);
+
+      expect(result).not.toBeNull();
+      expect(result.divergences).toHaveLength(1);
+      expect(result.divergences[0].field).toBe('size');
+      expect(result.divergences[0].local).toBe(100);
+      expect(result.divergences[0].exchange).toBe(80);
+    });
+
+    it('should detect side mismatch', () => {
+      const local = { id: 1, size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, size: 100, side: 'short', status: 'open' };
+
+      const result = detectStateDivergence(local, exchange);
+
+      expect(result).not.toBeNull();
+      expect(result.divergences.some(d => d.field === 'side')).toBe(true);
+    });
+
+    it('should detect status mismatch', () => {
+      const local = { id: 1, size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, size: 100, side: 'long', status: 'closed' };
+
+      const result = detectStateDivergence(local, exchange);
+
+      expect(result).not.toBeNull();
+      expect(result.divergences.some(d => d.field === 'status')).toBe(true);
+    });
+
+    it('should detect multiple divergences', () => {
+      const local = { id: 1, size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, size: 50, side: 'short', status: 'closed' };
+
+      const result = detectStateDivergence(local, exchange);
+
+      expect(result).not.toBeNull();
+      expect(result.divergences).toHaveLength(3);
+    });
+
+    it('should return null when states match', () => {
+      const local = { id: 1, size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 1, size: 100, side: 'long', status: 'open' };
+
+      const result = detectStateDivergence(local, exchange);
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null for null inputs', () => {
+      expect(detectStateDivergence(null, {})).toBeNull();
+      expect(detectStateDivergence({}, null)).toBeNull();
+      expect(detectStateDivergence(null, null)).toBeNull();
+    });
+
+    it('should include position and window IDs in result', () => {
+      const local = { id: 123, window_id: 'win-456', size: 100, side: 'long', status: 'open' };
+      const exchange = { id: 123, window_id: 'win-456', size: 80, side: 'long', status: 'open' };
+
+      const result = detectStateDivergence(local, exchange);
+
+      expect(result.positionId).toBe(123);
+      expect(result.windowId).toBe('win-456');
+      expect(result.localState).toEqual(local);
+      expect(result.exchangeState).toEqual(exchange);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.3: queryDivergentEvents FUNCTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('queryDivergentEvents() (Story 5.3, AC7)', () => {
+    it('should return only events with divergence flags', () => {
+      mockDb.all.mockReturnValue([
+        { id: 1, diagnostic_flags: '["high_latency"]' },
+        { id: 2, diagnostic_flags: '["high_slippage", "size_impact"]' },
+      ]);
+
+      const events = queryDivergentEvents();
+
+      expect(events).toHaveLength(2);
+      expect(events.every(e => e.diagnostic_flags?.length > 0)).toBe(true);
+    });
+
+    it('should parse diagnostic_flags JSON', () => {
+      mockDb.all.mockReturnValue([
+        { id: 1, diagnostic_flags: '["high_latency", "high_slippage"]' },
+      ]);
+
+      const events = queryDivergentEvents();
+
+      expect(events[0].diagnostic_flags).toEqual(['high_latency', 'high_slippage']);
+    });
+
+    it('should filter by specific flags', () => {
+      mockDb.all.mockReturnValue([
+        { id: 1, diagnostic_flags: '["high_latency"]' },
+        { id: 2, diagnostic_flags: '["high_slippage", "size_impact"]' },
+      ]);
+
+      const events = queryDivergentEvents({ flags: ['high_latency'] });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].id).toBe(1);
+    });
+
+    it('should filter by windowId', () => {
+      mockDb.all.mockReturnValue([]);
+
+      queryDivergentEvents({ windowId: 'window-123' });
+
+      expect(mockDb.all).toHaveBeenCalledWith(
+        expect.stringContaining('window_id = ?'),
+        expect.arrayContaining(['window-123'])
+      );
+    });
+
+    it('should filter by strategyId', () => {
+      mockDb.all.mockReturnValue([]);
+
+      queryDivergentEvents({ strategyId: 'spot-lag-v1' });
+
+      expect(mockDb.all).toHaveBeenCalledWith(
+        expect.stringContaining('strategy_id = ?'),
+        expect.arrayContaining(['spot-lag-v1'])
+      );
+    });
+
+    it('should filter by timeRange', () => {
+      mockDb.all.mockReturnValue([]);
+
+      queryDivergentEvents({
+        timeRange: {
+          startDate: '2026-01-01T00:00:00Z',
+          endDate: '2026-01-31T23:59:59Z',
+        },
+      });
+
+      expect(mockDb.all).toHaveBeenCalledWith(
+        expect.stringContaining('signal_detected_at >= ?'),
+        expect.arrayContaining(['2026-01-01T00:00:00Z', '2026-01-31T23:59:59Z'])
+      );
+    });
+
+    it('should handle malformed JSON gracefully', () => {
+      mockDb.all.mockReturnValue([
+        { id: 1, diagnostic_flags: 'invalid-json' },
+      ]);
+
+      const events = queryDivergentEvents();
+
+      expect(events).toHaveLength(1);
+      expect(events[0].diagnostic_flags).toEqual([]);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.3: queryDivergenceSummary FUNCTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('queryDivergenceSummary() (Story 5.3, AC7)', () => {
+    it('should calculate correct divergence rates', () => {
+      // Mock divergent events
+      mockDb.all.mockReturnValue([
+        { diagnostic_flags: '["high_latency"]' },
+        { diagnostic_flags: '["high_slippage"]' },
+        { diagnostic_flags: '["high_latency", "size_impact"]' },
+      ]);
+      // Mock total count
+      mockDb.get.mockReturnValue({ count: 10 });
+
+      const summary = queryDivergenceSummary();
+
+      expect(summary.totalEvents).toBe(10);
+      expect(summary.eventsWithDivergence).toBe(3);
+      expect(summary.divergenceRate).toBeCloseTo(0.3);
+      expect(summary.flagCounts.high_latency).toBe(2);
+      expect(summary.flagCounts.high_slippage).toBe(1);
+      expect(summary.flagCounts.size_impact).toBe(1);
+    });
+
+    it('should calculate flag rates correctly', () => {
+      mockDb.all.mockReturnValue([
+        { diagnostic_flags: '["high_latency"]' },
+        { diagnostic_flags: '["high_latency"]' },
+      ]);
+      mockDb.get.mockReturnValue({ count: 10 });
+
+      const summary = queryDivergenceSummary();
+
+      expect(summary.flagRates.high_latency).toBeCloseTo(0.2);
+    });
+
+    it('should return zeros when no events', () => {
+      mockDb.all.mockReturnValue([]);
+      mockDb.get.mockReturnValue({ count: 0 });
+
+      const summary = queryDivergenceSummary();
+
+      expect(summary.totalEvents).toBe(0);
+      expect(summary.eventsWithDivergence).toBe(0);
+      expect(summary.divergenceRate).toBe(0);
+      expect(summary.flagCounts).toEqual({});
+    });
+
+    it('should filter by windowId', () => {
+      mockDb.all.mockReturnValue([]);
+      mockDb.get.mockReturnValue({ count: 0 });
+
+      queryDivergenceSummary({ windowId: 'window-123' });
+
+      expect(mockDb.get).toHaveBeenCalledWith(
+        expect.stringContaining('window_id = ?'),
+        expect.arrayContaining(['window-123'])
+      );
     });
   });
 });

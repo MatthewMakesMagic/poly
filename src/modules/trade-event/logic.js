@@ -10,6 +10,18 @@ import { TradeEventType, TradeEventError, TradeEventErrorCodes } from './types.j
 import { incrementEventCount } from './state.js';
 
 /**
+ * Parse and validate an ISO timestamp string
+ * @param {string} timestamp - ISO timestamp string
+ * @returns {number|null} Milliseconds since epoch, or null if invalid/missing
+ */
+function parseTimestamp(timestamp) {
+  if (!timestamp) return null;
+  const ms = new Date(timestamp).getTime();
+  // Check for Invalid Date (NaN)
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
  * Calculate latencies from timestamps
  * @param {Object} timestamps - Timestamp object
  * @param {string} timestamps.signalDetectedAt - ISO timestamp when signal detected
@@ -21,11 +33,11 @@ import { incrementEventCount } from './state.js';
 export function calculateLatencies(timestamps) {
   const { signalDetectedAt, orderSubmittedAt, orderAckedAt, orderFilledAt } = timestamps;
 
-  // Parse ISO timestamps to milliseconds
-  const signalMs = signalDetectedAt ? new Date(signalDetectedAt).getTime() : null;
-  const submitMs = orderSubmittedAt ? new Date(orderSubmittedAt).getTime() : null;
-  const ackMs = orderAckedAt ? new Date(orderAckedAt).getTime() : null;
-  const fillMs = orderFilledAt ? new Date(orderFilledAt).getTime() : null;
+  // Parse and validate ISO timestamps to milliseconds
+  const signalMs = parseTimestamp(signalDetectedAt);
+  const submitMs = parseTimestamp(orderSubmittedAt);
+  const ackMs = parseTimestamp(orderAckedAt);
+  const fillMs = parseTimestamp(orderFilledAt);
 
   return {
     latency_decision_to_submit_ms: signalMs && submitMs ? submitMs - signalMs : null,
@@ -668,32 +680,65 @@ export function querySlippageBySpread({ windowId, strategyId, timeRange, spreadB
 /**
  * Detect diagnostic flags based on threshold violations
  *
- * Checks latency, slippage, and size impact against configurable thresholds
- * and returns an array of flags indicating which thresholds were exceeded.
+ * Checks latency, slippage, size impact, and other divergence types against
+ * configurable thresholds and returns an array of flags indicating which
+ * thresholds were exceeded.
  *
  * @param {Object} event - Event data with latency, slippage, and size metrics
  * @param {number} [event.latency_total_ms] - Total latency in milliseconds
+ * @param {number} [event.latency_decision_to_submit_ms] - Latency from decision to submit
+ * @param {number} [event.latency_submit_to_ack_ms] - Latency from submit to ack
+ * @param {number} [event.latency_ack_to_fill_ms] - Latency from ack to fill
  * @param {number} [event.slippage_vs_expected] - Slippage vs expected price
+ * @param {number} [event.slippage_signal_to_fill] - Price movement from signal to fill
  * @param {number} [event.expected_price] - Expected execution price
+ * @param {number} [event.price_at_signal] - Price when signal was detected
+ * @param {string} [event.event_type] - Type of event (entry, exit, signal)
  * @param {number} [event.size_vs_depth_ratio] - Ratio of order size to available depth
+ * @param {number} [event.requested_size] - Requested order size
+ * @param {number} [event.filled_size] - Actual filled size
  * @param {Object} thresholds - Threshold configuration
  * @param {number} [thresholds.latencyThresholdMs=500] - Max acceptable latency (NFR1: 500ms)
  * @param {number} [thresholds.slippageThresholdPct=0.02] - Max acceptable slippage as % of expected
  * @param {number} [thresholds.sizeImpactThreshold=0.5] - Max acceptable size/depth ratio
- * @returns {string[]} Array of diagnostic flags (e.g., ['high_latency', 'high_slippage'])
+ * @param {number} [thresholds.partialFillThresholdPct=0.1] - Max acceptable size difference for partial fills
+ * @param {Object} [thresholds.latencyComponentThresholds] - Individual component thresholds
+ * @param {number} [thresholds.latencyComponentThresholds.decisionToSubmitMs=100] - Decision to submit threshold
+ * @param {number} [thresholds.latencyComponentThresholds.submitToAckMs=200] - Submit to ack threshold
+ * @param {number} [thresholds.latencyComponentThresholds.ackToFillMs=300] - Ack to fill threshold
+ * @returns {string[]} Array of diagnostic flags (e.g., ['high_latency', 'high_slippage', 'size_divergence'])
  */
 export function detectDiagnosticFlags(event, thresholds = {}) {
   const {
     latencyThresholdMs = 500,
     slippageThresholdPct = 0.02,
     sizeImpactThreshold = 0.5,
+    partialFillThresholdPct = 0.1,
+    latencyComponentThresholds = {},
   } = thresholds;
+
+  const {
+    decisionToSubmitMs = 100,
+    submitToAckMs = 200,
+    ackToFillMs = 300,
+  } = latencyComponentThresholds;
 
   const flags = [];
 
   // Check high latency (NFR1: 500ms threshold)
   if (event.latency_total_ms != null && event.latency_total_ms > latencyThresholdMs) {
     flags.push('high_latency');
+  }
+
+  // Check individual latency component anomalies (Story 5.3)
+  if (event.latency_decision_to_submit_ms != null && event.latency_decision_to_submit_ms > decisionToSubmitMs) {
+    flags.push('slow_decision_to_submit');
+  }
+  if (event.latency_submit_to_ack_ms != null && event.latency_submit_to_ack_ms > submitToAckMs) {
+    flags.push('slow_submit_to_ack');
+  }
+  if (event.latency_ack_to_fill_ms != null && event.latency_ack_to_fill_ms > ackToFillMs) {
+    flags.push('slow_ack_to_fill');
   }
 
   // Check high slippage (as percentage of expected price)
@@ -704,10 +749,362 @@ export function detectDiagnosticFlags(event, thresholds = {}) {
     }
   }
 
+  // Check entry slippage - specifically for entry events (Story 5.3)
+  if (event.event_type === 'entry' && event.slippage_signal_to_fill != null && event.price_at_signal != null && event.price_at_signal > 0) {
+    const entrySlippagePct = Math.abs(event.slippage_signal_to_fill / event.price_at_signal);
+    if (entrySlippagePct > slippageThresholdPct) {
+      flags.push('entry_slippage');
+    }
+  }
+
   // Check size impact (order size relative to available depth)
   if (event.size_vs_depth_ratio != null && event.size_vs_depth_ratio > sizeImpactThreshold) {
     flags.push('size_impact');
   }
 
+  // Check size divergence - partial fills (Story 5.3)
+  if (event.requested_size != null && event.filled_size != null && event.requested_size > 0) {
+    const sizeDiffPct = Math.abs(event.filled_size - event.requested_size) / event.requested_size;
+    if (sizeDiffPct > partialFillThresholdPct) {
+      flags.push('size_divergence');
+    }
+  }
+
   return flags;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIVERGENCE DETECTION FUNCTIONS (Story 5.3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get severity level for a divergence flag
+ *
+ * State and size divergence are more severe (error level),
+ * while latency and slippage issues are warnings.
+ *
+ * @param {string} flag - Divergence flag name
+ * @returns {string} Severity level ('error' or 'warn')
+ */
+function getDivergenceSeverity(flag) {
+  const severeFlags = ['state_divergence', 'size_divergence'];
+  return severeFlags.includes(flag) ? 'error' : 'warn';
+}
+
+/**
+ * Get detailed context for a divergence flag
+ *
+ * @param {Object} event - Trade event with all metrics
+ * @param {string} flag - Divergence flag name
+ * @param {Object} thresholds - Threshold configuration
+ * @returns {Object} Divergence details for debugging/alerting
+ */
+function getDivergenceDetails(event, flag, thresholds = {}) {
+  const {
+    latencyThresholdMs = 500,
+    sizeImpactThreshold = 0.5,
+    latencyComponentThresholds = {},
+  } = thresholds;
+
+  const {
+    decisionToSubmitMs = 100,
+    submitToAckMs = 200,
+    ackToFillMs = 300,
+  } = latencyComponentThresholds;
+
+  switch (flag) {
+    case 'high_latency':
+      return {
+        latency_ms: event.latency_total_ms,
+        threshold_ms: latencyThresholdMs,
+      };
+    case 'slow_decision_to_submit':
+      return {
+        latency_ms: event.latency_decision_to_submit_ms,
+        threshold_ms: decisionToSubmitMs,
+        component: 'decision_to_submit',
+      };
+    case 'slow_submit_to_ack':
+      return {
+        latency_ms: event.latency_submit_to_ack_ms,
+        threshold_ms: submitToAckMs,
+        component: 'submit_to_ack',
+      };
+    case 'slow_ack_to_fill':
+      return {
+        latency_ms: event.latency_ack_to_fill_ms,
+        threshold_ms: ackToFillMs,
+        component: 'ack_to_fill',
+      };
+    case 'high_slippage':
+    case 'entry_slippage':
+      return {
+        slippage: event.slippage_vs_expected,
+        signal_to_fill: event.slippage_signal_to_fill,
+        expected: event.expected_price,
+        actual: event.price_at_fill,
+      };
+    case 'size_impact':
+      return {
+        ratio: event.size_vs_depth_ratio,
+        threshold: sizeImpactThreshold,
+      };
+    case 'size_divergence':
+      return {
+        requested: event.requested_size,
+        filled: event.filled_size,
+        diff_pct: event.requested_size > 0
+          ? Math.abs(event.filled_size - event.requested_size) / event.requested_size
+          : null,
+      };
+    case 'state_divergence':
+      return {
+        message: 'State mismatch detected - see localState and exchangeState',
+      };
+    default:
+      return {};
+  }
+}
+
+/**
+ * Check a trade event for all types of divergence
+ *
+ * Runs all divergence checks and returns structured results with
+ * flags, severity levels, and diagnostic details.
+ *
+ * @param {Object} event - Trade event with all metrics
+ * @param {Object} [thresholds={}] - Threshold configuration
+ * @returns {Object} Divergence check result
+ * @returns {boolean} result.hasDivergence - True if any divergence detected
+ * @returns {string[]} result.flags - Array of divergence flag names
+ * @returns {Object[]} result.divergences - Array of divergence details
+ * @returns {number|null} result.eventId - Event ID if available
+ * @returns {string|null} result.windowId - Window ID if available
+ */
+export function checkDivergence(event, thresholds = {}) {
+  const flags = detectDiagnosticFlags(event, thresholds);
+
+  const divergences = [];
+
+  for (const flag of flags) {
+    divergences.push({
+      type: flag,
+      severity: getDivergenceSeverity(flag),
+      details: getDivergenceDetails(event, flag, thresholds),
+    });
+  }
+
+  return {
+    hasDivergence: flags.length > 0,
+    flags,
+    divergences,
+    eventId: event.id ?? null,
+    windowId: event.window_id ?? null,
+  };
+}
+
+/**
+ * Detect state divergence between local and exchange state
+ *
+ * Compares position state from local database with state from exchange API
+ * to identify any mismatches.
+ *
+ * @param {Object} localState - Position state from local database
+ * @param {number} [localState.id] - Position ID
+ * @param {string} [localState.window_id] - Window ID
+ * @param {number} [localState.size] - Position size
+ * @param {string} [localState.side] - Position side (long/short)
+ * @param {string} [localState.status] - Position status
+ * @param {Object} exchangeState - Position state from exchange API
+ * @param {number} [exchangeState.id] - Position ID
+ * @param {string} [exchangeState.window_id] - Window ID
+ * @param {number} [exchangeState.size] - Position size
+ * @param {string} [exchangeState.side] - Position side (long/short)
+ * @param {string} [exchangeState.status] - Position status
+ * @returns {Object|null} Divergence details or null if no divergence
+ */
+export function detectStateDivergence(localState, exchangeState) {
+  if (!localState || !exchangeState) {
+    return null;
+  }
+
+  const divergences = [];
+
+  // Check size
+  if (localState.size !== exchangeState.size) {
+    divergences.push({
+      field: 'size',
+      local: localState.size,
+      exchange: exchangeState.size,
+    });
+  }
+
+  // Check side
+  if (localState.side !== exchangeState.side) {
+    divergences.push({
+      field: 'side',
+      local: localState.side,
+      exchange: exchangeState.side,
+    });
+  }
+
+  // Check status (if position exists on one side but not other)
+  if (localState.status !== exchangeState.status) {
+    divergences.push({
+      field: 'status',
+      local: localState.status,
+      exchange: exchangeState.status,
+    });
+  }
+
+  if (divergences.length === 0) {
+    return null;
+  }
+
+  return {
+    positionId: localState.id ?? exchangeState.id ?? null,
+    windowId: localState.window_id ?? exchangeState.window_id ?? null,
+    divergences,
+    localState,
+    exchangeState,
+  };
+}
+
+/**
+ * Query events that have divergence flags
+ *
+ * Filters trade events to find those with diagnostic_flags set,
+ * indicating some form of divergence was detected.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {string} [options.timeRange.startDate] - Start date (ISO string)
+ * @param {string} [options.timeRange.endDate] - End date (ISO string)
+ * @param {string[]} [options.flags] - Filter by specific flag types
+ * @returns {Object[]} Events with divergence
+ */
+export function queryDivergentEvents({ windowId, strategyId, timeRange, flags } = {}) {
+  let sql = `
+    SELECT * FROM trade_events
+    WHERE diagnostic_flags IS NOT NULL
+      AND diagnostic_flags != '[]'
+  `;
+  const params = [];
+
+  if (windowId) {
+    sql += ' AND window_id = ?';
+    params.push(windowId);
+  }
+  if (strategyId) {
+    sql += ' AND strategy_id = ?';
+    params.push(strategyId);
+  }
+  if (timeRange?.startDate) {
+    sql += ' AND signal_detected_at >= ?';
+    params.push(timeRange.startDate);
+  }
+  if (timeRange?.endDate) {
+    sql += ' AND signal_detected_at <= ?';
+    params.push(timeRange.endDate);
+  }
+
+  sql += ' ORDER BY id DESC';
+
+  let events = all(sql, params).map(event => {
+    if (event.diagnostic_flags) {
+      try {
+        event.diagnostic_flags = JSON.parse(event.diagnostic_flags);
+      } catch {
+        event.diagnostic_flags = [];
+      }
+    }
+    if (event.notes) {
+      try {
+        event.notes = JSON.parse(event.notes);
+      } catch {
+        event.notes = null;
+      }
+    }
+    return event;
+  });
+
+  // Filter by specific flags if requested
+  if (flags && flags.length > 0) {
+    events = events.filter(e =>
+      e.diagnostic_flags?.some(f => flags.includes(f))
+    );
+  }
+
+  return events;
+}
+
+/**
+ * Get summary of divergence occurrences
+ *
+ * Aggregates divergence flags across events to provide counts and rates
+ * for each divergence type.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {string} [options.timeRange.startDate] - Start date (ISO string)
+ * @param {string} [options.timeRange.endDate] - End date (ISO string)
+ * @returns {Object} Summary with counts per divergence type
+ * @returns {number} summary.totalEvents - Total number of events in range
+ * @returns {number} summary.eventsWithDivergence - Number of events with any divergence
+ * @returns {number} summary.divergenceRate - Ratio of divergent events to total
+ * @returns {Object} summary.flagCounts - Count per flag type
+ * @returns {Object} summary.flagRates - Rate per flag type (count/total)
+ */
+export function queryDivergenceSummary({ windowId, strategyId, timeRange } = {}) {
+  // First get all events with divergence
+  const events = queryDivergentEvents({ windowId, strategyId, timeRange });
+
+  // Count total events (with and without divergence) for percentage
+  let totalSql = 'SELECT COUNT(*) as count FROM trade_events WHERE 1=1';
+  const totalParams = [];
+
+  if (windowId) {
+    totalSql += ' AND window_id = ?';
+    totalParams.push(windowId);
+  }
+  if (strategyId) {
+    totalSql += ' AND strategy_id = ?';
+    totalParams.push(strategyId);
+  }
+  if (timeRange?.startDate) {
+    totalSql += ' AND signal_detected_at >= ?';
+    totalParams.push(timeRange.startDate);
+  }
+  if (timeRange?.endDate) {
+    totalSql += ' AND signal_detected_at <= ?';
+    totalParams.push(timeRange.endDate);
+  }
+
+  const totalResult = get(totalSql, totalParams);
+  const totalEvents = totalResult?.count || 0;
+
+  // Aggregate flags
+  const flagCounts = {};
+  for (const event of events) {
+    for (const flag of event.diagnostic_flags || []) {
+      flagCounts[flag] = (flagCounts[flag] || 0) + 1;
+    }
+  }
+
+  return {
+    totalEvents,
+    eventsWithDivergence: events.length,
+    divergenceRate: totalEvents > 0 ? events.length / totalEvents : 0,
+    flagCounts,
+    flagRates: Object.fromEntries(
+      Object.entries(flagCounts).map(([flag, count]) => [
+        flag,
+        totalEvents > 0 ? count / totalEvents : 0,
+      ])
+    ),
+  };
 }

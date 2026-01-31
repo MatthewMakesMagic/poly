@@ -40,6 +40,10 @@ import {
   querySlippageBySize,
   querySlippageBySpread,
   detectDiagnosticFlags,
+  checkDivergence,
+  detectStateDivergence,
+  queryDivergentEvents,
+  queryDivergenceSummary,
 } from './logic.js';
 
 // Module state
@@ -191,16 +195,32 @@ export async function recordEntry({
     ? sizes.requestedSize / marketContext.depthAtSignal
     : null;
 
-  // Detect diagnostic flags based on thresholds (AC8)
+  // Detect diagnostic flags based on thresholds (Story 5.2 + 5.3)
   const config = getConfig() || {};
   const thresholds = config.tradeEvent?.thresholds || {};
   const eventForFlagDetection = {
+    event_type: 'entry',
     latency_total_ms: latencies.latency_total_ms,
+    latency_decision_to_submit_ms: latencies.latency_decision_to_submit_ms,
+    latency_submit_to_ack_ms: latencies.latency_submit_to_ack_ms,
+    latency_ack_to_fill_ms: latencies.latency_ack_to_fill_ms,
     slippage_vs_expected: slippage.slippage_vs_expected,
+    slippage_signal_to_fill: slippage.slippage_signal_to_fill,
     expected_price: prices.expectedPrice,
+    price_at_signal: prices.priceAtSignal,
+    price_at_fill: prices.priceAtFill,
     size_vs_depth_ratio: sizeVsDepthRatio,
+    requested_size: sizes.requestedSize,
+    filled_size: sizes.filledSize,
   };
-  const diagnosticFlags = detectDiagnosticFlags(eventForFlagDetection, thresholds);
+
+  // Use checkDivergence for comprehensive analysis (Story 5.3)
+  const divergenceResult = checkDivergence(eventForFlagDetection, thresholds);
+  const diagnosticFlags = divergenceResult.flags;
+
+  // Determine log level based on divergence (Story 5.3: warn for divergence, info for normal)
+  const hasSevereDivergence = divergenceResult.divergences.some(d => d.severity === 'error');
+  const logLevel = hasSevereDivergence ? 'error' : (divergenceResult.hasDivergence ? 'warn' : 'info');
 
   const record = {
     event_type: TradeEventType.ENTRY,
@@ -227,14 +247,14 @@ export async function recordEntry({
     filled_size: sizes.filledSize ?? null,
     size_vs_depth_ratio: sizeVsDepthRatio,
     diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : null,
-    level: 'info',
+    level: logLevel,
     event: 'trade_entry',
   };
 
   const eventId = insertTradeEvent(record);
 
-  // Log entry event with expected vs actual
-  log.info('trade_entry', {
+  // Log entry event with appropriate level based on divergence (Story 5.3)
+  const logData = {
     window_id: windowId,
     position_id: positionId,
     expected: {
@@ -247,7 +267,16 @@ export async function recordEntry({
     },
     slippage: slippage.slippage_vs_expected,
     latency_ms: latencies.latency_total_ms,
-  }, { strategy_id: strategyId });
+    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : undefined,
+  };
+
+  if (logLevel === 'error') {
+    log.error('trade_entry_divergence', logData, { strategy_id: strategyId });
+  } else if (logLevel === 'warn') {
+    log.warn('trade_entry_divergence', logData, { strategy_id: strategyId });
+  } else {
+    log.info('trade_entry', logData, { strategy_id: strategyId });
+  }
 
   return eventId;
 }
@@ -306,16 +335,32 @@ export async function recordExit({
     ? sizes.requestedSize / marketContext.depthAtSignal
     : null;
 
-  // Detect diagnostic flags based on thresholds (AC8)
+  // Detect diagnostic flags based on thresholds (Story 5.2 + 5.3)
   const config = getConfig() || {};
   const thresholds = config.tradeEvent?.thresholds || {};
   const eventForFlagDetection = {
+    event_type: 'exit',
     latency_total_ms: latencies.latency_total_ms,
+    latency_decision_to_submit_ms: latencies.latency_decision_to_submit_ms,
+    latency_submit_to_ack_ms: latencies.latency_submit_to_ack_ms,
+    latency_ack_to_fill_ms: latencies.latency_ack_to_fill_ms,
     slippage_vs_expected: slippage.slippage_vs_expected,
+    slippage_signal_to_fill: slippage.slippage_signal_to_fill,
     expected_price: prices?.expectedPrice,
+    price_at_signal: prices?.priceAtSignal,
+    price_at_fill: prices?.priceAtFill,
     size_vs_depth_ratio: sizeVsDepthRatio,
+    requested_size: sizes.requestedSize,
+    filled_size: sizes.filledSize,
   };
-  const diagnosticFlags = detectDiagnosticFlags(eventForFlagDetection, thresholds);
+
+  // Use checkDivergence for comprehensive analysis (Story 5.3)
+  const divergenceResult = checkDivergence(eventForFlagDetection, thresholds);
+  const diagnosticFlags = divergenceResult.flags;
+
+  // Determine log level based on divergence (Story 5.3: warn for divergence, info for normal)
+  const hasSevereDivergence = divergenceResult.divergences.some(d => d.severity === 'error');
+  const logLevel = hasSevereDivergence ? 'error' : (divergenceResult.hasDivergence ? 'warn' : 'info');
 
   const record = {
     event_type: TradeEventType.EXIT,
@@ -342,15 +387,15 @@ export async function recordExit({
     filled_size: sizes.filledSize ?? null,
     size_vs_depth_ratio: sizeVsDepthRatio,
     diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : null,
-    level: 'info',
+    level: logLevel,
     event: 'trade_exit',
     notes: { exit_reason: exitReason },
   };
 
   const eventId = insertTradeEvent(record);
 
-  // Log exit event with expected vs actual
-  log.info('trade_exit', {
+  // Log exit event with appropriate level based on divergence (Story 5.3)
+  const logData = {
     window_id: windowId,
     position_id: positionId,
     exit_reason: exitReason,
@@ -364,7 +409,16 @@ export async function recordExit({
     },
     slippage: slippage.slippage_vs_expected,
     latency_ms: latencies.latency_total_ms,
-  }, { strategy_id: strategyId });
+    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : undefined,
+  };
+
+  if (logLevel === 'error') {
+    log.error('trade_exit_divergence', logData, { strategy_id: strategyId });
+  } else if (logLevel === 'warn') {
+    log.warn('trade_exit_divergence', logData, { strategy_id: strategyId });
+  } else {
+    log.info('trade_exit', logData, { strategy_id: strategyId });
+  }
 
   return eventId;
 }
@@ -609,13 +663,109 @@ export function getSlippageBySpread(options = {}) {
   return querySlippageBySpread(options);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DIVERGENCE DETECTION FUNCTIONS (Story 5.3, AC7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Check a trade event for all types of divergence
+ *
+ * Runs all divergence checks and returns structured results with
+ * flags, severity levels, and diagnostic details.
+ *
+ * @param {Object} event - Trade event with all metrics
+ * @param {Object} [thresholds] - Optional threshold overrides (uses config defaults)
+ * @returns {Object} Divergence check result
+ * @returns {boolean} result.hasDivergence - True if any divergence detected
+ * @returns {string[]} result.flags - Array of divergence flag names
+ * @returns {Object[]} result.divergences - Array of divergence details
+ */
+export function getDivergenceCheck(event, thresholds) {
+  ensureInitialized();
+  const config = getConfig() || {};
+  const configThresholds = thresholds || config.tradeEvent?.thresholds || {};
+  return checkDivergence(event, configThresholds);
+}
+
+/**
+ * Query events that have divergence flags
+ *
+ * Filters trade events to find those with diagnostic_flags set,
+ * indicating some form of divergence was detected.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {string[]} [options.flags] - Filter by specific flag types
+ * @returns {Object[]} Events with divergence
+ */
+export function getDivergentEvents(options = {}) {
+  ensureInitialized();
+  return queryDivergentEvents(options);
+}
+
+/**
+ * Get summary of divergence occurrences
+ *
+ * Aggregates divergence flags across events to provide counts and rates
+ * for each divergence type.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @returns {Object} Summary with counts per divergence type
+ */
+export function getDivergenceSummary(options = {}) {
+  ensureInitialized();
+  return queryDivergenceSummary(options);
+}
+
+/**
+ * Detect state divergence between local and exchange state
+ *
+ * Compares position state from local database with state from exchange API
+ * to identify any mismatches. Useful for reconciliation checks.
+ *
+ * @param {Object} localState - Position state from local database
+ * @param {Object} exchangeState - Position state from exchange API
+ * @returns {Object|null} Divergence details or null if no divergence
+ */
+export function getStateDivergence(localState, exchangeState) {
+  ensureInitialized();
+  return detectStateDivergence(localState, exchangeState);
+}
+
 /**
  * Get current module state
  *
- * @returns {Object} Current state including initialization status and stats
+ * Returns initialization status, stats, and divergence summary.
+ *
+ * @returns {Object} Current state including initialization status, stats, and divergence summary
  */
 export function getState() {
-  return getStateSnapshot();
+  const baseState = getStateSnapshot();
+
+  // Add divergence stats if initialized (Story 5.3)
+  if (baseState.initialized) {
+    try {
+      const divergenceSummary = queryDivergenceSummary();
+      return {
+        ...baseState,
+        divergence: {
+          eventsWithDivergence: divergenceSummary.eventsWithDivergence,
+          divergenceRate: divergenceSummary.divergenceRate,
+          flagCounts: divergenceSummary.flagCounts,
+        },
+      };
+    } catch {
+      // If query fails (e.g., database not ready), return base state
+      return baseState;
+    }
+  }
+
+  return baseState;
 }
 
 /**
