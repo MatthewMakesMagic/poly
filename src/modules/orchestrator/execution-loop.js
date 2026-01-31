@@ -182,6 +182,32 @@ export class ExecutionLoop {
                 confidence: s.confidence,
               })),
             });
+
+            // Record signal events via trade-event module (Story 5.1)
+            if (this.modules['trade-event']) {
+              for (const signal of entrySignals) {
+                try {
+                  await this.modules['trade-event'].recordSignal({
+                    windowId: signal.window_id,
+                    strategyId: signal.strategy_id || 'default',
+                    signalType: 'entry',
+                    priceAtSignal: spotData?.price || signal.price,
+                    expectedPrice: signal.expected_price || signal.price,
+                    marketContext: {
+                      bidAtSignal: signal.bid,
+                      askAtSignal: signal.ask,
+                      spreadAtSignal: signal.spread,
+                      depthAtSignal: signal.depth,
+                    },
+                  });
+                } catch (tradeEventErr) {
+                  this.log.warn('trade_event_record_signal_failed', {
+                    window_id: signal.window_id,
+                    error: tradeEventErr.message,
+                  });
+                }
+              }
+            }
           }
         }
       }
@@ -270,6 +296,33 @@ export class ExecutionLoop {
                 loss_amount: result.loss_amount,
                 loss_pct: result.loss_pct,
               });
+
+              // Record exit event via trade-event module (Story 5.1)
+              if (this.modules['trade-event']) {
+                try {
+                  await this.modules['trade-event'].recordExit({
+                    windowId: result.window_id,
+                    positionId: result.position_id,
+                    orderId: result.order_id,
+                    strategyId: result.strategy_id,
+                    exitReason: 'stop_loss',
+                    timestamps: {
+                      signalDetectedAt: result.signal_detected_at,
+                      orderFilledAt: new Date().toISOString(),
+                    },
+                    prices: {
+                      priceAtSignal: result.entry_price,
+                      priceAtFill: result.current_price,
+                      expectedPrice: result.expected_price || result.entry_price,
+                    },
+                  });
+                } catch (tradeEventErr) {
+                  this.log.warn('trade_event_record_exit_failed', {
+                    position_id: result.position_id,
+                    error: tradeEventErr.message,
+                  });
+                }
+              }
             } catch (closeErr) {
               this.log.error('stop_loss_close_failed', {
                 position_id: result.position_id,
@@ -324,6 +377,33 @@ export class ExecutionLoop {
                 profit_amount: result.profit_amount,
                 profit_pct: result.profit_pct,
               });
+
+              // Record exit event via trade-event module (Story 5.1)
+              if (this.modules['trade-event']) {
+                try {
+                  await this.modules['trade-event'].recordExit({
+                    windowId: result.window_id,
+                    positionId: result.position_id,
+                    orderId: result.order_id,
+                    strategyId: result.strategy_id,
+                    exitReason: 'take_profit',
+                    timestamps: {
+                      signalDetectedAt: result.signal_detected_at,
+                      orderFilledAt: new Date().toISOString(),
+                    },
+                    prices: {
+                      priceAtSignal: result.entry_price,
+                      priceAtFill: result.current_price,
+                      expectedPrice: result.expected_price || result.entry_price,
+                    },
+                  });
+                } catch (tradeEventErr) {
+                  this.log.warn('trade_event_record_exit_failed', {
+                    position_id: result.position_id,
+                    error: tradeEventErr.message,
+                  });
+                }
+              }
             } catch (closeErr) {
               this.log.error('take_profit_close_failed', {
                 position_id: result.position_id,
@@ -375,6 +455,33 @@ export class ExecutionLoop {
                 pnl: result.pnl,
                 pnl_pct: result.pnl_pct,
               });
+
+              // Record exit event via trade-event module (Story 5.1)
+              if (this.modules['trade-event']) {
+                try {
+                  await this.modules['trade-event'].recordExit({
+                    windowId: result.window_id,
+                    positionId: result.position_id,
+                    orderId: result.order_id,
+                    strategyId: result.strategy_id,
+                    exitReason: 'window_expiry',
+                    timestamps: {
+                      signalDetectedAt: result.signal_detected_at,
+                      orderFilledAt: new Date().toISOString(),
+                    },
+                    prices: {
+                      priceAtSignal: result.entry_price,
+                      priceAtFill: result.resolution_price ?? result.current_price,
+                      expectedPrice: result.expected_price || result.entry_price,
+                    },
+                  });
+                } catch (tradeEventErr) {
+                  this.log.warn('trade_event_record_exit_failed', {
+                    position_id: result.position_id,
+                    error: tradeEventErr.message,
+                  });
+                }
+              }
             } catch (closeErr) {
               this.log.error('window_expiry_close_failed', {
                 position_id: result.position_id,

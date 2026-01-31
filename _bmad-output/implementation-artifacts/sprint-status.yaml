@@ -78,8 +78,8 @@ development_status:
   epic-4-retrospective: optional
 
   # Epic 5: Monitoring & Diagnostics
-  epic-5: backlog
-  5-1-trade-event-logging-expected-vs-actual: backlog
+  epic-5: in-progress
+  5-1-trade-event-logging-expected-vs-actual: done
   5-2-latency-slippage-recording: backlog
   5-3-divergence-detection: backlog
   5-4-divergence-alerting: backlog

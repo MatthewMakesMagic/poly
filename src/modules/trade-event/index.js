@@ -1,0 +1,494 @@
+/**
+ * Trade Event Module
+ *
+ * Public interface for trade event logging with expected vs actual values.
+ * Follows the standard module interface: init(config), getState(), shutdown()
+ *
+ * Capabilities:
+ * - Record signal events when strategy generates entry/exit signals
+ * - Record entry events with slippage and latency calculations
+ * - Record exit events with position linking
+ * - Record alerts for divergence and error conditions
+ * - Query events by window, position, or filters
+ *
+ * @module modules/trade-event
+ */
+
+import { child } from '../logger/index.js';
+import { TradeEventError, TradeEventErrorCodes, TradeEventType } from './types.js';
+import {
+  isInitialized,
+  setInitialized,
+  setConfig,
+  resetState,
+  getStateSnapshot,
+} from './state.js';
+import {
+  calculateLatencies,
+  calculateSlippage,
+  insertTradeEvent,
+  queryEvents,
+  queryEventsByWindow,
+  queryEventsByPosition,
+  validateRequiredFields,
+  positionExists,
+} from './logic.js';
+
+// Module state
+let log = null;
+
+/**
+ * Initialize the trade event module
+ *
+ * @param {Object} config - Configuration object
+ * @returns {Promise<void>}
+ */
+export async function init(config) {
+  if (isInitialized()) {
+    throw new TradeEventError(
+      TradeEventErrorCodes.ALREADY_INITIALIZED,
+      'Trade event module already initialized',
+      {}
+    );
+  }
+
+  // Create child logger for this module
+  log = child({ module: 'trade-event' });
+  log.info('module_init_start');
+
+  // Store configuration
+  setConfig(config);
+
+  setInitialized(true);
+  log.info('module_initialized');
+}
+
+/**
+ * Record a signal event when strategy detects entry/exit opportunity
+ *
+ * @param {Object} params - Signal parameters
+ * @param {string} params.windowId - Window identifier
+ * @param {string} params.strategyId - Strategy identifier
+ * @param {string} params.signalType - Type of signal (entry/exit)
+ * @param {number} params.priceAtSignal - Market price when signal detected
+ * @param {number} params.expectedPrice - Expected execution price
+ * @param {Object} [params.marketContext] - Market context data
+ * @param {number} [params.marketContext.bidAtSignal] - Bid price at signal
+ * @param {number} [params.marketContext.askAtSignal] - Ask price at signal
+ * @param {number} [params.marketContext.spreadAtSignal] - Spread at signal
+ * @param {number} [params.marketContext.depthAtSignal] - Depth at signal
+ * @returns {Promise<number>} Created event ID
+ */
+export async function recordSignal({
+  windowId,
+  strategyId,
+  signalType,
+  priceAtSignal,
+  expectedPrice,
+  marketContext = {},
+}) {
+  ensureInitialized();
+
+  validateRequiredFields({ windowId, strategyId, signalType, priceAtSignal }, [
+    'windowId',
+    'strategyId',
+    'signalType',
+    'priceAtSignal',
+  ]);
+
+  const signalDetectedAt = new Date().toISOString();
+
+  const record = {
+    event_type: TradeEventType.SIGNAL,
+    window_id: windowId,
+    strategy_id: strategyId,
+    module: 'trade-event',
+    signal_detected_at: signalDetectedAt,
+    price_at_signal: priceAtSignal,
+    expected_price: expectedPrice ?? null,
+    bid_at_signal: marketContext.bidAtSignal ?? null,
+    ask_at_signal: marketContext.askAtSignal ?? null,
+    spread_at_signal: marketContext.spreadAtSignal ?? null,
+    depth_at_signal: marketContext.depthAtSignal ?? null,
+    level: 'info',
+    event: `trade_signal_${signalType}`,
+    notes: { signal_type: signalType },
+  };
+
+  const eventId = insertTradeEvent(record);
+
+  // Log signal event via logger module
+  log.info(`trade_signal_${signalType}`, {
+    window_id: windowId,
+    strategy_id: strategyId,
+    price_at_signal: priceAtSignal,
+    expected_price: expectedPrice,
+    market_context: marketContext,
+  });
+
+  return eventId;
+}
+
+/**
+ * Record an entry event when position is opened
+ *
+ * @param {Object} params - Entry parameters
+ * @param {string} params.windowId - Window identifier
+ * @param {number} params.positionId - Position identifier
+ * @param {number} params.orderId - Order identifier
+ * @param {string} params.strategyId - Strategy identifier
+ * @param {Object} params.timestamps - Event timestamps
+ * @param {string} params.timestamps.signalDetectedAt - ISO timestamp when signal detected
+ * @param {string} params.timestamps.orderSubmittedAt - ISO timestamp when order submitted
+ * @param {string} [params.timestamps.orderAckedAt] - ISO timestamp when order acknowledged
+ * @param {string} [params.timestamps.orderFilledAt] - ISO timestamp when order filled
+ * @param {Object} params.prices - Price data
+ * @param {number} params.prices.priceAtSignal - Price when signal detected
+ * @param {number} params.prices.priceAtSubmit - Price when order submitted
+ * @param {number} params.prices.priceAtFill - Price when order filled
+ * @param {number} params.prices.expectedPrice - Expected execution price
+ * @param {Object} params.sizes - Size data
+ * @param {number} params.sizes.requestedSize - Requested order size
+ * @param {number} params.sizes.filledSize - Actual filled size
+ * @param {Object} [params.marketContext] - Market context at signal
+ * @returns {Promise<number>} Created event ID
+ */
+export async function recordEntry({
+  windowId,
+  positionId,
+  orderId,
+  strategyId,
+  timestamps,
+  prices,
+  sizes,
+  marketContext = {},
+}) {
+  ensureInitialized();
+
+  validateRequiredFields({ windowId, positionId, orderId, strategyId }, [
+    'windowId',
+    'positionId',
+    'orderId',
+    'strategyId',
+  ]);
+
+  // Calculate latencies
+  const latencies = calculateLatencies(timestamps);
+
+  // Calculate slippage
+  const slippage = calculateSlippage(prices);
+
+  // Calculate size vs depth ratio
+  const sizeVsDepthRatio = marketContext.depthAtSignal && sizes.requestedSize
+    ? sizes.requestedSize / marketContext.depthAtSignal
+    : null;
+
+  const record = {
+    event_type: TradeEventType.ENTRY,
+    window_id: windowId,
+    position_id: positionId,
+    order_id: orderId,
+    strategy_id: strategyId,
+    module: 'trade-event',
+    signal_detected_at: timestamps.signalDetectedAt ?? null,
+    order_submitted_at: timestamps.orderSubmittedAt ?? null,
+    order_acked_at: timestamps.orderAckedAt ?? null,
+    order_filled_at: timestamps.orderFilledAt ?? null,
+    ...latencies,
+    price_at_signal: prices.priceAtSignal ?? null,
+    price_at_submit: prices.priceAtSubmit ?? null,
+    price_at_fill: prices.priceAtFill ?? null,
+    expected_price: prices.expectedPrice ?? null,
+    ...slippage,
+    bid_at_signal: marketContext.bidAtSignal ?? null,
+    ask_at_signal: marketContext.askAtSignal ?? null,
+    spread_at_signal: marketContext.spreadAtSignal ?? null,
+    depth_at_signal: marketContext.depthAtSignal ?? null,
+    requested_size: sizes.requestedSize ?? null,
+    filled_size: sizes.filledSize ?? null,
+    size_vs_depth_ratio: sizeVsDepthRatio,
+    level: 'info',
+    event: 'trade_entry',
+  };
+
+  const eventId = insertTradeEvent(record);
+
+  // Log entry event with expected vs actual
+  log.info('trade_entry', {
+    window_id: windowId,
+    position_id: positionId,
+    expected: {
+      price: prices.expectedPrice,
+      size: sizes.requestedSize,
+    },
+    actual: {
+      price: prices.priceAtFill,
+      size: sizes.filledSize,
+    },
+    slippage: slippage.slippage_vs_expected,
+    latency_ms: latencies.latency_total_ms,
+  }, { strategy_id: strategyId });
+
+  return eventId;
+}
+
+/**
+ * Record an exit event when position is closed
+ *
+ * @param {Object} params - Exit parameters
+ * @param {string} params.windowId - Window identifier
+ * @param {number} params.positionId - Position identifier
+ * @param {number} params.orderId - Order identifier
+ * @param {string} params.strategyId - Strategy identifier
+ * @param {string} params.exitReason - Reason for exit (stop_loss, take_profit, window_expiry, manual)
+ * @param {Object} params.timestamps - Event timestamps
+ * @param {Object} params.prices - Price data
+ * @param {Object} [params.sizes] - Size data
+ * @param {Object} [params.marketContext] - Market context at signal
+ * @returns {Promise<number>} Created event ID
+ */
+export async function recordExit({
+  windowId,
+  positionId,
+  orderId,
+  strategyId,
+  exitReason,
+  timestamps,
+  prices,
+  sizes = {},
+  marketContext = {},
+}) {
+  ensureInitialized();
+
+  validateRequiredFields({ windowId, positionId, exitReason }, [
+    'windowId',
+    'positionId',
+    'exitReason',
+  ]);
+
+  // Validate position exists
+  if (!positionExists(positionId)) {
+    throw new TradeEventError(
+      TradeEventErrorCodes.POSITION_NOT_FOUND,
+      `Position not found: ${positionId}`,
+      { positionId }
+    );
+  }
+
+  // Calculate latencies
+  const latencies = calculateLatencies(timestamps || {});
+
+  // Calculate slippage
+  const slippage = calculateSlippage(prices || {});
+
+  // Calculate size vs depth ratio
+  const sizeVsDepthRatio = marketContext.depthAtSignal && sizes.requestedSize
+    ? sizes.requestedSize / marketContext.depthAtSignal
+    : null;
+
+  const record = {
+    event_type: TradeEventType.EXIT,
+    window_id: windowId,
+    position_id: positionId,
+    order_id: orderId ?? null,
+    strategy_id: strategyId ?? null,
+    module: 'trade-event',
+    signal_detected_at: timestamps?.signalDetectedAt ?? null,
+    order_submitted_at: timestamps?.orderSubmittedAt ?? null,
+    order_acked_at: timestamps?.orderAckedAt ?? null,
+    order_filled_at: timestamps?.orderFilledAt ?? null,
+    ...latencies,
+    price_at_signal: prices?.priceAtSignal ?? null,
+    price_at_submit: prices?.priceAtSubmit ?? null,
+    price_at_fill: prices?.priceAtFill ?? null,
+    expected_price: prices?.expectedPrice ?? null,
+    ...slippage,
+    bid_at_signal: marketContext.bidAtSignal ?? null,
+    ask_at_signal: marketContext.askAtSignal ?? null,
+    spread_at_signal: marketContext.spreadAtSignal ?? null,
+    depth_at_signal: marketContext.depthAtSignal ?? null,
+    requested_size: sizes.requestedSize ?? null,
+    filled_size: sizes.filledSize ?? null,
+    size_vs_depth_ratio: sizeVsDepthRatio,
+    level: 'info',
+    event: 'trade_exit',
+    notes: { exit_reason: exitReason },
+  };
+
+  const eventId = insertTradeEvent(record);
+
+  // Log exit event with expected vs actual
+  log.info('trade_exit', {
+    window_id: windowId,
+    position_id: positionId,
+    exit_reason: exitReason,
+    expected: {
+      price: prices?.expectedPrice,
+      size: sizes.requestedSize,
+    },
+    actual: {
+      price: prices?.priceAtFill,
+      size: sizes.filledSize,
+    },
+    slippage: slippage.slippage_vs_expected,
+    latency_ms: latencies.latency_total_ms,
+  }, { strategy_id: strategyId });
+
+  return eventId;
+}
+
+/**
+ * Record an alert event for divergence or error conditions
+ *
+ * @param {Object} params - Alert parameters
+ * @param {string} params.windowId - Window identifier
+ * @param {number} [params.positionId] - Position identifier (if applicable)
+ * @param {string} params.alertType - Type of alert (divergence, error, warning)
+ * @param {Object} params.data - Alert data
+ * @param {string} [params.level='warn'] - Log level (warn or error)
+ * @param {string[]} [params.diagnosticFlags] - Diagnostic flags for pattern detection
+ * @returns {Promise<number>} Created event ID
+ */
+export async function recordAlert({
+  windowId,
+  positionId,
+  alertType,
+  data,
+  level = 'warn',
+  diagnosticFlags = [],
+}) {
+  ensureInitialized();
+
+  validateRequiredFields({ windowId, alertType, data }, [
+    'windowId',
+    'alertType',
+    'data',
+  ]);
+
+  // Validate level
+  const validLevel = level === 'error' ? 'error' : 'warn';
+
+  const record = {
+    event_type: alertType === 'divergence' ? TradeEventType.DIVERGENCE : TradeEventType.ALERT,
+    window_id: windowId,
+    position_id: positionId ?? null,
+    module: 'trade-event',
+    level: validLevel,
+    event: `trade_alert_${alertType}`,
+    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : null,
+    notes: data,
+  };
+
+  const eventId = insertTradeEvent(record);
+
+  // Log alert event with full diagnostic context
+  const logFn = validLevel === 'error' ? log.error : log.warn;
+  logFn(`trade_alert_${alertType}`, {
+    window_id: windowId,
+    position_id: positionId,
+    alert_type: alertType,
+    data,
+    diagnostic_flags: diagnosticFlags,
+  });
+
+  return eventId;
+}
+
+/**
+ * Get events with optional filters
+ *
+ * @param {Object} [options] - Query options
+ * @param {number} [options.limit=100] - Maximum number of results
+ * @param {number} [options.offset=0] - Offset for pagination
+ * @param {string} [options.eventType] - Filter by event type
+ * @param {string} [options.level] - Filter by log level
+ * @returns {Promise<Object[]>} Array of event records
+ */
+export async function getEvents(options = {}) {
+  ensureInitialized();
+  return queryEvents(options);
+}
+
+/**
+ * Get events by window ID
+ *
+ * @param {string} windowId - Window identifier
+ * @returns {Promise<Object[]>} Array of event records for the window
+ */
+export async function getEventsByWindow(windowId) {
+  ensureInitialized();
+
+  if (!windowId) {
+    throw new TradeEventError(
+      TradeEventErrorCodes.MISSING_REQUIRED_FIELD,
+      'Missing required field: windowId',
+      { field: 'windowId' }
+    );
+  }
+
+  return queryEventsByWindow(windowId);
+}
+
+/**
+ * Get events by position ID
+ *
+ * @param {number} positionId - Position identifier
+ * @returns {Promise<Object[]>} Array of event records for the position
+ */
+export async function getEventsByPosition(positionId) {
+  ensureInitialized();
+
+  if (positionId === undefined || positionId === null) {
+    throw new TradeEventError(
+      TradeEventErrorCodes.MISSING_REQUIRED_FIELD,
+      'Missing required field: positionId',
+      { field: 'positionId' }
+    );
+  }
+
+  return queryEventsByPosition(positionId);
+}
+
+/**
+ * Get current module state
+ *
+ * @returns {Object} Current state including initialization status and stats
+ */
+export function getState() {
+  return getStateSnapshot();
+}
+
+/**
+ * Shutdown the module gracefully
+ *
+ * @returns {Promise<void>}
+ */
+export async function shutdown() {
+  if (log) {
+    log.info('module_shutdown_start');
+  }
+
+  resetState();
+
+  if (log) {
+    log.info('module_shutdown_complete');
+    log = null;
+  }
+}
+
+/**
+ * Internal: Ensure module is initialized
+ * @throws {TradeEventError} If not initialized
+ */
+function ensureInitialized() {
+  if (!isInitialized()) {
+    throw new TradeEventError(
+      TradeEventErrorCodes.NOT_INITIALIZED,
+      'Trade event module not initialized. Call init() first.',
+      {}
+    );
+  }
+}
+
+// Re-export types and constants
+export { TradeEventError, TradeEventErrorCodes, TradeEventType } from './types.js';

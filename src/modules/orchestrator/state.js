@@ -36,6 +36,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'stop-loss', module: null, configKey: null },
   { name: 'take-profit', module: null, configKey: null },
   { name: 'window-expiry', module: null, configKey: null },
+  // Monitoring modules (Epic 5)
+  { name: 'trade-event', module: null, configKey: null },
 ];
 
 /**
