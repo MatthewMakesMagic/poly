@@ -22,16 +22,14 @@ module-name/
 **Every module MUST export these functions:**
 
 ```javascript
-module.exports = {
-  // Initialize with configuration
-  init: async (config) => {},
+// Initialize with configuration
+export async function init(config) {}
 
-  // Return current state (for debugging/reconciliation)
-  getState: () => {},
+// Return current state (for debugging/reconciliation)
+export function getState() {}
 
-  // Graceful shutdown
-  shutdown: async () => {}
-};
+// Graceful shutdown
+export async function shutdown() {}
 ```
 
 ## Creating a New Module

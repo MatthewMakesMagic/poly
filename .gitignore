@@ -2,10 +2,7 @@
 node_modules/
 
 # Database (local SQLite)
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/last-known-state.json
+data/
 *.db
 *.sqlite
 

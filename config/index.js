@@ -105,7 +105,13 @@ async function loadConfig() {
 }
 
 // Load config and export
-const config = await loadConfig();
+let config;
+try {
+  config = await loadConfig();
+} catch (err) {
+  console.error('Failed to load configuration:', err.message);
+  process.exit(1);
+}
 export default config;
 
 // Also export the loader and validator for testing

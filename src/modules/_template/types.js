@@ -21,7 +21,4 @@ function createModuleData(params) {
   };
 }
 
-module.exports = {
-  ModuleStatus,
-  createModuleData,
-};
+export { ModuleStatus, createModuleData };

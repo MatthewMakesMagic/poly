@@ -142,9 +142,13 @@ for STORY in $STORIES; do
         echo -e "${GREEN}✓ Story $STORY completed (status: $NEW_STATUS)${NC}"
         ((COMPLETED++))
 
-        # Auto-mark as done if in review (skip code review for automation)
+        # Run code review if in review status
         if [[ "$NEW_STATUS" == "review" ]]; then
-            echo -e "${YELLOW}Auto-marking as done (skipping code review)...${NC}"
+            echo -e "${YELLOW}Running adversarial code review...${NC}"
+            run_claude_fresh "/bmad-bmm-code-review $STORY"
+
+            # Mark as done after review
+            echo -e "${YELLOW}Marking as done...${NC}"
             sed -i '' "s/  ${STORY}: review/  ${STORY}: done/" "$SPRINT_STATUS"
         fi
 
