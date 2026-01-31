@@ -366,4 +366,112 @@ describe('Persistence Module', () => {
       expect(result.name).toBe('initial-schema');
     });
   });
+
+  describe('exec', () => {
+    beforeEach(async () => {
+      await persistence.init({ database: { path: dbPath } });
+    });
+
+    it('executes raw SQL statements', () => {
+      persistence.exec(`
+        CREATE TABLE IF NOT EXISTS test_exec_table (
+          id INTEGER PRIMARY KEY,
+          name TEXT
+        )
+      `);
+
+      const result = persistence.get(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='test_exec_table'"
+      );
+      expect(result).toBeDefined();
+      expect(result.name).toBe('test_exec_table');
+    });
+
+    it('executes multiple SQL statements', () => {
+      persistence.exec(`
+        CREATE TABLE IF NOT EXISTS test_multi_1 (id INTEGER PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS test_multi_2 (id INTEGER PRIMARY KEY);
+      `);
+
+      const result1 = persistence.get(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='test_multi_1'"
+      );
+      const result2 = persistence.get(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='test_multi_2'"
+      );
+
+      expect(result1).toBeDefined();
+      expect(result2).toBeDefined();
+    });
+
+    it('throws when not initialized', async () => {
+      await persistence.shutdown();
+
+      expect(() => {
+        persistence.exec('CREATE TABLE test (id INTEGER)');
+      }).toThrow(PersistenceError);
+    });
+  });
+
+  describe('transaction', () => {
+    beforeEach(async () => {
+      await persistence.init({ database: { path: dbPath } });
+    });
+
+    it('commits successful transactions', () => {
+      persistence.transaction(() => {
+        persistence.run(
+          `INSERT INTO trade_intents (intent_type, window_id, payload, status, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          ['open_position', 'tx-test-1', '{}', 'pending', new Date().toISOString()]
+        );
+        persistence.run(
+          `INSERT INTO trade_intents (intent_type, window_id, payload, status, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          ['open_position', 'tx-test-2', '{}', 'pending', new Date().toISOString()]
+        );
+      });
+
+      const rows = persistence.all('SELECT * FROM trade_intents WHERE window_id LIKE ?', ['tx-test-%']);
+      expect(rows.length).toBe(2);
+    });
+
+    it('rolls back on error', () => {
+      expect(() => {
+        persistence.transaction(() => {
+          persistence.run(
+            `INSERT INTO trade_intents (intent_type, window_id, payload, status, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            ['open_position', 'tx-rollback-test', '{}', 'pending', new Date().toISOString()]
+          );
+          // This should fail and trigger rollback
+          throw new Error('Simulated failure');
+        });
+      }).toThrow('Simulated failure');
+
+      const rows = persistence.all('SELECT * FROM trade_intents WHERE window_id = ?', ['tx-rollback-test']);
+      expect(rows.length).toBe(0);
+    });
+
+    it('returns value from transaction function', () => {
+      const result = persistence.transaction(() => {
+        persistence.run(
+          `INSERT INTO trade_intents (intent_type, window_id, payload, status, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          ['open_position', 'tx-return-test', '{}', 'pending', new Date().toISOString()]
+        );
+        return 'success';
+      });
+
+      expect(result).toBe('success');
+    });
+
+    it('throws when not initialized', async () => {
+      await persistence.shutdown();
+
+      expect(() => {
+        persistence.transaction(() => {});
+      }).toThrow(PersistenceError);
+    });
+  });
 });

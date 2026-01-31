@@ -9,6 +9,10 @@ import Database from 'better-sqlite3';
 import { PersistenceError, ErrorCodes } from '../types/errors.js';
 import { dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { child as createLoggerChild } from '../modules/logger/index.js';
+
+// Create module-scoped logger
+const log = createLoggerChild({ module: 'persistence' });
 
 /** @type {Database.Database|null} */
 let db = null;
@@ -50,8 +54,7 @@ export function open(path) {
 
     return db;
   } catch (error) {
-    // Log before throwing (TODO: replace with logger module from Story 1-4)
-    console.error('[persistence] DB_CONNECTION_FAILED:', error.message, { path });
+    log.error('db_connection_failed', { path, error: error.message });
     throw new PersistenceError(
       ErrorCodes.DB_CONNECTION_FAILED,
       `Failed to open database at ${path}: ${error.message}`,
@@ -111,8 +114,7 @@ export function run(sql, params = []) {
     const stmt = database.prepare(sql);
     return stmt.run(...params);
   } catch (error) {
-    // Log before throwing (TODO: replace with logger module from Story 1-4)
-    console.error('[persistence] DB_QUERY_FAILED (run):', error.message, { sql: sql.substring(0, 100) });
+    log.error('db_query_failed', { operation: 'run', sql: sql.substring(0, 200), error: error.message });
     throw new PersistenceError(
       ErrorCodes.DB_QUERY_FAILED,
       `Query failed: ${error.message}`,
@@ -133,8 +135,7 @@ export function get(sql, params = []) {
     const stmt = database.prepare(sql);
     return stmt.get(...params);
   } catch (error) {
-    // Log before throwing (TODO: replace with logger module from Story 1-4)
-    console.error('[persistence] DB_QUERY_FAILED (get):', error.message, { sql: sql.substring(0, 100) });
+    log.error('db_query_failed', { operation: 'get', sql: sql.substring(0, 200), error: error.message });
     throw new PersistenceError(
       ErrorCodes.DB_QUERY_FAILED,
       `Query failed: ${error.message}`,
@@ -155,8 +156,7 @@ export function all(sql, params = []) {
     const stmt = database.prepare(sql);
     return stmt.all(...params);
   } catch (error) {
-    // Log before throwing (TODO: replace with logger module from Story 1-4)
-    console.error('[persistence] DB_QUERY_FAILED (all):', error.message, { sql: sql.substring(0, 100) });
+    log.error('db_query_failed', { operation: 'all', sql: sql.substring(0, 200), error: error.message });
     throw new PersistenceError(
       ErrorCodes.DB_QUERY_FAILED,
       `Query failed: ${error.message}`,
@@ -174,8 +174,7 @@ export function exec(sql) {
   try {
     database.exec(sql);
   } catch (error) {
-    // Log before throwing (TODO: replace with logger module from Story 1-4)
-    console.error('[persistence] DB_SCHEMA_ERROR:', error.message, { sql: sql.substring(0, 100) });
+    log.error('db_schema_error', { sql: sql.substring(0, 200), error: error.message });
     throw new PersistenceError(
       ErrorCodes.DB_SCHEMA_ERROR,
       `Schema execution failed: ${error.message}`,

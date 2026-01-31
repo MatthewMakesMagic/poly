@@ -10,6 +10,10 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { exec, get, run, all } from './database.js';
 import { PersistenceError, ErrorCodes } from '../types/errors.js';
+import { child as createLoggerChild } from '../modules/logger/index.js';
+
+// Create module-scoped logger
+const log = createLoggerChild({ module: 'schema-manager' });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -26,8 +30,7 @@ export function applySchema() {
     if (error instanceof PersistenceError) {
       throw error;
     }
-    // Log before throwing (TODO: replace with logger module from Story 1-4)
-    console.error('[persistence] DB_SCHEMA_ERROR:', error.message);
+    log.error('db_schema_apply_failed', { error: error.message });
     throw new PersistenceError(
       ErrorCodes.DB_SCHEMA_ERROR,
       `Failed to apply schema: ${error.message}`,

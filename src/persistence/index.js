@@ -9,6 +9,8 @@
  * - Schema application (trade_intents table)
  * - Migration infrastructure
  * - Query methods (run, get, all)
+ * - Raw SQL execution (exec)
+ * - Transaction support (transaction)
  */
 
 import * as database from './database.js';
@@ -134,6 +136,46 @@ function all(sql, params = []) {
   return database.all(sql, params);
 }
 
+/**
+ * Execute raw SQL for schema operations
+ *
+ * Use this for DDL statements (CREATE, ALTER, DROP) or batch operations
+ * that don't require prepared statement parameters.
+ *
+ * @param {string} sql - SQL to execute (can contain multiple statements)
+ */
+function exec(sql) {
+  if (!initialized) {
+    throw new PersistenceError(
+      ErrorCodes.DB_NOT_INITIALIZED,
+      'Persistence layer not initialized. Call init() first.',
+      {}
+    );
+  }
+  return database.exec(sql);
+}
+
+/**
+ * Execute a function within a transaction
+ *
+ * Provides atomic execution of multiple database operations.
+ * If the function throws, the transaction is rolled back.
+ *
+ * @param {Function} fn - Function to execute within transaction
+ * @returns {any} Return value of the function
+ */
+function transaction(fn) {
+  if (!initialized) {
+    throw new PersistenceError(
+      ErrorCodes.DB_NOT_INITIALIZED,
+      'Persistence layer not initialized. Call init() first.',
+      {}
+    );
+  }
+  const db = database.getDb();
+  return db.transaction(fn)();
+}
+
 // Export as default module with standard interface
 export default {
   init,
@@ -142,7 +184,9 @@ export default {
   run,
   get,
   all,
+  exec,
+  transaction,
 };
 
 // Also export individual functions for convenience
-export { init, getState, shutdown, run, get, all };
+export { init, getState, shutdown, run, get, all, exec, transaction };
