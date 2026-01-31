@@ -25,6 +25,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'persistence', module: null, configKey: 'database' },
   { name: 'polymarket', module: null, configKey: 'polymarket' },
   { name: 'spot', module: null, configKey: 'spot' },
+  // TEMP SOLUTION: Window manager for fetching active 15-min markets
+  { name: 'window-manager', module: null, configKey: null },
   { name: 'position-manager', module: null, configKey: null },
   { name: 'order-manager', module: null, configKey: null },
   // Safety module - after order-manager so it can reference it for auto-stop

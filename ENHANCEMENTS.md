@@ -290,6 +290,165 @@ logging: {
 
 ---
 
+## E2: Window Discovery - Connect Existing Scripts to Execution Loop [CRITICAL]
+
+**Status:** TEMP SOLUTION IMPLEMENTED
+**Priority:** BLOCKER - No trades execute without this
+**Identified:** 2026-01-31
+**Temp Fix:** 2026-01-31
+
+### Problem
+
+The execution loop passes `windows: []` to strategy evaluation, so no signals ever fire. However, the window discovery logic **already exists** in standalone scripts:
+
+**Existing Scripts (working):**
+- `scripts/crypto-15min-tracker.js` - Full window discovery + live streaming
+- `scripts/discover-markets.js` - General market discovery via Gamma API
+
+**What the scripts already do:**
+```javascript
+// Calculate 15-min window epochs
+function get15MinWindows(count = 5) {
+  const now = Math.floor(Date.now() / 1000);
+  const currentWindow = Math.floor(now / 900) * 900;
+  // Returns: { epoch, startTime, endTime, startsIn, endsIn }
+}
+
+// Fetch market by slug pattern: {crypto}-updown-15m-{epoch}
+async function fetchMarket(crypto, epoch) {
+  const slug = `${crypto}-updown-15m-${epoch}`;
+  const response = await fetch(`${GAMMA_API}/markets?slug=${slug}`);
+  // Returns: { upTokenId, downTokenId, upPrice, downPrice, ... }
+}
+
+// Get order book for pricing
+async function fetchOrderBook(tokenId) {
+  const response = await fetch(`${CLOB_API}/book?token_id=${tokenId}`);
+  // Returns: { bestBid, bestAsk, spread, midpoint, ... }
+}
+```
+
+**The disconnect (in execution-loop.js:168-174):**
+```javascript
+const marketState = {
+  spot_price: spotData.price,
+  // Future: Get active windows and their market prices from polymarket client
+  windows: [], // <-- HARDCODED EMPTY - scripts not connected
+};
+```
+
+### Required Fix
+
+Option A: **Convert scripts to module** (recommended)
+```javascript
+// New: src/modules/window-manager/index.js
+export async function getActiveWindows() {
+  const windows = [];
+  const epochs = get15MinWindows(2); // Current + next
+
+  for (const crypto of ['btc', 'eth', 'sol', 'xrp']) {
+    for (const epoch of epochs) {
+      const market = await fetchMarket(crypto, epoch.epoch);
+      if (market && market.active && !market.closed) {
+        const book = await fetchOrderBook(market.upTokenId);
+        windows.push({
+          window_id: `${crypto}-15m-${epoch.epoch}`,
+          market_id: market.slug,
+          token_id_up: market.upTokenId,
+          token_id_down: market.downTokenId,
+          market_price: book?.midpoint || market.upPrice,
+          time_remaining_ms: epoch.endsIn * 1000,
+          crypto,
+        });
+      }
+    }
+  }
+  return windows;
+}
+```
+
+Option B: **Direct integration in execution loop**
+```javascript
+// In execution-loop.js tick()
+import { get15MinWindows, fetchMarket, fetchOrderBook } from '../scripts/crypto-15min-tracker.js';
+
+const windows = await getActiveWindows(); // Call new helper
+const marketState = {
+  spot_price: spotData.price,
+  windows, // NOW POPULATED
+};
+```
+
+### Why Tests Pass But Live Fails
+
+Tests mock windows with hardcoded data:
+```javascript
+// In tests - provides fake windows
+evaluateEntryConditions({
+  windows: [{ window_id: 'test', market_price: 0.80 }]
+});
+
+// In production - empty array
+evaluateEntryConditions({
+  windows: [] // From hardcoded empty array
+});
+```
+
+### Multi-Exchange Discovery (Reference)
+
+The spot client already supports multiple sources for reference prices:
+- **Pyth Network** - Primary oracle feed (implemented)
+- **Chainlink** - Alternative oracle (normalizer ready)
+- **Binance WebSocket** - Exchange spot prices (used in tracker script)
+
+Spot price normalization in `src/clients/spot/normalizer.js` handles format differences.
+
+### Files Involved
+
+| File | Role | Status |
+|------|------|--------|
+| `scripts/crypto-15min-tracker.js` | Window discovery logic | ✅ Working standalone |
+| `scripts/discover-markets.js` | Market discovery | ✅ Working standalone |
+| `src/modules/orchestrator/execution-loop.js:171` | Needs windows | ❌ Hardcoded empty |
+| `src/clients/spot/normalizer.js` | Multi-source normalization | ✅ Ready |
+| `src/modules/window-manager/` | Should exist | ✅ TEMP Created |
+
+### TEMP Solution Implemented
+
+Created `src/modules/window-manager/` module that:
+- Wraps logic from `scripts/crypto-15min-tracker.js`
+- Fetches active windows via REST API (with 5-second caching)
+- Integrated into orchestrator initialization
+- Called from execution loop each tick
+
+**Limitations of TEMP solution:**
+- REST polling instead of WebSocket (higher latency)
+- Simple caching (may miss rapid price changes)
+- No rate limiting protection
+- Fetches all cryptos each tick (could be optimized)
+
+**Production solution should:**
+- Use WebSocket subscriptions for real-time book updates
+- Implement proper rate limiting
+- Cache at window level (not global)
+- Only fetch cryptos with active strategies
+
+### Acceptance Criteria
+
+1. Execution loop receives populated `windows[]` array each tick
+2. Windows include: window_id, market_id, token_ids, market_price, time_remaining_ms
+3. Strategy evaluator processes windows and generates entry signals
+4. System logs window discovery results (count, cryptos, epochs)
+5. Graceful handling when no markets exist for current epoch
+
+### Risk if Not Implemented
+
+- **CRITICAL:** No trades will ever execute
+- All unit tests pass but system is non-functional
+- Strategies evaluate against empty array → no signals → no orders
+
+---
+
 ## Future Enhancements
 
 (Add additional enhancements here as identified)

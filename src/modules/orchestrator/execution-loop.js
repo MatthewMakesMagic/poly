@@ -162,13 +162,30 @@ export class ExecutionLoop {
 
       // 3. Evaluate strategy entry conditions (Story 3.2) - skip if auto-stopped
       let entrySignals = [];
+      let windows = [];
       if (!entriesSkipped && this.modules['strategy-evaluator'] && spotData) {
         const strategyEvaluator = this.modules['strategy-evaluator'];
         if (typeof strategyEvaluator.evaluateEntryConditions === 'function') {
+          // TEMP SOLUTION: Fetch active windows from window-manager module
+          // Production should use WebSocket subscriptions for real-time updates
+          if (this.modules['window-manager'] && typeof this.modules['window-manager'].getActiveWindows === 'function') {
+            try {
+              windows = await this.modules['window-manager'].getActiveWindows();
+              if (windows.length > 0) {
+                this.log.debug('windows_loaded', {
+                  count: windows.length,
+                  cryptos: [...new Set(windows.map(w => w.crypto))],
+                });
+              }
+            } catch (windowErr) {
+              this.log.warn('window_manager_error', { error: windowErr.message });
+              windows = [];
+            }
+          }
+
           const marketState = {
             spot_price: spotData.price,
-            // Future: Get active windows and their market prices from polymarket client
-            windows: [], // Will be populated when window management is implemented
+            windows, // Now populated from window-manager module
           };
 
           entrySignals = strategyEvaluator.evaluateEntryConditions(marketState);
@@ -599,6 +616,7 @@ export class ExecutionLoop {
         tickCount: this.tickCount,
         durationMs: tickDurationMs,
         spotPrice: spotData?.price || null,
+        windowsCount: windows.length,
         autoStopped: drawdownCheck.autoStopped,
         drawdownPct: drawdownCheck.current,
         entriesSkipped,

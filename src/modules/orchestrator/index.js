@@ -22,6 +22,7 @@ import { child } from '../logger/index.js';
 import persistence from '../../persistence/index.js';
 import * as polymarket from '../../clients/polymarket/index.js';
 import * as spot from '../../clients/spot/index.js';
+import * as windowManager from '../window-manager/index.js';
 import * as positionManager from '../position-manager/index.js';
 import * as orderManager from '../order-manager/index.js';
 import * as safety from '../safety/index.js';
@@ -55,6 +56,7 @@ const MODULE_MAP = {
   persistence: persistence,
   polymarket: polymarket,
   spot: spot,
+  'window-manager': windowManager,
   'position-manager': positionManager,
   'order-manager': orderManager,
   'safety': safety,
