@@ -672,6 +672,46 @@ export class LiveTrader extends EventEmitter {
                 return false;
             }
 
+            // ═══════════════════════════════════════════════════════════════════
+            // E1: PRE-EXIT BALANCE VERIFICATION (CRITICAL)
+            // Verify actual on-chain balance before attempting sell
+            // ═══════════════════════════════════════════════════════════════════
+            const expectedShares = position.shares;
+            let actualBalance;
+
+            try {
+                actualBalance = await this.client.getBalance(position.tokenId);
+            } catch (balanceErr) {
+                this.logger.warn(`[LiveTrader] ⚠️ Balance check failed, proceeding with expected: ${balanceErr.message}`);
+                actualBalance = expectedShares; // Fallback to expected if check fails
+            }
+
+            // Case 1: Already exited (balance is 0)
+            if (actualBalance === 0 || actualBalance < 0.001) {
+                this.logger.warn(`[LiveTrader] 🔍 EXIT_ALREADY_COMPLETE: ${position.strategyName} ${position.crypto}`, {
+                    tokenId: position.tokenId?.slice(0, 16),
+                    expectedShares,
+                    actualBalance,
+                    reason: 'position_already_closed'
+                });
+                const positionKey = `${position.strategyName}_${position.crypto}_${position.windowEpoch}`;
+                delete this.livePositions[positionKey];
+                return true; // Position already exited
+            }
+
+            // Case 2: Balance mismatch - use actual balance
+            if (Math.abs(actualBalance - expectedShares) > 0.01) {
+                this.logger.warn(`[LiveTrader] 🔍 EXIT_BALANCE_MISMATCH: ${position.strategyName} ${position.crypto}`, {
+                    tokenId: position.tokenId?.slice(0, 16),
+                    expectedShares,
+                    actualBalance,
+                    difference: expectedShares - actualBalance
+                });
+                // Update position to use actual balance
+                position.shares = actualBalance;
+            }
+            // ═══════════════════════════════════════════════════════════════════
+
             // CRITICAL: Get LIVE price from order book - this is the actual price we'll trade at
             // Tick data can be stale, order book is source of truth
             let rawPrice = position.tokenSide === 'UP' ? tick?.up_bid : tick?.down_bid;
@@ -1407,20 +1447,59 @@ export class LiveTrader extends EventEmitter {
         }
         
         const tokenId = position.tokenId;
-        
+
+        // ═══════════════════════════════════════════════════════════════════
+        // E1: PRE-EXIT BALANCE VERIFICATION (CRITICAL)
+        // Verify actual on-chain balance before attempting sell
+        // ═══════════════════════════════════════════════════════════════════
+        const expectedShares = position.shares || Math.ceil(position.size / position.entryPrice);
+        let actualBalance;
+
+        try {
+            actualBalance = await this.client.getBalance(tokenId);
+        } catch (balanceErr) {
+            this.logger.warn(`[LiveTrader] ⚠️ Balance check failed, proceeding with expected: ${balanceErr.message}`);
+            actualBalance = expectedShares; // Fallback to expected if check fails
+        }
+
+        // Case 1: Already exited (balance is 0)
+        if (actualBalance === 0 || actualBalance < 0.001) {
+            this.logger.warn(`[LiveTrader] 🔍 EXIT_ALREADY_COMPLETE: ${strategyName} ${crypto}`, {
+                tokenId: tokenId?.slice(0, 16),
+                expectedShares,
+                actualBalance,
+                reason: 'position_already_closed'
+            });
+            delete this.livePositions[positionKey];
+            return { success: true, reason: 'already_exited', shares: 0 };
+        }
+
+        // Case 2: Balance mismatch - use actual balance
+        if (Math.abs(actualBalance - expectedShares) > 0.01) {
+            this.logger.warn(`[LiveTrader] 🔍 EXIT_BALANCE_MISMATCH: ${strategyName} ${crypto}`, {
+                tokenId: tokenId?.slice(0, 16),
+                expectedShares,
+                actualBalance,
+                difference: expectedShares - actualBalance
+            });
+            // Update position to use actual balance
+            position.shares = actualBalance;
+        }
+        // ═══════════════════════════════════════════════════════════════════
+
         // Subtract 3 cent buffer to ensure sell fills
         const EXIT_BUFFER = 0.03;
         const rawPrice = position.tokenSide === 'UP' ? tick.up_bid : tick.down_bid;
         // Round to 2 decimal places to avoid floating point precision issues
         const price = Math.round(Math.max(rawPrice - EXIT_BUFFER, 0.01) * 100) / 100;
-        
+
         this.logger.log(`[LiveTrader] 📉 EXECUTING LIVE EXIT: ${strategyName} | ${crypto} | ${position.tokenSide} | @ ${price.toFixed(3)}`);
-        
+
         try {
             this.stats.ordersPlaced++;
-            
-            // Place sell order using SDK client
-            const sharesToSell = position.shares || Math.ceil(position.size / position.entryPrice);
+
+            // Place sell order using SDK client - use actual verified balance
+            const sharesToSell = position.shares;
             const response = await this.client.sell(tokenId, sharesToSell, price, 'FOK');
             
             if (response.filled || response.shares > 0) {
