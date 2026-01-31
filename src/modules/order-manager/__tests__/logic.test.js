@@ -318,6 +318,29 @@ describe('Order Manager Logic', () => {
       const cached = state.getCachedOrder('order-1');
       expect(cached.avg_fill_price).toBe(0.55);
     });
+
+    it('rejects invalid column names to prevent SQL injection', () => {
+      expect(() =>
+        logic.updateOrderStatus(
+          'order-1',
+          OrderStatus.FILLED,
+          { 'malicious_column; DROP TABLE orders;--': 'value' },
+          mockLog
+        )
+      ).toThrow('Invalid update columns');
+    });
+
+    it('allows valid column names in updates', () => {
+      // Should not throw for valid columns
+      expect(() =>
+        logic.updateOrderStatus(
+          'order-1',
+          OrderStatus.FILLED,
+          { filled_size: 100, avg_fill_price: 0.55 },
+          mockLog
+        )
+      ).not.toThrow();
+    });
   });
 
   describe('getOrder()', () => {

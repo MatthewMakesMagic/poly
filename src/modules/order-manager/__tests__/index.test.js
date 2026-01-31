@@ -24,7 +24,7 @@ vi.mock('../../../persistence/write-ahead.js', () => ({
   markExecuting: vi.fn(),
   markCompleted: vi.fn(),
   markFailed: vi.fn(),
-  INTENT_TYPES: { PLACE_ORDER: 'place_order' },
+  INTENT_TYPES: { PLACE_ORDER: 'place_order', CANCEL_ORDER: 'cancel_order' },
 }));
 
 vi.mock('../../../clients/polymarket/index.js', () => ({

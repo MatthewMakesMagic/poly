@@ -32,11 +32,14 @@ const stats = {
 /**
  * Add an order to the cache
  * @param {Object} order - Order object
+ * @param {boolean} [isNewOrder=true] - Whether this is a newly placed order (affects stats)
  */
-export function cacheOrder(order) {
+export function cacheOrder(order, isNewOrder = true) {
   orderCache.set(order.order_id, { ...order });
-  stats.ordersPlaced++;
-  stats.lastOrderTime = new Date().toISOString();
+  if (isNewOrder) {
+    stats.ordersPlaced++;
+    stats.lastOrderTime = new Date().toISOString();
+  }
 }
 
 /**
@@ -183,10 +186,15 @@ export function clearCache() {
 
 /**
  * Load orders into cache from database
+ * Does not increment stats since these are historical orders, not new placements.
  * @param {Object[]} orders - Array of orders from database
  */
 export function loadOrdersIntoCache(orders) {
+  if (!orders || !Array.isArray(orders)) {
+    return;
+  }
   for (const order of orders) {
-    orderCache.set(order.order_id, { ...order });
+    // Use cacheOrder with isNewOrder=false to avoid inflating stats
+    cacheOrder(order, false);
   }
 }

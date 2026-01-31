@@ -197,7 +197,7 @@ export async function placeOrder(params, log) {
     };
 
     // 9. Insert order into database
-    persistence.run(
+    const insertResult = persistence.run(
       `INSERT INTO orders (
         order_id, intent_id, position_id, window_id, market_id, token_id,
         side, order_type, price, size, filled_size, avg_fill_price,
@@ -224,6 +224,15 @@ export async function placeOrder(params, log) {
         orderRecord.error_message,
       ]
     );
+
+    // Verify database insert succeeded
+    if (!insertResult || insertResult.changes !== 1) {
+      throw new OrderManagerError(
+        OrderManagerErrorCodes.DATABASE_ERROR,
+        'Failed to insert order into database',
+        { orderId: result.orderID, insertResult }
+      );
+    }
 
     // 10. Cache the order
     cacheOrder(orderRecord);
@@ -327,16 +336,43 @@ export function updateOrderStatus(orderId, newStatus, updates = {}, log) {
     updateFields.cancelled_at = new Date().toISOString();
   }
 
-  // Update database
+  // Whitelist of allowed column names to prevent SQL injection
+  const ALLOWED_COLUMNS = new Set([
+    'status', 'filled_size', 'avg_fill_price', 'filled_at',
+    'cancelled_at', 'error_message', 'position_id',
+  ]);
+
+  // Validate all column names against whitelist
+  const invalidColumns = Object.keys(updateFields).filter(
+    (key) => !ALLOWED_COLUMNS.has(key)
+  );
+  if (invalidColumns.length > 0) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.VALIDATION_FAILED,
+      `Invalid update columns: ${invalidColumns.join(', ')}`,
+      { invalidColumns, allowedColumns: [...ALLOWED_COLUMNS] }
+    );
+  }
+
+  // Update database - column names are now validated against whitelist
   const setClauses = Object.keys(updateFields)
     .map((key) => `${key} = ?`)
     .join(', ');
   const values = [...Object.values(updateFields), orderId];
 
-  persistence.run(
+  const updateResult = persistence.run(
     `UPDATE orders SET ${setClauses} WHERE order_id = ?`,
     values
   );
+
+  // Verify database update succeeded
+  if (!updateResult || updateResult.changes !== 1) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.DATABASE_ERROR,
+      'Failed to update order in database',
+      { orderId, updateResult }
+    );
+  }
 
   // Update cache
   const updatedOrder = updateCachedOrder(orderId, updateFields);
@@ -449,8 +485,10 @@ export function loadRecentOrders(log) {
     [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
   );
 
-  loadOrdersIntoCache(recentOrders);
-  log.info('orders_loaded_to_cache', { count: recentOrders.length });
+  // Defensive check for null/undefined database result
+  const orders = recentOrders || [];
+  loadOrdersIntoCache(orders);
+  log.info('orders_loaded_to_cache', { count: orders.length });
 }
 
 /**
