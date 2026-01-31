@@ -27,7 +27,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'spot', module: null, configKey: 'spot' },
   { name: 'position-manager', module: null, configKey: null },
   { name: 'order-manager', module: null, configKey: null },
-  // Future: strategy modules go here
+  // Strategy modules
+  { name: 'strategy-evaluator', module: null, configKey: null },
 ];
 
 /**

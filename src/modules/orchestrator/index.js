@@ -22,6 +22,7 @@ import * as polymarket from '../../clients/polymarket/index.js';
 import * as spot from '../../clients/spot/index.js';
 import * as positionManager from '../position-manager/index.js';
 import * as orderManager from '../order-manager/index.js';
+import * as strategyEvaluator from '../strategy-evaluator/index.js';
 
 import {
   OrchestratorError,
@@ -47,6 +48,7 @@ const MODULE_MAP = {
   spot: spot,
   'position-manager': positionManager,
   'order-manager': orderManager,
+  'strategy-evaluator': strategyEvaluator,
 };
 
 // Module-level state

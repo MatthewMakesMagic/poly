@@ -258,7 +258,7 @@ describe('ExecutionLoop', () => {
       expect(mockModules.spot.getCurrentPrice).toHaveBeenCalled();
     });
 
-    it('logs tick start and complete at debug level', async () => {
+    it('logs tick start at debug level and complete at info level', async () => {
       loop.start();
       await vi.advanceTimersByTimeAsync(10);
 
@@ -266,11 +266,12 @@ describe('ExecutionLoop', () => {
         'tick_start',
         expect.objectContaining({ tickCount: expect.any(Number) })
       );
-      expect(mockLogger.debug).toHaveBeenCalledWith(
+      expect(mockLogger.info).toHaveBeenCalledWith(
         'tick_complete',
         expect.objectContaining({
           tickCount: expect.any(Number),
           durationMs: expect.any(Number),
+          entrySignalsCount: expect.any(Number),
         })
       );
     });

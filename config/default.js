@@ -64,4 +64,13 @@ export default {
     retryBackoffMs: 1000,           // Base backoff (doubles each retry)
     inflightTimeoutMs: 10000,       // Max wait for in-flight ops
   },
+
+  // Strategy configuration
+  strategy: {
+    entry: {
+      spotLagThresholdPct: 0.02,   // 2% lag required to enter
+      minConfidence: 0.6,          // Minimum confidence to enter
+      // minTimeRemainingMs comes from trading.minTimeRemainingMs
+    },
+  },
 };

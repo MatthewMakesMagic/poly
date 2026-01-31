@@ -137,23 +137,51 @@ export class ExecutionLoop {
 
       this.log.debug('tick_start', { tickCount: this.tickCount });
 
-      // 1. Fetch current spot prices (skeleton for future strategy evaluation)
+      // 1. Fetch current spot prices
       let spotData = null;
       if (this.modules.spot && typeof this.modules.spot.getCurrentPrice === 'function') {
         // Get BTC price as the primary reference
         spotData = this.modules.spot.getCurrentPrice('btc');
       }
 
-      // 2. Future: Evaluate strategy entry conditions (Story 3.2)
+      // 2. Evaluate strategy entry conditions (Story 3.2)
+      let entrySignals = [];
+      if (this.modules['strategy-evaluator'] && spotData) {
+        const strategyEvaluator = this.modules['strategy-evaluator'];
+        if (typeof strategyEvaluator.evaluateEntryConditions === 'function') {
+          const marketState = {
+            spot_price: spotData.price,
+            // Future: Get active windows and their market prices from polymarket client
+            windows: [], // Will be populated when window management is implemented
+          };
+
+          entrySignals = strategyEvaluator.evaluateEntryConditions(marketState);
+
+          if (entrySignals && entrySignals.length > 0) {
+            this.log.info('entry_signals_generated', {
+              count: entrySignals.length,
+              signals: entrySignals.map(s => ({
+                window_id: s.window_id,
+                direction: s.direction,
+                confidence: s.confidence,
+              })),
+            });
+
+            // Future: Pass signals to orchestrator for position opening (Story 3.3)
+          }
+        }
+      }
+
       // 3. Future: Evaluate exit conditions - stop-loss, take-profit (Stories 3.4-3.5)
       // 4. Future: Process any pending orders
       // 5. Future: Check window expiry (Story 3.6)
 
       const tickDurationMs = Date.now() - tickStart;
-      this.log.debug('tick_complete', {
+      this.log.info('tick_complete', {
         tickCount: this.tickCount,
         durationMs: tickDurationMs,
         spotPrice: spotData?.price || null,
+        entrySignalsCount: entrySignals.length,
       });
     } catch (err) {
       const tickDurationMs = Date.now() - tickStart;
