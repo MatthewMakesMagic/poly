@@ -106,25 +106,8 @@ async function runMigrations() {
         // Requires minimum BS edge (2-3%) before entering trades
         // =================================================================
         const toEnable = [
-            // BS EDGE STRATEGIES - validated with proper edge calculation
-            // DISABLED SpotLag_ProbEdge - bets against market sentiment, lost $2 on Jan 28
-            'SpotLag_Trail_V1',        // Safe - 3% min edge
-            'SpotLag_Trail_V2',        // 2.5% min edge
-            'SpotLag_Trail_V3',        // 2% min edge
-            'Endgame',                 // High conviction end-of-window
-            'Endgame_Conservative',    // Conservative endgame
-
-            // LAG PROB - simpler lag detection but with BS edge validation
-            // Right side only = maximum conviction, only trades when spot confirms direction
-            'LagProb_RightSide',       // 3% min edge, RIGHT side only
-
-            // PURE PROB - edge-only strategies (no lag requirement, just BS edge)
-            // These have been generating real 8-13% edge signals in production
-            'PureProb_Late',           // 3% min edge, last 2 min only, 20% stop loss
-            'PureProb_Conservative',   // 5% min edge (very selective)
-
-            // EXECUTION TEST - DISABLED (confirmed working on Railway Jan 29)
-            // 'ExecutionTest',           // 5 x $1 trades on BTC, 30s apart
+            // EXECUTION TEST ONLY - for Scout testing
+            'ExecutionTest',           // 5 x $6 trades on BTC, 30s apart
         ];
 
         for (const strat of toEnable) {
@@ -138,7 +121,13 @@ async function runMigrations() {
         const toDisable = [
             // TEST STRATEGIES
             'TP_SL_Test',
-            'ExecutionTest',           // Disabled after confirming Railway works
+            // 'ExecutionTest',        // ENABLED ABOVE for Scout testing
+
+            // BS EDGE STRATEGIES - disabled for Scout testing
+            'SpotLag_Trail_V1', 'SpotLag_Trail_V2', 'SpotLag_Trail_V3',
+            'Endgame', 'Endgame_Conservative',
+            'LagProb_RightSide',
+            'PureProb_Late', 'PureProb_Conservative',
 
             // DISABLED Jan 28 2026 - bets against market sentiment, lost money
             'SpotLag_ProbEdge',     // Entry logic wrong - ignores market probability
