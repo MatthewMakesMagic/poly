@@ -472,7 +472,30 @@ export async function closePosition(positionId, params, log) {
 
   try {
     const closedAt = new Date().toISOString();
-    const actualClosePrice = closePrice || position.current_price;
+
+    // Determine close price with explicit null/undefined handling
+    // closePrice parameter takes precedence, then fall back to current_price
+    let actualClosePrice;
+    if (closePrice !== undefined && closePrice !== null) {
+      actualClosePrice = closePrice;
+    } else if (position.current_price !== undefined && position.current_price !== null) {
+      actualClosePrice = position.current_price;
+    } else {
+      throw new PositionManagerError(
+        PositionManagerErrorCodes.VALIDATION_FAILED,
+        'Cannot close position: no close price available and current_price is not set',
+        { positionId, closePrice, currentPrice: position.current_price }
+      );
+    }
+
+    // Validate close price is a valid non-negative number
+    if (typeof actualClosePrice !== 'number' || actualClosePrice < 0 || !Number.isFinite(actualClosePrice)) {
+      throw new PositionManagerError(
+        PositionManagerErrorCodes.VALIDATION_FAILED,
+        `Invalid close price: ${actualClosePrice}. Price must be a non-negative finite number.`,
+        { positionId, actualClosePrice }
+      );
+    }
 
     // Calculate P&L
     const priceDiff = actualClosePrice - position.entry_price;
@@ -480,12 +503,21 @@ export async function closePosition(positionId, params, log) {
     const pnl = priceDiff * position.size * direction;
 
     // 3. Update database
-    persistence.run(
+    const updateResult = persistence.run(
       `UPDATE positions
        SET status = ?, close_price = ?, closed_at = ?, pnl = ?
        WHERE id = ?`,
       [PositionStatus.CLOSED, actualClosePrice, closedAt, pnl, positionId]
     );
+
+    // Verify the database update succeeded
+    if (updateResult.changes === 0) {
+      throw new PositionManagerError(
+        PositionManagerErrorCodes.DATABASE_ERROR,
+        `Failed to update position in database: no rows affected`,
+        { positionId, updateResult }
+      );
+    }
 
     // 4. Update cache with specific fields only
     updateCachedPosition(positionId, {
@@ -546,7 +578,29 @@ export async function closePosition(positionId, params, log) {
  * @returns {Promise<Object>} Reconciliation result
  */
 export async function reconcile(polymarketClient, log) {
-  const openPositions = getPositions();
+  // Validate polymarketClient parameter
+  if (!polymarketClient) {
+    throw new PositionManagerError(
+      PositionManagerErrorCodes.VALIDATION_FAILED,
+      'reconcile() requires a polymarketClient parameter',
+      { polymarketClient }
+    );
+  }
+  if (typeof polymarketClient.getBalance !== 'function') {
+    throw new PositionManagerError(
+      PositionManagerErrorCodes.VALIDATION_FAILED,
+      'polymarketClient must have a getBalance() method',
+      { hasGetBalance: typeof polymarketClient.getBalance }
+    );
+  }
+
+  // Query database directly for open positions to ensure fresh data
+  // Don't rely on cache which may be stale
+  const openPositions = persistence.all(
+    'SELECT * FROM positions WHERE status = ?',
+    [PositionStatus.OPEN]
+  );
+
   const divergences = [];
   let verified = 0;
   const now = new Date().toISOString();
@@ -559,7 +613,11 @@ export async function reconcile(polymarketClient, log) {
       const exchangeBalance = await polymarketClient.getBalance(position.token_id);
 
       // Compare with tolerance for floating point precision
-      if (Math.abs(exchangeBalance - position.size) < 0.0001) {
+      // Use relative tolerance (0.01% of position size) for large positions,
+      // with a minimum absolute tolerance of 0.0001 for small positions
+      const relativeTolerance = position.size * 0.0001; // 0.01% of position size
+      const tolerance = Math.max(relativeTolerance, 0.0001);
+      if (Math.abs(exchangeBalance - position.size) < tolerance) {
         // Match - update verification timestamp
         persistence.run(
           'UPDATE positions SET exchange_verified_at = ? WHERE id = ?',

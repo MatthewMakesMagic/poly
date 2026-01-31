@@ -606,6 +606,40 @@ describe('Position Manager Module', () => {
         'Cannot close position with status: closed'
       );
     });
+
+    it('uses explicit closePrice when provided', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      const result = await positionManager.closePosition(1, { closePrice: 0.7 });
+
+      expect(result.close_price).toBe(0.7);
+      // (0.7 - 0.5) * 100 * 1 = 20
+      expect(result.pnl).toBeCloseTo(20, 5);
+    });
+
+    it('rejects invalid negative closePrice', async () => {
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      await expect(
+        positionManager.closePosition(1, { closePrice: -0.5 })
+      ).rejects.toThrow('Price must be a non-negative finite number');
+    });
   });
 
   describe('reconcile()', () => {
@@ -619,6 +653,25 @@ describe('Position Manager Module', () => {
       const mockClient = { getBalance: vi.fn() };
       await expect(positionManager.reconcile(mockClient)).rejects.toThrow(
         'Position manager not initialized'
+      );
+    });
+
+    it('throws when polymarketClient is null', async () => {
+      await expect(positionManager.reconcile(null)).rejects.toThrow(
+        'reconcile() requires a polymarketClient parameter'
+      );
+    });
+
+    it('throws when polymarketClient is undefined', async () => {
+      await expect(positionManager.reconcile(undefined)).rejects.toThrow(
+        'reconcile() requires a polymarketClient parameter'
+      );
+    });
+
+    it('throws when polymarketClient does not have getBalance method', async () => {
+      const invalidClient = { someOtherMethod: vi.fn() };
+      await expect(positionManager.reconcile(invalidClient)).rejects.toThrow(
+        'polymarketClient must have a getBalance() method'
       );
     });
 
