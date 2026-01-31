@@ -13,6 +13,8 @@ export {
   StateError,
   ApiError,
   SafetyError,
+  PersistenceError,
+  IntentError,
   ErrorCodes,
 } from './errors.js';
 

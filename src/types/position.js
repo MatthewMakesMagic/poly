@@ -4,6 +4,8 @@
  * Defines the structure of position data used throughout the system.
  */
 
+import { PositionError, ErrorCodes } from './errors.js';
+
 /**
  * Position status values
  * @readonly
@@ -85,23 +87,35 @@ export function calculateUnrealizedPnl(position) {
  * Validate a position object has required fields
  * @param {Object} position - Position to validate
  * @returns {boolean} True if valid
- * @throws {Error} If validation fails
+ * @throws {PositionError} If validation fails
  */
 export function validatePosition(position) {
   const required = ['window_id', 'market_id', 'token_id', 'side', 'size', 'entry_price', 'strategy_id'];
 
   for (const field of required) {
     if (position[field] === undefined || position[field] === null) {
-      throw new Error(`Position missing required field: ${field}`);
+      throw new PositionError(
+        ErrorCodes.CONFIG_INVALID,
+        `Position missing required field: ${field}`,
+        { field, position }
+      );
     }
   }
 
   if (!Object.values(PositionSide).includes(position.side)) {
-    throw new Error(`Invalid position side: ${position.side}`);
+    throw new PositionError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid position side: ${position.side}`,
+      { side: position.side, validSides: Object.values(PositionSide) }
+    );
   }
 
   if (position.size <= 0) {
-    throw new Error('Position size must be positive');
+    throw new PositionError(
+      ErrorCodes.CONFIG_INVALID,
+      'Position size must be positive',
+      { size: position.size }
+    );
   }
 
   return true;

@@ -5,12 +5,15 @@
  * Every log entry must include required fields for diagnostic coverage.
  */
 
+import { ConfigError, ErrorCodes } from './errors.js';
+
 /**
  * Log level values
  * @readonly
  * @enum {string}
  */
 export const LogLevel = {
+  DEBUG: 'debug',
   INFO: 'info',
   WARN: 'warn',
   ERROR: 'error',
@@ -199,19 +202,27 @@ export function createTradeEvent({
  * Validate a log entry has required fields
  * @param {Object} entry - Log entry to validate
  * @returns {boolean} True if valid
- * @throws {Error} If validation fails
+ * @throws {ConfigError} If validation fails
  */
 export function validateLogEntry(entry) {
   const required = ['timestamp', 'level', 'module', 'event'];
 
   for (const field of required) {
     if (entry[field] === undefined || entry[field] === null) {
-      throw new Error(`Log entry missing required field: ${field}`);
+      throw new ConfigError(
+        ErrorCodes.CONFIG_INVALID,
+        `Log entry missing required field: ${field}`,
+        { field, entry }
+      );
     }
   }
 
   if (!Object.values(LogLevel).includes(entry.level)) {
-    throw new Error(`Invalid log level: ${entry.level}`);
+    throw new ConfigError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid log level: ${entry.level}`,
+      { level: entry.level, validLevels: Object.values(LogLevel) }
+    );
   }
 
   return true;

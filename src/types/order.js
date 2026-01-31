@@ -4,6 +4,8 @@
  * Defines the structure of order data used throughout the system.
  */
 
+import { OrderError, ErrorCodes } from './errors.js';
+
 /**
  * Order status values (follows lifecycle)
  * @readonly
@@ -126,31 +128,51 @@ export function getRemainingSize(order) {
  * Validate an order object has required fields
  * @param {Object} order - Order to validate
  * @returns {boolean} True if valid
- * @throws {Error} If validation fails
+ * @throws {OrderError} If validation fails
  */
 export function validateOrder(order) {
   const required = ['window_id', 'market_id', 'token_id', 'side', 'order_type', 'size'];
 
   for (const field of required) {
     if (order[field] === undefined || order[field] === null) {
-      throw new Error(`Order missing required field: ${field}`);
+      throw new OrderError(
+        ErrorCodes.CONFIG_INVALID,
+        `Order missing required field: ${field}`,
+        { field, order }
+      );
     }
   }
 
   if (!Object.values(OrderSide).includes(order.side)) {
-    throw new Error(`Invalid order side: ${order.side}`);
+    throw new OrderError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid order side: ${order.side}`,
+      { side: order.side, validSides: Object.values(OrderSide) }
+    );
   }
 
   if (!Object.values(OrderType).includes(order.order_type)) {
-    throw new Error(`Invalid order type: ${order.order_type}`);
+    throw new OrderError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid order type: ${order.order_type}`,
+      { orderType: order.order_type, validTypes: Object.values(OrderType) }
+    );
   }
 
   if (order.order_type === OrderType.LIMIT && order.price === null) {
-    throw new Error('Limit orders require a price');
+    throw new OrderError(
+      ErrorCodes.CONFIG_INVALID,
+      'Limit orders require a price',
+      { orderType: order.order_type }
+    );
   }
 
   if (order.size <= 0) {
-    throw new Error('Order size must be positive');
+    throw new OrderError(
+      ErrorCodes.CONFIG_INVALID,
+      'Order size must be positive',
+      { size: order.size }
+    );
   }
 
   return true;
