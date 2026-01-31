@@ -32,6 +32,7 @@ export const MODULE_INIT_ORDER = [
   { name: 'position-sizer', module: null, configKey: null },
   // Exit condition modules
   { name: 'stop-loss', module: null, configKey: null },
+  { name: 'take-profit', module: null, configKey: null },
 ];
 
 /**

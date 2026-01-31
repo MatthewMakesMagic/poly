@@ -84,5 +84,10 @@ export default {
       enabled: true,                 // Enable/disable stop-loss evaluation
       defaultStopLossPct: 0.05,      // 5% default stop-loss
     },
+    // Take-profit configuration
+    takeProfit: {
+      enabled: true,                  // Enable/disable take-profit evaluation
+      defaultTakeProfitPct: 0.10,     // 10% default take-profit
+    },
   },
 };

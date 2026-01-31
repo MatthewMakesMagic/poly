@@ -1,0 +1,228 @@
+/**
+ * Take-Profit Module
+ *
+ * Public interface for take-profit evaluation.
+ * Follows the standard module interface: init(config), getState(), shutdown()
+ *
+ * Capabilities:
+ * - Evaluate positions against take-profit thresholds
+ * - Support per-position and default take-profit percentages
+ * - Track evaluation statistics
+ *
+ * Key differences from stop-loss:
+ * - Trigger direction is OPPOSITE: long triggers when price RISES, short when price DROPS
+ * - Uses 'limit' closeMethod (not 'market') for better fills
+ * - Tracks profit_amount/profit_pct instead of loss_amount/loss_pct
+ *
+ * @module modules/take-profit
+ */
+
+import { child } from '../logger/index.js';
+import { TakeProfitError, TakeProfitErrorCodes } from './types.js';
+import { evaluate as evaluateLogic, evaluateAll as evaluateAllLogic, calculateTakeProfitThreshold } from './logic.js';
+import { getStats, resetState } from './state.js';
+
+// Module state
+let log = null;
+let config = null;
+let takeProfitConfig = null;
+let initialized = false;
+
+// Default take-profit config if not specified
+const DEFAULT_TAKE_PROFIT_CONFIG = {
+  enabled: true,
+  defaultTakeProfitPct: 0.10,  // 10% default take-profit
+};
+
+/**
+ * Initialize the take-profit module
+ *
+ * @param {Object} cfg - Configuration object
+ * @param {Object} [cfg.strategy] - Strategy configuration
+ * @param {Object} [cfg.strategy.takeProfit] - Take-profit configuration
+ * @param {boolean} [cfg.strategy.takeProfit.enabled=true] - Enable/disable take-profit evaluation
+ * @param {number} [cfg.strategy.takeProfit.defaultTakeProfitPct=0.10] - Default take-profit percentage (0-1)
+ * @returns {Promise<void>}
+ * @throws {TakeProfitError} If configuration is invalid
+ */
+export async function init(cfg) {
+  if (initialized) {
+    return;
+  }
+
+  // Create child logger for this module
+  log = child({ module: 'take-profit' });
+  config = cfg;
+
+  log.info('module_init_start');
+
+  // Extract and validate take-profit config
+  const strategyTakeProfitConfig = cfg?.strategy?.takeProfit || {};
+  takeProfitConfig = {
+    enabled: strategyTakeProfitConfig.enabled ?? DEFAULT_TAKE_PROFIT_CONFIG.enabled,
+    defaultTakeProfitPct: strategyTakeProfitConfig.defaultTakeProfitPct ?? DEFAULT_TAKE_PROFIT_CONFIG.defaultTakeProfitPct,
+  };
+
+  // Validate config values
+  validateConfig(takeProfitConfig);
+
+  initialized = true;
+  log.info('module_initialized', {
+    take_profit: {
+      enabled: takeProfitConfig.enabled,
+      default_take_profit_pct: takeProfitConfig.defaultTakeProfitPct,
+    },
+  });
+}
+
+/**
+ * Validate configuration values
+ *
+ * @param {Object} cfg - Take-profit config
+ * @throws {TakeProfitError} If validation fails
+ * @private
+ */
+function validateConfig(cfg) {
+  if (typeof cfg.enabled !== 'boolean') {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.CONFIG_INVALID,
+      'enabled must be a boolean',
+      { enabled: cfg.enabled }
+    );
+  }
+
+  if (typeof cfg.defaultTakeProfitPct !== 'number' || cfg.defaultTakeProfitPct < 0 || cfg.defaultTakeProfitPct > 1) {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.CONFIG_INVALID,
+      'defaultTakeProfitPct must be a number between 0 and 1',
+      { defaultTakeProfitPct: cfg.defaultTakeProfitPct }
+    );
+  }
+}
+
+/**
+ * Evaluate take-profit condition for a single position
+ *
+ * @param {Object} position - Position to evaluate
+ * @param {number} position.id - Position ID
+ * @param {string} position.window_id - Window identifier
+ * @param {string} position.side - 'long' or 'short'
+ * @param {number} position.size - Position size
+ * @param {number} position.entry_price - Entry price
+ * @param {number} [position.take_profit_pct] - Per-position take-profit override
+ * @param {number} currentPrice - Current market price
+ * @param {Object} [options] - Evaluation options
+ * @returns {Object} TakeProfitResult with triggered, reason, action, closeMethod
+ * @throws {TakeProfitError} If not initialized or inputs are invalid
+ */
+export function evaluate(position, currentPrice, options = {}) {
+  ensureInitialized();
+
+  if (!takeProfitConfig.enabled) {
+    return {
+      triggered: false,
+      position_id: position.id,
+      reason: 'take_profit_disabled',
+      action: null,
+      closeMethod: null,
+    };
+  }
+
+  return evaluateLogic(position, currentPrice, {
+    takeProfitPct: takeProfitConfig.defaultTakeProfitPct,
+    log,
+    ...options,
+  });
+}
+
+/**
+ * Evaluate take-profit for all positions
+ *
+ * @param {Object[]} positions - Array of open positions
+ * @param {Function} getCurrentPrice - Function to get current price for a position
+ * @param {Object} [options] - Evaluation options
+ * @returns {Object} { triggered: TakeProfitResult[], summary: { evaluated, triggered, safe } }
+ */
+export function evaluateAll(positions, getCurrentPrice, options = {}) {
+  ensureInitialized();
+
+  if (!takeProfitConfig.enabled) {
+    return {
+      triggered: [],
+      summary: { evaluated: 0, triggered: 0, safe: 0 },
+    };
+  }
+
+  if (!positions || positions.length === 0) {
+    return {
+      triggered: [],
+      summary: { evaluated: 0, triggered: 0, safe: 0 },
+    };
+  }
+
+  return evaluateAllLogic(positions, getCurrentPrice, {
+    takeProfitPct: takeProfitConfig.defaultTakeProfitPct,
+    log,
+    ...options,
+  });
+}
+
+/**
+ * Get current module state
+ *
+ * @returns {Object} Current state including initialization status, config, and stats
+ */
+export function getState() {
+  return {
+    initialized,
+    config: takeProfitConfig ? {
+      enabled: takeProfitConfig.enabled,
+      default_take_profit_pct: takeProfitConfig.defaultTakeProfitPct,
+    } : null,
+    ...getStats(),
+  };
+}
+
+/**
+ * Shutdown the module gracefully
+ *
+ * @returns {Promise<void>}
+ */
+export async function shutdown() {
+  if (log) {
+    log.info('module_shutdown_start');
+  }
+
+  // Reset state
+  resetState();
+
+  config = null;
+  takeProfitConfig = null;
+  initialized = false;
+
+  if (log) {
+    log.info('module_shutdown_complete');
+    log = null;
+  }
+}
+
+/**
+ * Internal: Ensure module is initialized
+ * @throws {TakeProfitError} If not initialized
+ */
+function ensureInitialized() {
+  if (!initialized) {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.NOT_INITIALIZED,
+      'Take-profit module not initialized. Call init() first.'
+    );
+  }
+}
+
+// Re-export types and constants
+export {
+  TakeProfitError,
+  TakeProfitErrorCodes,
+  TriggerReason,
+  createTakeProfitResult,
+} from './types.js';

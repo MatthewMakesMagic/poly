@@ -265,7 +265,60 @@ export class ExecutionLoop {
         }
       }
 
-      // 5. Future: Evaluate exit conditions - take-profit (Story 3.5)
+      // 5. Evaluate exit conditions - take-profit (Story 3.5)
+      let takeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
+      if (this.modules['take-profit'] && this.modules['position-manager']) {
+        const takeProfitModule = this.modules['take-profit'];
+        const positionManager = this.modules['position-manager'];
+
+        // Get all open positions (positions not already closed by stop-loss)
+        const openPositions = positionManager.getPositions();
+
+        if (openPositions.length > 0) {
+          // Get current price for each position
+          const getCurrentPrice = (position) => {
+            // Use position's current_price if available, otherwise fetch from spot
+            if (position.current_price) {
+              return position.current_price;
+            }
+            // Fallback to spot price
+            if (spotData?.price) {
+              return spotData.price;
+            }
+            return null;
+          };
+
+          takeProfitResults = takeProfitModule.evaluateAll(openPositions, getCurrentPrice);
+
+          // Close any triggered positions (limit order, not emergency)
+          for (const result of takeProfitResults.triggered) {
+            try {
+              await positionManager.closePosition(result.position_id, {
+                // Note: NOT emergency - use limit order for better fills
+                closePrice: result.current_price,
+                reason: 'take_profit_triggered',
+              });
+
+              this.log.info('take_profit_position_closed', {
+                position_id: result.position_id,
+                window_id: result.window_id,
+                entry_price: result.entry_price,
+                close_price: result.current_price,
+                take_profit_threshold: result.take_profit_threshold,
+                profit_amount: result.profit_amount,
+                profit_pct: result.profit_pct,
+              });
+            } catch (closeErr) {
+              this.log.error('take_profit_close_failed', {
+                position_id: result.position_id,
+                error: closeErr.message,
+                code: closeErr.code,
+              });
+            }
+          }
+        }
+      }
+
       // 6. Future: Process any pending orders
       // 7. Future: Check window expiry (Story 3.6)
 
@@ -279,6 +332,8 @@ export class ExecutionLoop {
         sizingSuccessCount: sizingResults.filter(r => r.success).length,
         stopLossEvaluated: stopLossResults.summary.evaluated,
         stopLossTriggered: stopLossResults.summary.triggered,
+        takeProfitEvaluated: takeProfitResults.summary.evaluated,
+        takeProfitTriggered: takeProfitResults.summary.triggered,
       });
     } catch (err) {
       const tickDurationMs = Date.now() - tickStart;
