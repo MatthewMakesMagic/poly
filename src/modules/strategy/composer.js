@@ -17,7 +17,14 @@
  */
 
 import { StrategyError, StrategyErrorCodes } from './types.js';
-import { getComponent, registerStrategy, getStrategy } from './logic.js';
+import {
+  getComponent,
+  registerStrategy,
+  getStrategy,
+  updateStrategyComponent,
+  getStrategiesUsingComponent,
+  parseVersionId,
+} from './logic.js';
 
 /**
  * Component execution order for strategy pipeline
@@ -666,4 +673,270 @@ export function diffFromParent(forkId) {
   }
 
   return diffStrategies(fork.baseStrategyId, forkId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPONENT UPGRADE FUNCTIONS (Story 6.4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Upgrade a strategy to use a new component version
+ *
+ * Validates the new component exists, type matches the target slot,
+ * re-validates strategy config against the new component, and persists
+ * the update to the database.
+ *
+ * @param {string} strategyId - Strategy ID to upgrade
+ * @param {string} componentType - Component slot to upgrade (probability, entry, exit, sizing)
+ * @param {string} newVersionId - New component version ID
+ * @returns {Object} Upgraded strategy details
+ * @throws {StrategyError} If strategy not found, component invalid, or config fails validation
+ */
+export function upgradeStrategyComponent(strategyId, componentType, newVersionId) {
+  // 1. Load strategy and validate it exists
+  const strategy = getStrategy(strategyId);
+  if (!strategy) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${strategyId} not found`,
+      { strategyId }
+    );
+  }
+
+  // 2. Validate strategy is active
+  if (!strategy.active) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_VALIDATION_FAILED,
+      `Strategy ${strategyId} is not active`,
+      { strategyId, active: strategy.active }
+    );
+  }
+
+  // 3. Validate newVersionId exists in catalog
+  const newComponent = getComponent(newVersionId);
+  if (!newComponent) {
+    throw new StrategyError(
+      StrategyErrorCodes.COMPONENT_NOT_FOUND,
+      `Component ${newVersionId} not found in catalog`,
+      { newVersionId, componentType }
+    );
+  }
+
+  // 4. Validate component type matches the target slot
+  if (newComponent.type !== componentType) {
+    throw new StrategyError(
+      StrategyErrorCodes.INVALID_COMPONENT_TYPE,
+      `Component ${newVersionId} is type '${newComponent.type}', expected '${componentType}'`,
+      { newVersionId, actualType: newComponent.type, expectedType: componentType }
+    );
+  }
+
+  // 5. Re-validate strategy config against new component's validateConfig()
+  if (newComponent.module && typeof newComponent.module.validateConfig === 'function') {
+    const validation = newComponent.module.validateConfig(strategy.config);
+    if (!validation.valid) {
+      throw new StrategyError(
+        StrategyErrorCodes.UPGRADE_VALIDATION_FAILED,
+        `Config validation failed for ${componentType}: ${(validation.errors || []).join(', ')}`,
+        {
+          strategyId,
+          componentType,
+          newVersionId,
+          errors: validation.errors,
+        }
+      );
+    }
+  }
+
+  // 6. Update strategy in database with new component version
+  const updated = updateStrategyComponent(strategyId, componentType, newVersionId);
+  if (!updated) {
+    throw new StrategyError(
+      StrategyErrorCodes.COMPONENT_UPGRADE_FAILED,
+      `Failed to update strategy ${strategyId} with component ${newVersionId}`,
+      { strategyId, componentType, newVersionId }
+    );
+  }
+
+  // 7. Return updated strategy details
+  const updatedStrategy = getStrategy(strategyId);
+  return {
+    id: updatedStrategy.id,
+    name: updatedStrategy.name,
+    components: updatedStrategy.components,
+    config: updatedStrategy.config,
+    previousVersion: strategy.components[componentType],
+    newVersion: newVersionId,
+    componentType,
+  };
+}
+
+/**
+ * Batch upgrade all strategies from old component to new
+ *
+ * Finds all strategies using the old component version, applies filters,
+ * and attempts to upgrade each one. Partial failures don't roll back
+ * successful upgrades.
+ *
+ * @param {string} oldVersionId - Current component version to replace
+ * @param {string} newVersionId - New component version
+ * @param {Object} [options={}] - Batch options
+ * @param {boolean} [options.activeOnly=true] - Only upgrade active strategies
+ * @param {string[]} [options.strategyIds] - Specific strategies to upgrade (if omitted, all matching)
+ * @returns {Object} Batch result { upgraded, failed, total, successCount, failCount }
+ */
+export function batchUpgradeComponent(oldVersionId, newVersionId, options = {}) {
+  const { activeOnly = true, strategyIds } = options;
+
+  // 1. Parse oldVersionId to determine component type
+  const parsed = parseVersionId(oldVersionId);
+  if (!parsed) {
+    throw new StrategyError(
+      StrategyErrorCodes.COMPONENT_NOT_FOUND,
+      `Invalid component version ID format: ${oldVersionId}`,
+      { oldVersionId }
+    );
+  }
+  const componentType = parsed.type;
+
+  // 2. Find all strategies using oldVersionId
+  let strategies = getStrategiesUsingComponent(oldVersionId, { activeOnly });
+
+  // 3. Apply filter for specific strategyIds if provided
+  if (strategyIds && Array.isArray(strategyIds)) {
+    const idsSet = new Set(strategyIds);
+    strategies = strategies.filter(s => idsSet.has(s.id));
+  }
+
+  // 4. For each strategy, attempt upgrade and collect result
+  const upgraded = [];
+  const failed = [];
+
+  for (const stratSummary of strategies) {
+    try {
+      const result = upgradeStrategyComponent(stratSummary.id, componentType, newVersionId);
+      upgraded.push({
+        strategyId: stratSummary.id,
+        name: stratSummary.name,
+        previousVersion: result.previousVersion,
+      });
+    } catch (err) {
+      failed.push({
+        strategyId: stratSummary.id,
+        name: stratSummary.name,
+        error: err.message,
+        code: err.code,
+      });
+    }
+  }
+
+  // 5. Return batch summary
+  return {
+    total: strategies.length,
+    successCount: upgraded.length,
+    failCount: failed.length,
+    upgraded,
+    failed,
+  };
+}
+
+/**
+ * Preview a component upgrade without making changes
+ *
+ * Loads the strategy and components, validates the new component,
+ * and returns a preview of what would change without persisting anything.
+ *
+ * @param {string} strategyId - Strategy ID
+ * @param {string} componentType - Component slot (probability, entry, exit, sizing)
+ * @param {string} newVersionId - New component version ID
+ * @returns {Object} Preview result { canUpgrade, currentVersion, newVersion, validationResult, componentDiff }
+ */
+export function previewComponentUpgrade(strategyId, componentType, newVersionId) {
+  // 1. Load strategy and current component version
+  const strategy = getStrategy(strategyId);
+  if (!strategy) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${strategyId} not found`,
+      { strategyId }
+    );
+  }
+
+  const currentVersionId = strategy.components[componentType];
+  const currentComponent = getComponent(currentVersionId);
+
+  // 2. Load new component from catalog
+  const newComponent = getComponent(newVersionId);
+  if (!newComponent) {
+    return {
+      canUpgrade: false,
+      strategyId,
+      strategyName: strategy.name,
+      componentType,
+      currentVersion: currentVersionId,
+      newVersion: newVersionId,
+      validationResult: {
+        valid: false,
+        errors: [`Component ${newVersionId} not found in catalog`],
+      },
+      componentDiff: null,
+    };
+  }
+
+  // 3. Validate new component type matches slot
+  if (newComponent.type !== componentType) {
+    return {
+      canUpgrade: false,
+      strategyId,
+      strategyName: strategy.name,
+      componentType,
+      currentVersion: currentVersionId,
+      newVersion: newVersionId,
+      validationResult: {
+        valid: false,
+        errors: [`Component ${newVersionId} is type '${newComponent.type}', expected '${componentType}'`],
+      },
+      componentDiff: null,
+    };
+  }
+
+  // 4. Validate new component without persisting
+  let validationResult = { valid: true };
+  if (newComponent.module && typeof newComponent.module.validateConfig === 'function') {
+    const validation = newComponent.module.validateConfig(strategy.config);
+    validationResult = {
+      valid: validation.valid,
+      errors: validation.errors,
+    };
+  }
+
+  // 5. Build preview with component metadata diff if available
+  const componentDiff = {
+    name: {
+      match: currentComponent?.name === newComponent.name,
+      current: currentComponent?.name,
+      new: newComponent.name,
+    },
+    version: {
+      match: currentComponent?.version === newComponent.version,
+      current: currentComponent?.version,
+      new: newComponent.version,
+    },
+    description: {
+      match: currentComponent?.description === newComponent.description,
+      current: currentComponent?.description,
+      new: newComponent.description,
+    },
+  };
+
+  return {
+    canUpgrade: validationResult.valid,
+    strategyId,
+    strategyName: strategy.name,
+    componentType,
+    currentVersion: currentVersionId,
+    newVersion: newVersionId,
+    validationResult,
+    componentDiff,
+  };
 }

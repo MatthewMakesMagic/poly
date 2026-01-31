@@ -41,6 +41,9 @@ import {
   deactivateStrategy,
   getStrategyLineage as getStrategyLineageLogic,
   getStrategyForks as getStrategyForksLogic,
+  // Story 6.4: Component Update functions
+  getStrategiesUsingComponent as getStrategiesUsingComponentLogic,
+  getComponentVersionHistory as getComponentVersionHistoryLogic,
   // Story 6.5: Strategy Configuration functions
   getStrategyConfig as getStrategyConfigLogic,
   validateStrategyConfig as validateStrategyConfigLogic,
@@ -54,7 +57,12 @@ import {
   forkStrategy as forkStrategyLogic,
   diffStrategies as diffStrategiesLogic,
   diffFromParent as diffFromParentLogic,
+  // Story 6.4: Component Upgrade functions
+  upgradeStrategyComponent as upgradeStrategyComponentLogic,
+  batchUpgradeComponent as batchUpgradeComponentLogic,
+  previewComponentUpgrade as previewComponentUpgradeLogic,
 } from './composer.js';
+import { createComponentVersion as createComponentVersionLogic } from './registry.js';
 
 // Module state
 let log = null;
@@ -534,6 +542,154 @@ export function diffFromParent(forkId) {
   });
 
   return diff;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPONENT UPDATE FUNCTIONS (Story 6.4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create a new component version and add to catalog
+ *
+ * @param {string} type - Component type (probability, entry, exit, sizing)
+ * @param {string} name - Component name (kebab-case)
+ * @param {number} version - Version number
+ * @param {string} modulePath - Path to component module file
+ * @returns {Promise<string>} New version ID
+ * @throws {StrategyError} If type invalid, version exists, or interface invalid
+ */
+export async function createComponentVersion(type, name, version, modulePath) {
+  ensureInitialized();
+
+  const versionId = await createComponentVersionLogic(type, name, version, modulePath);
+
+  log.info('component_version_created', {
+    version_id: versionId,
+    type,
+    name,
+    version,
+    module_path: modulePath,
+  });
+
+  return versionId;
+}
+
+/**
+ * Find all strategies using a specific component version
+ *
+ * @param {string} versionId - Component version ID
+ * @param {Object} [options] - Query options
+ * @param {boolean} [options.activeOnly=false] - Only return active strategies
+ * @returns {Object[]} Array of strategy summaries with componentSlot
+ */
+export function getStrategiesUsingComponent(versionId, options = {}) {
+  ensureInitialized();
+
+  const strategies = getStrategiesUsingComponentLogic(versionId, options);
+
+  log.info('strategies_using_component_retrieved', {
+    version_id: versionId,
+    count: strategies.length,
+    active_only: options.activeOnly || false,
+  });
+
+  return strategies;
+}
+
+/**
+ * Get version history for a component by type and name
+ *
+ * @param {string} type - Component type (probability, entry, exit, sizing)
+ * @param {string} name - Component name (kebab-case)
+ * @returns {Object[]} Array of version entries sorted by version descending
+ */
+export function getComponentVersionHistory(type, name) {
+  ensureInitialized();
+
+  const history = getComponentVersionHistoryLogic(type, name);
+
+  log.info('component_version_history_retrieved', {
+    type,
+    name,
+    version_count: history.length,
+  });
+
+  return history;
+}
+
+/**
+ * Upgrade a strategy to use a new component version
+ *
+ * @param {string} strategyId - Strategy ID to upgrade
+ * @param {string} componentType - Component slot to upgrade (probability, entry, exit, sizing)
+ * @param {string} newVersionId - New component version ID
+ * @returns {Object} Upgraded strategy details
+ * @throws {StrategyError} If strategy not found, component invalid, or config fails validation
+ */
+export function upgradeStrategyComponent(strategyId, componentType, newVersionId) {
+  ensureInitialized();
+
+  const result = upgradeStrategyComponentLogic(strategyId, componentType, newVersionId);
+
+  log.info('strategy_component_upgraded', {
+    strategy_id: strategyId,
+    component_type: componentType,
+    previous_version: result.previousVersion,
+    new_version: newVersionId,
+  });
+
+  return result;
+}
+
+/**
+ * Batch upgrade all strategies from old component to new
+ *
+ * @param {string} oldVersionId - Current component version to replace
+ * @param {string} newVersionId - New component version
+ * @param {Object} [options={}] - Batch options
+ * @param {boolean} [options.activeOnly=true] - Only upgrade active strategies
+ * @param {string[]} [options.strategyIds] - Specific strategies to upgrade (if omitted, all matching)
+ * @returns {Object} Batch result { upgraded, failed, total, successCount, failCount }
+ */
+export function batchUpgradeComponent(oldVersionId, newVersionId, options = {}) {
+  ensureInitialized();
+
+  const result = batchUpgradeComponentLogic(oldVersionId, newVersionId, options);
+
+  log.info('batch_component_upgrade_completed', {
+    old_version: oldVersionId,
+    new_version: newVersionId,
+    total: result.total,
+    success_count: result.successCount,
+    fail_count: result.failCount,
+    active_only: options.activeOnly !== false,
+  });
+
+  return result;
+}
+
+/**
+ * Preview a component upgrade without making changes
+ *
+ * @param {string} strategyId - Strategy ID
+ * @param {string} componentType - Component slot (probability, entry, exit, sizing)
+ * @param {string} newVersionId - New component version ID
+ * @returns {Object} Preview result { canUpgrade, currentVersion, newVersion, validationResult, componentDiff }
+ */
+export function previewComponentUpgrade(strategyId, componentType, newVersionId) {
+  ensureInitialized();
+
+  const preview = previewComponentUpgradeLogic(strategyId, componentType, newVersionId);
+
+  log.info('component_upgrade_preview', {
+    strategy_id: strategyId,
+    component_type: componentType,
+    current_version: preview.currentVersion,
+    new_version: newVersionId,
+    can_upgrade: preview.canUpgrade,
+  });
+
+  return preview;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
