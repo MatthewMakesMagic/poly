@@ -432,18 +432,34 @@ describe('Position Manager Module', () => {
       );
     });
 
-    it('returns open positions from database', async () => {
-      persistence.all.mockReturnValueOnce([
-        { id: 1, status: 'open', side: 'long', size: 100, entry_price: 0.5, current_price: 0.5 },
-        { id: 2, status: 'open', side: 'short', size: 50, entry_price: 0.6, current_price: 0.6 },
-      ]);
+    it('returns open positions from cache', async () => {
+      // Add positions to cache via addPosition
+      await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 100,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      persistence.run.mockReturnValueOnce({ lastInsertRowid: 2, changes: 1 });
+      await positionManager.addPosition({
+        windowId: 'window-2',
+        marketId: 'market-2',
+        tokenId: 'token-2',
+        side: 'short',
+        size: 50,
+        entryPrice: 0.6,
+        strategyId: 'strategy-2',
+      });
 
       const positions = positionManager.getPositions();
       expect(positions).toHaveLength(2);
-      expect(persistence.all).toHaveBeenCalledWith(
-        expect.stringContaining('SELECT * FROM positions'),
-        ['open']
-      );
+      // Verify both positions are returned from cache
+      expect(positions.some((p) => p.window_id === 'window-1')).toBe(true);
+      expect(positions.some((p) => p.window_id === 'window-2')).toBe(true);
     });
 
     it('returns only open positions', async () => {

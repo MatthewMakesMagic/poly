@@ -334,19 +334,15 @@ export function getPosition(positionId) {
 /**
  * Get all open positions
  *
+ * Returns positions from cache. Cache is populated on init and updated
+ * when positions are added/updated. For guaranteed consistency with DB,
+ * use loadPositionsFromDb() first.
+ *
  * @returns {Object[]} Array of open positions with unrealized_pnl
  */
 export function getPositions() {
-  // Sync cache from database to ensure consistency
-  const dbPositions = persistence.all(
-    'SELECT * FROM positions WHERE status = ?',
-    [PositionStatus.OPEN]
-  );
-
-  // Update cache with database state
-  loadPositionsIntoCache(dbPositions);
-
   // Return from cache with unrealized P&L
+  // Cache is the source of truth for current session
   return getCachedOpenPositions().map((position) => ({
     ...position,
     unrealized_pnl: calculateUnrealizedPnl(position),
@@ -357,12 +353,21 @@ export function getPositions() {
  * Update the current price for a position
  *
  * @param {number} positionId - Position ID
- * @param {number} newPrice - New current price
+ * @param {number} newPrice - New current price (must be a non-negative number)
  * @param {Object} log - Logger instance
  * @returns {Object} Updated position with unrealized_pnl
- * @throws {PositionManagerError} If position not found
+ * @throws {PositionManagerError} If position not found or price invalid
  */
 export function updatePrice(positionId, newPrice, log) {
+  // Validate newPrice
+  if (typeof newPrice !== 'number' || newPrice < 0 || !Number.isFinite(newPrice)) {
+    throw new PositionManagerError(
+      PositionManagerErrorCodes.VALIDATION_FAILED,
+      `Invalid price: ${newPrice}. Price must be a non-negative finite number.`,
+      { positionId, newPrice }
+    );
+  }
+
   const position = getCachedPosition(positionId);
 
   if (!position) {
@@ -482,7 +487,15 @@ export async function closePosition(positionId, params, log) {
       [PositionStatus.CLOSED, actualClosePrice, closedAt, pnl, positionId]
     );
 
-    // 4. Update cache
+    // 4. Update cache with specific fields only
+    updateCachedPosition(positionId, {
+      status: PositionStatus.CLOSED,
+      close_price: actualClosePrice,
+      closed_at: closedAt,
+      pnl,
+    });
+
+    // Build closed position for return value
     const closedPosition = {
       ...position,
       status: PositionStatus.CLOSED,
@@ -490,7 +503,6 @@ export async function closePosition(positionId, params, log) {
       closed_at: closedAt,
       pnl,
     };
-    updateCachedPosition(positionId, closedPosition);
 
     // 5. Mark intent completed
     writeAhead.markCompleted(intentId, { positionId, closePrice: actualClosePrice, pnl });

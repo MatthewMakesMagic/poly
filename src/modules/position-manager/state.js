@@ -32,10 +32,14 @@ let lastReconciliation = null;
 /**
  * Add a position to the cache
  * @param {Object} position - Position object
+ * @param {boolean} [isNew=true] - Whether this is a newly opened position (affects stats)
  */
-export function cachePosition(position) {
+export function cachePosition(position, isNew = true) {
   positionCache.set(position.id, { ...position });
-  stats.totalOpened++;
+  // Only increment totalOpened for new positions, not when loading from DB
+  if (isNew && position.status === PositionStatus.OPEN) {
+    stats.totalOpened++;
+  }
 }
 
 /**
@@ -50,8 +54,9 @@ export function getCachedPosition(positionId) {
 
 /**
  * Update a position in the cache
+ * Only specified fields in updates are applied - full position objects should not be passed.
  * @param {number} positionId - Position ID
- * @param {Object} updates - Fields to update
+ * @param {Object} updates - Specific fields to update (not a full position object)
  * @returns {Object|undefined} Updated position or undefined if not found
  */
 export function updateCachedPosition(positionId, updates) {
@@ -60,14 +65,31 @@ export function updateCachedPosition(positionId, updates) {
     return undefined;
   }
 
-  const updated = { ...position, ...updates };
+  // Only apply known position fields to avoid corrupting the cached position
+  const allowedFields = [
+    'current_price',
+    'status',
+    'closed_at',
+    'close_price',
+    'pnl',
+    'exchange_verified_at',
+  ];
+
+  const safeUpdates = {};
+  for (const field of allowedFields) {
+    if (updates[field] !== undefined) {
+      safeUpdates[field] = updates[field];
+    }
+  }
+
+  const updated = { ...position, ...safeUpdates };
   positionCache.set(positionId, updated);
 
   // Update stats based on status change
-  if (updates.status === PositionStatus.CLOSED && position.status !== PositionStatus.CLOSED) {
+  if (safeUpdates.status === PositionStatus.CLOSED && position.status !== PositionStatus.CLOSED) {
     stats.totalClosed++;
-    if (updates.pnl !== undefined) {
-      stats.totalPnl += updates.pnl;
+    if (safeUpdates.pnl !== undefined) {
+      stats.totalPnl += safeUpdates.pnl;
     }
   }
 
@@ -134,11 +156,13 @@ export function clearCache() {
 
 /**
  * Load positions into cache from database
+ * Positions loaded this way are not counted as "new" for stats
  * @param {Object[]} positions - Array of positions from database
  */
 export function loadPositionsIntoCache(positions) {
   for (const position of positions) {
-    positionCache.set(position.id, { ...position });
+    // Use cachePosition with isNew=false to avoid incrementing stats
+    cachePosition(position, false);
   }
 }
 
