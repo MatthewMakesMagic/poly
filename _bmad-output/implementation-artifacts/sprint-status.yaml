@@ -74,7 +74,7 @@ development_status:
   4-1-kill-switch-watchdog-process: done
   4-2-state-snapshot-on-kill: done
   4-3-drawdown-tracking: done
-  4-4-drawdown-limit-enforcement-auto-stop: backlog
+  4-4-drawdown-limit-enforcement-auto-stop: done
   epic-4-retrospective: optional
 
   # Epic 5: Monitoring & Diagnostics

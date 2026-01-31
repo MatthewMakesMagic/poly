@@ -44,6 +44,15 @@ vi.mock('../../order-manager/index.js', () => ({
   getState: vi.fn().mockReturnValue({ initialized: true }),
 }));
 
+vi.mock('../../safety/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true, autoStopped: false }),
+  setOrderManager: vi.fn(),
+  checkDrawdownLimit: vi.fn().mockReturnValue({ breached: false, current: 0, limit: 0.05, autoStopped: false }),
+  isAutoStopped: vi.fn().mockReturnValue(false),
+}));
+
 vi.mock('../../logger/index.js', () => ({
   child: vi.fn().mockReturnValue({
     info: vi.fn(),

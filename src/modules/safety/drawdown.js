@@ -13,6 +13,16 @@ import {
   setCachedRecord,
   updateCachedRecord,
   getStartingCapital,
+  getDrawdownLimit,
+  getDrawdownWarningThreshold,
+  isAutoStopped as checkAutoStopped,
+  setAutoStopped,
+  persistAutoStopState,
+  hasWarnedAtLevel,
+  markWarnedAtLevel,
+  clearAutoStopState,
+  deleteAutoStopStateFile,
+  clearWarnedLevels,
 } from './state.js';
 import { SafetyError, SafetyErrorCodes } from './types.js';
 
@@ -291,4 +301,174 @@ export function isCacheStale() {
 
   const today = getTodayDate();
   return cachedDate !== today;
+}
+
+/**
+ * Check drawdown limit and trigger auto-stop if breached
+ *
+ * Returns the current drawdown status including whether the limit has been
+ * breached and whether auto-stop is active. Logs warnings when approaching
+ * the limit and triggers auto-stop when the limit is breached.
+ *
+ * @param {Object} [log] - Optional logger instance
+ * @param {Object} [orderManager] - Optional order manager for cancelling orders
+ * @returns {Object} Drawdown limit status:
+ *   - breached: boolean (true if limit exceeded)
+ *   - current: number (current total drawdown percentage)
+ *   - limit: number (configured limit percentage)
+ *   - autoStopped: boolean (true if auto-stop is active)
+ */
+export function checkDrawdownLimit(log, orderManager = null) {
+  const status = getDrawdownStatus();
+  const limit = getDrawdownLimit();
+  const warningThreshold = getDrawdownWarningThreshold();
+
+  // Handle uninitialized state
+  if (!status.initialized) {
+    return {
+      breached: false,
+      current: 0,
+      limit,
+      autoStopped: checkAutoStopped(),
+    };
+  }
+
+  const current = status.total_drawdown_pct;
+  const breached = current >= limit;
+  const alreadyAutoStopped = checkAutoStopped();
+
+  // Check for warning (approaching limit but not breached and not already auto-stopped)
+  if (!breached && !alreadyAutoStopped && current >= warningThreshold) {
+    if (!hasWarnedAtLevel(current)) {
+      if (log) {
+        log.warn('drawdown_warning', {
+          event: 'drawdown_approaching_limit',
+          current_pct: (current * 100).toFixed(2),
+          limit_pct: (limit * 100).toFixed(2),
+          remaining_pct: ((limit - current) * 100).toFixed(2),
+          warning_threshold_pct: (warningThreshold * 100).toFixed(2),
+        });
+      }
+      markWarnedAtLevel(current);
+    }
+  }
+
+  // Check for breach - trigger auto-stop if not already stopped
+  if (breached && !alreadyAutoStopped) {
+    triggerAutoStop(
+      {
+        reason: 'drawdown_limit_breached',
+        current_pct: current,
+        limit_pct: limit,
+      },
+      log,
+      orderManager
+    );
+  }
+
+  return {
+    breached,
+    current,
+    limit,
+    autoStopped: checkAutoStopped(),
+  };
+}
+
+/**
+ * Trigger auto-stop due to drawdown limit breach or other safety condition
+ *
+ * Sets the auto-stop flag, persists state, cancels all open orders,
+ * and logs the auto-stop event.
+ *
+ * @param {Object} details - Auto-stop details
+ * @param {string} details.reason - Reason for auto-stop
+ * @param {number} details.current_pct - Current drawdown percentage
+ * @param {number} details.limit_pct - Configured limit percentage
+ * @param {Object} [log] - Optional logger instance
+ * @param {Object} [orderManager] - Optional order manager for cancelling orders
+ */
+export function triggerAutoStop(details, log, orderManager = null) {
+  const { reason, current_pct, limit_pct } = details;
+
+  // Set auto-stop state
+  setAutoStopped(true, reason);
+
+  // Log error-level event
+  if (log) {
+    log.error('auto_stop_triggered', {
+      event: 'AUTO-STOP',
+      reason,
+      current_pct: (current_pct * 100).toFixed(2),
+      limit_pct: (limit_pct * 100).toFixed(2),
+      message: `AUTO-STOP: Drawdown limit breached at ${(current_pct * 100).toFixed(2)}%, limit was ${(limit_pct * 100).toFixed(2)}%`,
+    });
+  }
+
+  // Persist auto-stop state to survive restarts
+  persistAutoStopState(log);
+
+  // Cancel all open orders (fire-and-forget, don't block on failure)
+  if (orderManager && typeof orderManager.cancelAllOrders === 'function') {
+    try {
+      orderManager.cancelAllOrders();
+      if (log) {
+        log.info('auto_stop_orders_cancelled', {
+          event: 'orders_cancelled',
+          reason: 'auto_stop',
+        });
+      }
+    } catch (err) {
+      // Log warning but don't block auto-stop
+      if (log) {
+        log.warn('auto_stop_cancel_orders_failed', {
+          error: err.message,
+          code: err.code,
+        });
+      }
+    }
+  } else if (log && orderManager === null) {
+    log.debug('auto_stop_no_order_manager', {
+      message: 'Order manager not provided, skipping order cancellation',
+    });
+  }
+}
+
+/**
+ * Reset auto-stop state (manual resume)
+ *
+ * Requires explicit confirmation to prevent accidental reset.
+ * Clears auto-stop flag, deletes state file, and logs the reset.
+ *
+ * @param {Object} options - Reset options
+ * @param {boolean} options.confirm - Must be true to confirm reset
+ * @param {Object} [log] - Optional logger instance
+ * @throws {SafetyError} If confirm is not true
+ */
+export function resetAutoStop(options = {}, log) {
+  const { confirm } = options;
+
+  if (confirm !== true) {
+    throw new SafetyError(
+      SafetyErrorCodes.RESET_REQUIRES_CONFIRMATION,
+      'Auto-stop reset requires explicit confirmation. Pass { confirm: true } to confirm.',
+      {}
+    );
+  }
+
+  // Clear in-memory state
+  clearAutoStopState();
+
+  // Clear warning levels
+  clearWarnedLevels();
+
+  // Delete persisted state file
+  deleteAutoStopStateFile(log);
+
+  // Log the reset
+  if (log) {
+    log.info('auto_stop_reset', {
+      event: 'auto_stop_manually_reset',
+      message: 'Auto-stop manually reset by user',
+    });
+  }
 }

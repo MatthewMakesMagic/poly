@@ -55,6 +55,8 @@ export default {
   safety: {
     startingCapital: parseFloat(process.env.STARTING_CAPITAL) || 1000,
     unrealizedUpdateIntervalMs: 5000,  // Update unrealized P&L every 5 seconds
+    drawdownWarningPct: 0.03,          // Warn at 3% (60% of default 5% limit)
+    autoStopStateFile: './data/auto-stop-state.json',  // Persist auto-stop state
   },
 
   // Trading window configuration

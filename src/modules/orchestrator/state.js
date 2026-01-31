@@ -27,6 +27,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'spot', module: null, configKey: 'spot' },
   { name: 'position-manager', module: null, configKey: null },
   { name: 'order-manager', module: null, configKey: null },
+  // Safety module - after order-manager so it can reference it for auto-stop
+  { name: 'safety', module: null, configKey: null },
   // Strategy modules
   { name: 'strategy-evaluator', module: null, configKey: null },
   { name: 'position-sizer', module: null, configKey: null },

@@ -24,6 +24,7 @@ import * as polymarket from '../../clients/polymarket/index.js';
 import * as spot from '../../clients/spot/index.js';
 import * as positionManager from '../position-manager/index.js';
 import * as orderManager from '../order-manager/index.js';
+import * as safety from '../safety/index.js';
 import * as strategyEvaluator from '../strategy-evaluator/index.js';
 import * as positionSizer from '../position-sizer/index.js';
 import * as stopLoss from '../stop-loss/index.js';
@@ -55,6 +56,7 @@ const MODULE_MAP = {
   spot: spot,
   'position-manager': positionManager,
   'order-manager': orderManager,
+  'safety': safety,
   'strategy-evaluator': strategyEvaluator,
   'position-sizer': positionSizer,
   'stop-loss': stopLoss,
@@ -292,6 +294,15 @@ async function initializeModules(cfg) {
       // Store module reference
       setModule(entry.name, moduleInstance);
       state.initializationOrder.push(entry.name);
+
+      // Special handling: wire up safety module with order-manager for auto-stop
+      if (entry.name === 'safety') {
+        const orderManagerModule = getModule('order-manager');
+        if (orderManagerModule && typeof moduleInstance.setOrderManager === 'function') {
+          moduleInstance.setOrderManager(orderManagerModule);
+          log.info('safety_order_manager_wired', { module: 'safety' });
+        }
+      }
 
       log.info('module_init_complete', { module: entry.name });
     } catch (err) {

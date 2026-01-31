@@ -1,42 +1,58 @@
 /**
  * Safety Module
  *
- * Public interface for safety controls including drawdown tracking.
+ * Public interface for safety controls including drawdown tracking and limit enforcement.
  * Follows the standard module interface: init(config), getState(), shutdown()
  *
  * Capabilities:
  * - Track daily realized and unrealized P&L
  * - Calculate current and maximum drawdown
  * - Maintain trade statistics (count, wins, losses)
- * - Provide drawdown status for limit enforcement (Story 4.4)
+ * - Enforce drawdown limits with auto-stop (Story 4.4)
+ * - Manual reset for auto-stop recovery
  *
  * @module modules/safety
  */
 
 import { child } from '../logger/index.js';
 import { SafetyError, SafetyErrorCodes } from './types.js';
-import { setConfig, clearCache, getStateSnapshot } from './state.js';
+import {
+  setConfig,
+  clearCache,
+  getStateSnapshot,
+  isAutoStopped as checkAutoStopped,
+  loadAutoStopState,
+  clearAutoStopState,
+} from './state.js';
 import {
   getOrCreateTodayRecord,
   recordRealizedPnl as recordPnl,
   updateUnrealizedPnl as updateUnrealized,
   getDrawdownStatus as getStatus,
   isCacheStale,
+  checkDrawdownLimit as checkLimit,
+  resetAutoStop as doResetAutoStop,
 } from './drawdown.js';
 
 // Module state
 let log = null;
 let initialized = false;
+let orderManagerRef = null;
 
 /**
  * Initialize the safety module
  *
  * Creates or loads today's daily performance record and sets up
  * the module for tracking drawdown throughout the trading day.
+ * Also loads any persisted auto-stop state from previous session.
  *
  * @param {Object} config - Configuration object
  * @param {Object} config.safety - Safety-specific configuration
  * @param {number} config.safety.startingCapital - Starting capital for the day
+ * @param {number} [config.safety.drawdownWarningPct] - Warning threshold (default: 0.03)
+ * @param {string} [config.safety.autoStopStateFile] - Path to auto-stop state file
+ * @param {Object} config.risk - Risk configuration
+ * @param {number} config.risk.dailyDrawdownLimit - Daily drawdown limit (default: 0.05)
  * @returns {Promise<void>}
  */
 export async function init(config) {
@@ -58,8 +74,29 @@ export async function init(config) {
   // Initialize today's record (creates if doesn't exist)
   getOrCreateTodayRecord(log);
 
+  // Load persisted auto-stop state (if exists and current day)
+  const persistedState = loadAutoStopState(log);
+  if (persistedState && persistedState.autoStopped) {
+    log.warn('auto_stop_restored', {
+      event: 'auto_stop_active_on_startup',
+      reason: persistedState.autoStopReason,
+      stoppedAt: persistedState.autoStoppedAt,
+    });
+  }
+
   initialized = true;
-  log.info('module_initialized');
+  log.info('module_initialized', {
+    autoStopped: checkAutoStopped(),
+  });
+}
+
+/**
+ * Set reference to order manager for auto-stop order cancellation
+ *
+ * @param {Object} orderManager - Order manager module reference
+ */
+export function setOrderManager(orderManager) {
+  orderManagerRef = orderManager;
 }
 
 /**
@@ -120,15 +157,68 @@ export function getDrawdownStatus() {
   // Refresh cache if date changed (midnight rollover)
   if (isCacheStale()) {
     getOrCreateTodayRecord(log);
+    // Also clear auto-stop on new day
+    clearAutoStopState();
   }
 
   return getStatus();
 }
 
 /**
+ * Check drawdown limit and trigger auto-stop if breached
+ *
+ * Should be called by the orchestrator before evaluating entry signals.
+ * If the limit is breached, auto-stop is triggered automatically.
+ *
+ * @returns {Object} Drawdown limit status:
+ *   - breached: boolean (true if limit exceeded)
+ *   - current: number (current total drawdown percentage)
+ *   - limit: number (configured limit percentage)
+ *   - autoStopped: boolean (true if auto-stop is active)
+ */
+export function checkDrawdownLimit() {
+  ensureInitialized();
+
+  // Refresh cache if date changed (midnight rollover)
+  if (isCacheStale()) {
+    getOrCreateTodayRecord(log);
+    // Also clear auto-stop on new day
+    clearAutoStopState();
+  }
+
+  return checkLimit(log, orderManagerRef);
+}
+
+/**
+ * Check if auto-stop is currently active
+ *
+ * Fast check that reads from in-memory state.
+ *
+ * @returns {boolean} True if auto-stop is active
+ */
+export function isAutoStopped() {
+  return checkAutoStopped();
+}
+
+/**
+ * Reset auto-stop state (manual resume)
+ *
+ * Requires explicit confirmation to prevent accidental reset.
+ * System does NOT auto-resume - this is the only way to resume.
+ *
+ * @param {Object} [options={}] - Reset options
+ * @param {boolean} options.confirm - Must be true to confirm reset
+ * @throws {SafetyError} If confirm is not true
+ */
+export function resetAutoStop(options = {}) {
+  ensureInitialized();
+  doResetAutoStop(options, log);
+}
+
+/**
  * Get current module state
  *
- * @returns {Object} Current state including initialization status and drawdown info
+ * @returns {Object} Current state including initialization status, drawdown info, and auto-stop status
  */
 export function getState() {
   const stateSnapshot = getStateSnapshot();
@@ -153,6 +243,9 @@ export async function shutdown() {
 
   // Clear the cache
   clearCache();
+
+  // Clear order manager reference
+  orderManagerRef = null;
 
   initialized = false;
 

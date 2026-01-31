@@ -137,16 +137,32 @@ export class ExecutionLoop {
 
       this.log.debug('tick_start', { tickCount: this.tickCount });
 
-      // 1. Fetch current spot prices
+      // 1. Check drawdown limit before evaluating entries (Story 4.4)
+      let drawdownCheck = { breached: false, current: 0, limit: 0.05, autoStopped: false };
+      let entriesSkipped = false;
+      if (this.modules.safety && typeof this.modules.safety.checkDrawdownLimit === 'function') {
+        drawdownCheck = this.modules.safety.checkDrawdownLimit();
+
+        if (drawdownCheck.autoStopped) {
+          entriesSkipped = true;
+          this.log.info('entries_skipped_auto_stop', {
+            event: 'auto_stop_active',
+            drawdown_pct: (drawdownCheck.current * 100).toFixed(2),
+            limit_pct: (drawdownCheck.limit * 100).toFixed(2),
+          });
+        }
+      }
+
+      // 2. Fetch current spot prices
       let spotData = null;
       if (this.modules.spot && typeof this.modules.spot.getCurrentPrice === 'function') {
         // Get BTC price as the primary reference
         spotData = this.modules.spot.getCurrentPrice('btc');
       }
 
-      // 2. Evaluate strategy entry conditions (Story 3.2)
+      // 3. Evaluate strategy entry conditions (Story 3.2) - skip if auto-stopped
       let entrySignals = [];
-      if (this.modules['strategy-evaluator'] && spotData) {
+      if (!entriesSkipped && this.modules['strategy-evaluator'] && spotData) {
         const strategyEvaluator = this.modules['strategy-evaluator'];
         if (typeof strategyEvaluator.evaluateEntryConditions === 'function') {
           const marketState = {
@@ -170,9 +186,9 @@ export class ExecutionLoop {
         }
       }
 
-      // 3. Process entry signals through position sizing (Story 3.3)
+      // 4. Process entry signals through position sizing (Story 3.3)
       let sizingResults = [];
-      if (entrySignals.length > 0 && this.modules['position-sizer']) {
+      if (!entriesSkipped && entrySignals.length > 0 && this.modules['position-sizer']) {
         const positionSizer = this.modules['position-sizer'];
 
         for (const signal of entrySignals) {
@@ -211,7 +227,7 @@ export class ExecutionLoop {
         }
       }
 
-      // 4. Evaluate exit conditions - stop-loss (Story 3.4)
+      // 5. Evaluate exit conditions - stop-loss (Story 3.4) - always evaluate even when auto-stopped
       let stopLossResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
       if (this.modules['stop-loss'] && this.modules['position-manager']) {
         const stopLossModule = this.modules['stop-loss'];
@@ -265,7 +281,7 @@ export class ExecutionLoop {
         }
       }
 
-      // 5. Evaluate exit conditions - take-profit (Story 3.5)
+      // 6. Evaluate exit conditions - take-profit (Story 3.5) - always evaluate even when auto-stopped
       let takeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
       if (this.modules['take-profit'] && this.modules['position-manager']) {
         const takeProfitModule = this.modules['take-profit'];
@@ -319,7 +335,7 @@ export class ExecutionLoop {
         }
       }
 
-      // 6. Evaluate exit conditions - window expiry (Story 3.6)
+      // 7. Evaluate exit conditions - window expiry (Story 3.6) - always evaluate even when auto-stopped
       let windowExpiryResults = { expiring: [], resolved: [], summary: { evaluated: 0, expiring: 0, resolved: 0, safe: 0 } };
       if (this.modules['window-expiry'] && this.modules['position-manager']) {
         const windowExpiryModule = this.modules['window-expiry'];
@@ -373,13 +389,16 @@ export class ExecutionLoop {
         }
       }
 
-      // 7. Future: Process any pending orders
+      // 8. Future: Process any pending orders
 
       const tickDurationMs = Date.now() - tickStart;
       this.log.info('tick_complete', {
         tickCount: this.tickCount,
         durationMs: tickDurationMs,
         spotPrice: spotData?.price || null,
+        autoStopped: drawdownCheck.autoStopped,
+        drawdownPct: drawdownCheck.current,
+        entriesSkipped,
         entrySignalsCount: entrySignals.length,
         sizingResultsCount: sizingResults.length,
         sizingSuccessCount: sizingResults.filter(r => r.success).length,
