@@ -83,7 +83,7 @@ describe('Schema Module', () => {
     it('requires valid level value', () => {
       const entry = {
         timestamp: '2026-01-30T10:15:30.123Z',
-        level: 'debug',
+        level: 'trace',  // trace is not a valid level
         module: 'test',
         event: 'test',
       };
@@ -91,6 +91,18 @@ describe('Schema Module', () => {
       const result = validateLogEntry(entry);
       expect(result.valid).toBe(false);
       expect(result.errors[0]).toContain('Invalid level');
+    });
+
+    it('accepts debug as valid level', () => {
+      const entry = {
+        timestamp: '2026-01-30T10:15:30.123Z',
+        level: 'debug',
+        module: 'test',
+        event: 'test',
+      };
+
+      const result = validateLogEntry(entry);
+      expect(result.valid).toBe(true);
     });
 
     it('requires module field', () => {
@@ -162,7 +174,7 @@ describe('Schema Module', () => {
     it('reports multiple errors', () => {
       const entry = {
         timestamp: 'invalid',
-        level: 'debug',
+        level: 'trace',  // invalid level
       };
 
       const result = validateLogEntry(entry);
@@ -173,13 +185,13 @@ describe('Schema Module', () => {
 
   describe('isValidLevel', () => {
     it('returns true for valid levels', () => {
+      expect(isValidLevel('debug')).toBe(true);
       expect(isValidLevel('info')).toBe(true);
       expect(isValidLevel('warn')).toBe(true);
       expect(isValidLevel('error')).toBe(true);
     });
 
     it('returns false for invalid levels', () => {
-      expect(isValidLevel('debug')).toBe(false);
       expect(isValidLevel('trace')).toBe(false);
       expect(isValidLevel('fatal')).toBe(false);
       expect(isValidLevel('')).toBe(false);
@@ -190,7 +202,7 @@ describe('Schema Module', () => {
   describe('getValidLevels', () => {
     it('returns array of valid levels', () => {
       const levels = getValidLevels();
-      expect(levels).toEqual(['info', 'warn', 'error']);
+      expect(levels).toEqual(['debug', 'info', 'warn', 'error']);
     });
 
     it('returns a copy, not the original array', () => {

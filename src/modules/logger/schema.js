@@ -6,8 +6,8 @@
  * Optional fields: data, context, error
  */
 
-// Valid log levels
-const VALID_LEVELS = ['info', 'warn', 'error'];
+// Valid log levels (debug is lowest priority, error is highest)
+const VALID_LEVELS = ['debug', 'info', 'warn', 'error'];
 
 // ISO 8601 timestamp pattern with milliseconds
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;

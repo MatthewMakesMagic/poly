@@ -27,6 +27,7 @@ const LOG_LEVELS = {
   error: 0,
   warn: 1,
   info: 2,
+  debug: 3,
 };
 
 // ANSI color codes for console output
@@ -34,6 +35,7 @@ const CONSOLE_COLORS = {
   error: '\x1b[31m', // Red
   warn: '\x1b[33m',  // Yellow
   info: '\x1b[36m',  // Cyan
+  debug: '\x1b[90m', // Gray
   reset: '\x1b[0m',
 };
 
@@ -177,6 +179,20 @@ function outputToConsole(level, entry) {
 }
 
 /**
+ * Log debug level message
+ *
+ * Debug messages are lowest priority and filtered out in production.
+ * Use for verbose tracing that's helpful during development.
+ *
+ * @param {string} event - Event name
+ * @param {Object} [data={}] - Event data
+ * @param {Object} [context={}] - Additional context
+ */
+export function debug(event, data = {}, context = {}) {
+  log('debug', null, event, data, context);
+}
+
+/**
  * Log info level message
  *
  * @param {string} event - Event name
@@ -221,6 +237,9 @@ export function child(defaultFields = {}) {
   const moduleName = defaultFields.module || null;
 
   return {
+    debug: (event, data = {}, context = {}) => {
+      log('debug', moduleName, event, { ...defaultFields, ...data, module: undefined }, context);
+    },
     info: (event, data = {}, context = {}) => {
       log('info', moduleName, event, { ...defaultFields, ...data, module: undefined }, context);
     },
