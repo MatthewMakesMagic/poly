@@ -166,15 +166,54 @@ export class ExecutionLoop {
                 confidence: s.confidence,
               })),
             });
-
-            // Future: Pass signals to orchestrator for position opening (Story 3.3)
           }
         }
       }
 
-      // 3. Future: Evaluate exit conditions - stop-loss, take-profit (Stories 3.4-3.5)
-      // 4. Future: Process any pending orders
-      // 5. Future: Check window expiry (Story 3.6)
+      // 3. Process entry signals through position sizing (Story 3.3)
+      let sizingResults = [];
+      if (entrySignals.length > 0 && this.modules['position-sizer']) {
+        const positionSizer = this.modules['position-sizer'];
+
+        for (const signal of entrySignals) {
+          try {
+            const sizingResult = await positionSizer.calculateSize(signal, {
+              getOrderBook: this.modules.polymarket?.getOrderBook?.bind(this.modules.polymarket),
+              getCurrentExposure: this.modules['position-manager']?.getCurrentExposure?.bind(this.modules['position-manager']),
+            });
+
+            sizingResults.push(sizingResult);
+
+            if (sizingResult.success) {
+              this.log.info('position_sized', {
+                window_id: sizingResult.window_id,
+                requested_size: sizingResult.requested_size,
+                actual_size: sizingResult.actual_size,
+                adjustment_reason: sizingResult.adjustment_reason,
+              });
+
+              // Future: Pass to order-manager for execution (Story 3.4+)
+              // await this.modules['order-manager'].placeOrder({...});
+            } else {
+              this.log.warn('position_sizing_rejected', {
+                window_id: signal.window_id,
+                reason: sizingResult.adjustment_reason,
+                rejection_code: sizingResult.rejection_code,
+              });
+            }
+          } catch (sizingErr) {
+            this.log.error('position_sizing_error', {
+              window_id: signal.window_id,
+              error: sizingErr.message,
+              code: sizingErr.code,
+            });
+          }
+        }
+      }
+
+      // 5. Future: Evaluate exit conditions - stop-loss, take-profit (Stories 3.4-3.5)
+      // 6. Future: Process any pending orders
+      // 7. Future: Check window expiry (Story 3.6)
 
       const tickDurationMs = Date.now() - tickStart;
       this.log.info('tick_complete', {
@@ -182,6 +221,8 @@ export class ExecutionLoop {
         durationMs: tickDurationMs,
         spotPrice: spotData?.price || null,
         entrySignalsCount: entrySignals.length,
+        sizingResultsCount: sizingResults.length,
+        sizingSuccessCount: sizingResults.filter(r => r.success).length,
       });
     } catch (err) {
       const tickDurationMs = Date.now() - tickStart;

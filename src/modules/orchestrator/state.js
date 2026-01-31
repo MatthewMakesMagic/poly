@@ -29,6 +29,7 @@ export const MODULE_INIT_ORDER = [
   { name: 'order-manager', module: null, configKey: null },
   // Strategy modules
   { name: 'strategy-evaluator', module: null, configKey: null },
+  { name: 'position-sizer', module: null, configKey: null },
 ];
 
 /**

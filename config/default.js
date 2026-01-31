@@ -72,5 +72,12 @@ export default {
       minConfidence: 0.6,          // Minimum confidence to enter
       // minTimeRemainingMs comes from trading.minTimeRemainingMs
     },
+    // Position sizing configuration
+    sizing: {
+      baseSizeDollars: 10,           // Base position size in dollars
+      minSizeDollars: 1,             // Minimum tradeable size
+      maxSlippagePct: 0.01,          // 1% max slippage
+      confidenceMultiplier: 0.5,     // Size adjustment based on confidence (0 = disabled)
+    },
   },
 };
