@@ -75,6 +75,22 @@ export default {
     inflightTimeoutMs: 10000,       // Max wait for in-flight ops
   },
 
+  // Monitoring and diagnostic thresholds (Story 5.2, AC8)
+  monitoring: {
+    latencyThresholdMs: 500,       // Flag events with latency > 500ms (per NFR1)
+    slippageThresholdPct: 0.02,    // Flag events with slippage > 2% of expected price
+    sizeImpactThreshold: 0.5,      // Flag events where size > 50% of available depth
+  },
+
+  // Trade event module configuration (Story 5.2)
+  tradeEvent: {
+    thresholds: {
+      latencyThresholdMs: 500,       // Same as monitoring defaults
+      slippageThresholdPct: 0.02,
+      sizeImpactThreshold: 0.5,
+    },
+  },
+
   // Strategy configuration
   strategy: {
     entry: {

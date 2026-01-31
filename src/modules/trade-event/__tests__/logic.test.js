@@ -31,6 +31,13 @@ import {
   queryEventsByPosition,
   validateRequiredFields,
   positionExists,
+  queryLatencyStats,
+  calculateP95Latency,
+  getLatencyBreakdown,
+  querySlippageStats,
+  querySlippageBySize,
+  querySlippageBySpread,
+  detectDiagnosticFlags,
 } from '../logic.js';
 import { TradeEventErrorCodes } from '../types.js';
 import { resetState } from '../state.js';
@@ -430,6 +437,369 @@ describe('Trade Event Logic', () => {
       const exists = positionExists(999);
 
       expect(exists).toBe(false);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.2: LATENCY & SLIPPAGE ANALYSIS FUNCTIONS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('queryLatencyStats() (Story 5.2, AC5)', () => {
+    it('should return min/max/avg latency stats', () => {
+      mockDb.get.mockReturnValue({
+        count: 10,
+        min_total_ms: 100,
+        max_total_ms: 500,
+        avg_total_ms: 250,
+        min_decision_to_submit_ms: 50,
+        max_decision_to_submit_ms: 150,
+        avg_decision_to_submit_ms: 100,
+        min_submit_to_ack_ms: 20,
+        max_submit_to_ack_ms: 80,
+        avg_submit_to_ack_ms: 50,
+        min_ack_to_fill_ms: 30,
+        max_ack_to_fill_ms: 270,
+        avg_ack_to_fill_ms: 100,
+      });
+
+      const stats = queryLatencyStats();
+
+      expect(stats.count).toBe(10);
+      expect(stats.total.min).toBe(100);
+      expect(stats.total.max).toBe(500);
+      expect(stats.total.avg).toBe(250);
+      expect(stats.decisionToSubmit.min).toBe(50);
+      expect(stats.submitToAck.avg).toBe(50);
+      expect(stats.ackToFill.max).toBe(270);
+    });
+
+    it('should filter by windowId', () => {
+      mockDb.get.mockReturnValue({ count: 0 });
+
+      queryLatencyStats({ windowId: 'window-123' });
+
+      expect(mockDb.get).toHaveBeenCalledWith(
+        expect.stringContaining('window_id = ?'),
+        expect.arrayContaining(['window-123'])
+      );
+    });
+
+    it('should filter by strategyId', () => {
+      mockDb.get.mockReturnValue({ count: 0 });
+
+      queryLatencyStats({ strategyId: 'spot-lag-v1' });
+
+      expect(mockDb.get).toHaveBeenCalledWith(
+        expect.stringContaining('strategy_id = ?'),
+        expect.arrayContaining(['spot-lag-v1'])
+      );
+    });
+
+    it('should filter by timeRange', () => {
+      mockDb.get.mockReturnValue({ count: 0 });
+
+      queryLatencyStats({
+        timeRange: {
+          startDate: '2026-01-01T00:00:00Z',
+          endDate: '2026-01-31T23:59:59Z',
+        },
+      });
+
+      expect(mockDb.get).toHaveBeenCalledWith(
+        expect.stringContaining('signal_detected_at >= ?'),
+        expect.arrayContaining(['2026-01-01T00:00:00Z', '2026-01-31T23:59:59Z'])
+      );
+    });
+
+    it('should return zeros when no data', () => {
+      mockDb.get.mockReturnValue(null);
+
+      const stats = queryLatencyStats();
+
+      expect(stats.count).toBe(0);
+      expect(stats.total.min).toBeNull();
+      expect(stats.total.avg).toBeNull();
+    });
+  });
+
+  describe('calculateP95Latency() (Story 5.2, AC5)', () => {
+    it('should calculate p95 from latency values', () => {
+      // Mock latency data - 20 events
+      const latencies = Array.from({ length: 20 }, (_, i) => ({
+        latency_total_ms: (i + 1) * 50, // 50, 100, 150, ..., 1000
+        latency_decision_to_submit_ms: (i + 1) * 10,
+        latency_submit_to_ack_ms: (i + 1) * 15,
+        latency_ack_to_fill_ms: (i + 1) * 25,
+      }));
+      mockDb.all.mockReturnValue(latencies);
+
+      const p95 = calculateP95Latency();
+
+      // P95 of [50, 100, 150, ..., 1000] = 950 (19th element in sorted array)
+      expect(p95.total).toBe(950);
+      expect(p95.decisionToSubmit).toBe(190);
+      expect(p95.submitToAck).toBe(285);
+      expect(p95.ackToFill).toBe(475);
+    });
+
+    it('should return nulls when no data', () => {
+      mockDb.all.mockReturnValue([]);
+
+      const p95 = calculateP95Latency();
+
+      expect(p95.total).toBeNull();
+      expect(p95.decisionToSubmit).toBeNull();
+      expect(p95.submitToAck).toBeNull();
+      expect(p95.ackToFill).toBeNull();
+    });
+
+    it('should handle events with null latencies', () => {
+      mockDb.all.mockReturnValue([
+        { latency_total_ms: 100, latency_decision_to_submit_ms: null },
+        { latency_total_ms: 200, latency_decision_to_submit_ms: 50 },
+        { latency_total_ms: null, latency_decision_to_submit_ms: 75 },
+      ]);
+
+      const p95 = calculateP95Latency();
+
+      // Only 2 non-null total values: 100, 200 -> p95 = 200
+      expect(p95.total).toBe(200);
+      // Only 2 non-null decisionToSubmit values: 50, 75 -> p95 = 75
+      expect(p95.decisionToSubmit).toBe(75);
+    });
+  });
+
+  describe('getLatencyBreakdown() (Story 5.2, AC5)', () => {
+    it('should return detailed breakdown for single event', () => {
+      mockDb.get.mockReturnValue({
+        id: 1,
+        window_id: 'window-123',
+        strategy_id: 'spot-lag-v1',
+        latency_total_ms: 350,
+        latency_decision_to_submit_ms: 100,
+        latency_submit_to_ack_ms: 100,
+        latency_ack_to_fill_ms: 150,
+        signal_detected_at: '2026-01-31T10:00:00.000Z',
+        order_submitted_at: '2026-01-31T10:00:00.100Z',
+        order_acked_at: '2026-01-31T10:00:00.200Z',
+        order_filled_at: '2026-01-31T10:00:00.350Z',
+      });
+
+      const breakdown = getLatencyBreakdown(1);
+
+      expect(breakdown.eventId).toBe(1);
+      expect(breakdown.latencies.total).toBe(350);
+      expect(breakdown.latencies.decisionToSubmit).toBe(100);
+      expect(breakdown.latencies.submitToAck).toBe(100);
+      expect(breakdown.latencies.ackToFill).toBe(150);
+      expect(breakdown.timestamps.signalDetectedAt).toBe('2026-01-31T10:00:00.000Z');
+    });
+
+    it('should return null for non-existent event', () => {
+      mockDb.get.mockReturnValue(undefined);
+
+      const breakdown = getLatencyBreakdown(999);
+
+      expect(breakdown).toBeNull();
+    });
+  });
+
+  describe('querySlippageStats() (Story 5.2, AC6)', () => {
+    it('should return min/max/avg slippage stats', () => {
+      mockDb.get.mockReturnValue({
+        count: 10,
+        min_signal_to_fill: -0.02,
+        max_signal_to_fill: 0.05,
+        avg_signal_to_fill: 0.01,
+        min_vs_expected: -0.01,
+        max_vs_expected: 0.03,
+        avg_vs_expected: 0.005,
+        avg_expected_price: 0.50,
+      });
+
+      const stats = querySlippageStats();
+
+      expect(stats.count).toBe(10);
+      expect(stats.signalToFill.min).toBeCloseTo(-0.02);
+      expect(stats.signalToFill.max).toBeCloseTo(0.05);
+      expect(stats.signalToFill.avg).toBeCloseTo(0.01);
+      expect(stats.vsExpected.min).toBeCloseTo(-0.01);
+      expect(stats.vsExpected.avg).toBeCloseTo(0.005);
+    });
+
+    it('should filter by windowId', () => {
+      mockDb.get.mockReturnValue({ count: 0 });
+
+      querySlippageStats({ windowId: 'window-123' });
+
+      expect(mockDb.get).toHaveBeenCalledWith(
+        expect.stringContaining('window_id = ?'),
+        expect.arrayContaining(['window-123'])
+      );
+    });
+
+    it('should return zeros when no data', () => {
+      mockDb.get.mockReturnValue(null);
+
+      const stats = querySlippageStats();
+
+      expect(stats.count).toBe(0);
+      expect(stats.signalToFill.min).toBeNull();
+    });
+  });
+
+  describe('querySlippageBySize() (Story 5.2, AC6)', () => {
+    it('should group slippage by size buckets', () => {
+      mockDb.all.mockReturnValue([
+        { size_bucket: 'small', count: 5, avg_slippage: 0.005, avg_size: 25, min_slippage: 0.001, max_slippage: 0.01 },
+        { size_bucket: 'medium', count: 10, avg_slippage: 0.01, avg_size: 100, min_slippage: 0.005, max_slippage: 0.015 },
+        { size_bucket: 'large', count: 3, avg_slippage: 0.02, avg_size: 300, min_slippage: 0.01, max_slippage: 0.03 },
+      ]);
+
+      const results = querySlippageBySize();
+
+      expect(results).toHaveLength(3);
+      expect(results[0].sizeBucket).toBe('small');
+      expect(results[0].count).toBe(5);
+      expect(results[0].slippage.avg).toBeCloseTo(0.005);
+      expect(results[2].sizeBucket).toBe('large');
+    });
+
+    it('should use custom size bucket thresholds', () => {
+      mockDb.all.mockReturnValue([]);
+
+      querySlippageBySize({
+        sizeBuckets: { small: 50, medium: 200 },
+      });
+
+      // The SQL uses parameterized queries with ?, not literal values
+      expect(mockDb.all).toHaveBeenCalledWith(
+        expect.stringContaining('WHEN requested_size < ?'),
+        expect.arrayContaining([50, 200])
+      );
+    });
+  });
+
+  describe('querySlippageBySpread() (Story 5.2, AC6)', () => {
+    it('should group slippage by spread buckets', () => {
+      mockDb.all.mockReturnValue([
+        { spread_bucket: 'tight', count: 8, avg_slippage: 0.003, avg_spread: 0.005, min_slippage: 0.001, max_slippage: 0.005 },
+        { spread_bucket: 'normal', count: 6, avg_slippage: 0.008, avg_spread: 0.02, min_slippage: 0.005, max_slippage: 0.012 },
+        { spread_bucket: 'wide', count: 4, avg_slippage: 0.015, avg_spread: 0.05, min_slippage: 0.01, max_slippage: 0.02 },
+      ]);
+
+      const results = querySlippageBySpread();
+
+      expect(results).toHaveLength(3);
+      expect(results[0].spreadBucket).toBe('tight');
+      expect(results[2].spreadBucket).toBe('wide');
+      expect(results[2].slippage.avg).toBeCloseTo(0.015);
+    });
+  });
+
+  describe('detectDiagnosticFlags() (Story 5.2, AC8)', () => {
+    it('should detect high_latency flag when threshold exceeded', () => {
+      const event = { latency_total_ms: 600 };
+      const flags = detectDiagnosticFlags(event, { latencyThresholdMs: 500 });
+
+      expect(flags).toContain('high_latency');
+    });
+
+    it('should not flag latency below threshold', () => {
+      const event = { latency_total_ms: 300 };
+      const flags = detectDiagnosticFlags(event, { latencyThresholdMs: 500 });
+
+      expect(flags).not.toContain('high_latency');
+    });
+
+    it('should detect high_slippage flag when threshold exceeded', () => {
+      const event = {
+        slippage_vs_expected: 0.015, // $0.015 slippage
+        expected_price: 0.50, // 3% slippage
+      };
+      const flags = detectDiagnosticFlags(event, { slippageThresholdPct: 0.02 });
+
+      expect(flags).toContain('high_slippage');
+    });
+
+    it('should not flag slippage below threshold', () => {
+      const event = {
+        slippage_vs_expected: 0.005, // $0.005 slippage
+        expected_price: 0.50, // 1% slippage
+      };
+      const flags = detectDiagnosticFlags(event, { slippageThresholdPct: 0.02 });
+
+      expect(flags).not.toContain('high_slippage');
+    });
+
+    it('should detect size_impact flag when threshold exceeded', () => {
+      const event = { size_vs_depth_ratio: 0.6 };
+      const flags = detectDiagnosticFlags(event, { sizeImpactThreshold: 0.5 });
+
+      expect(flags).toContain('size_impact');
+    });
+
+    it('should not flag size impact below threshold', () => {
+      const event = { size_vs_depth_ratio: 0.3 };
+      const flags = detectDiagnosticFlags(event, { sizeImpactThreshold: 0.5 });
+
+      expect(flags).not.toContain('size_impact');
+    });
+
+    it('should detect multiple flags simultaneously', () => {
+      const event = {
+        latency_total_ms: 700,
+        slippage_vs_expected: 0.02,
+        expected_price: 0.50,
+        size_vs_depth_ratio: 0.8,
+      };
+      const flags = detectDiagnosticFlags(event, {
+        latencyThresholdMs: 500,
+        slippageThresholdPct: 0.02,
+        sizeImpactThreshold: 0.5,
+      });
+
+      expect(flags).toContain('high_latency');
+      expect(flags).toContain('high_slippage');
+      expect(flags).toContain('size_impact');
+      expect(flags).toHaveLength(3);
+    });
+
+    it('should return empty array when no thresholds exceeded', () => {
+      const event = {
+        latency_total_ms: 200,
+        slippage_vs_expected: 0.005,
+        expected_price: 0.50,
+        size_vs_depth_ratio: 0.2,
+      };
+      const flags = detectDiagnosticFlags(event);
+
+      expect(flags).toHaveLength(0);
+    });
+
+    it('should handle null values gracefully', () => {
+      const event = {
+        latency_total_ms: null,
+        slippage_vs_expected: null,
+        size_vs_depth_ratio: null,
+      };
+      const flags = detectDiagnosticFlags(event);
+
+      expect(flags).toHaveLength(0);
+    });
+
+    it('should use default thresholds when not specified', () => {
+      const event = {
+        latency_total_ms: 600, // > 500ms default
+        slippage_vs_expected: 0.015,
+        expected_price: 0.50, // 3% > 2% default
+        size_vs_depth_ratio: 0.6, // > 0.5 default
+      };
+      const flags = detectDiagnosticFlags(event);
+
+      expect(flags).toContain('high_latency');
+      expect(flags).toContain('high_slippage');
+      expect(flags).toContain('size_impact');
     });
   });
 });

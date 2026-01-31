@@ -370,6 +370,55 @@ export class WrappedPolymarketClient {
     };
   }
 
+  /**
+   * Get market context for latency/slippage analysis (Story 5.2, AC3)
+   *
+   * Returns bid, ask, spread, and depth (liquidity) at best prices.
+   * This is used by the trade-event module to record market conditions at signal time.
+   *
+   * @param {string} tokenId - Token ID
+   * @returns {Promise<Object>} Market context { bidAtSignal, askAtSignal, spreadAtSignal, depthAtSignal }
+   */
+  async getMarketContext(tokenId) {
+    const book = await this.getOrderBook(tokenId);
+    const bids = book.bids || [];
+    const asks = book.asks || [];
+
+    // Find best bid and ask prices
+    const bestBid = bids.length > 0
+      ? Math.max(...bids.map((b) => parseFloat(b.price)))
+      : 0;
+    const bestAsk = asks.length > 0
+      ? Math.min(...asks.map((a) => parseFloat(a.price)))
+      : 1;
+
+    // Calculate depth at best prices (total size available)
+    // For bid depth: sum all orders at best bid price
+    // For ask depth: sum all orders at best ask price
+    const bidDepth = bids
+      .filter((b) => parseFloat(b.price) === bestBid)
+      .reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
+
+    const askDepth = asks
+      .filter((a) => parseFloat(a.price) === bestAsk)
+      .reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
+
+    // Total depth is the minimum of bid and ask (tradeable liquidity)
+    // For market context, we use the side-specific depth
+    // Return the average as a general depth indicator
+    const depthAtSignal = (bidDepth + askDepth) / 2;
+
+    return {
+      bidAtSignal: bestBid,
+      askAtSignal: bestAsk,
+      spreadAtSignal: bestAsk - bestBid,
+      depthAtSignal: depthAtSignal,
+      // Also include side-specific depths for detailed analysis
+      bidDepth,
+      askDepth,
+    };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // BALANCE & POSITIONS
   // ═══════════════════════════════════════════════════════════════════════════

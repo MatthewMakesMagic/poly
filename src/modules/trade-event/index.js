@@ -20,6 +20,7 @@ import {
   isInitialized,
   setInitialized,
   setConfig,
+  getConfig,
   resetState,
   getStateSnapshot,
 } from './state.js';
@@ -32,6 +33,13 @@ import {
   queryEventsByPosition,
   validateRequiredFields,
   positionExists,
+  queryLatencyStats,
+  calculateP95Latency,
+  getLatencyBreakdown,
+  querySlippageStats,
+  querySlippageBySize,
+  querySlippageBySpread,
+  detectDiagnosticFlags,
 } from './logic.js';
 
 // Module state
@@ -183,6 +191,17 @@ export async function recordEntry({
     ? sizes.requestedSize / marketContext.depthAtSignal
     : null;
 
+  // Detect diagnostic flags based on thresholds (AC8)
+  const config = getConfig() || {};
+  const thresholds = config.tradeEvent?.thresholds || {};
+  const eventForFlagDetection = {
+    latency_total_ms: latencies.latency_total_ms,
+    slippage_vs_expected: slippage.slippage_vs_expected,
+    expected_price: prices.expectedPrice,
+    size_vs_depth_ratio: sizeVsDepthRatio,
+  };
+  const diagnosticFlags = detectDiagnosticFlags(eventForFlagDetection, thresholds);
+
   const record = {
     event_type: TradeEventType.ENTRY,
     window_id: windowId,
@@ -207,6 +226,7 @@ export async function recordEntry({
     requested_size: sizes.requestedSize ?? null,
     filled_size: sizes.filledSize ?? null,
     size_vs_depth_ratio: sizeVsDepthRatio,
+    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : null,
     level: 'info',
     event: 'trade_entry',
   };
@@ -286,6 +306,17 @@ export async function recordExit({
     ? sizes.requestedSize / marketContext.depthAtSignal
     : null;
 
+  // Detect diagnostic flags based on thresholds (AC8)
+  const config = getConfig() || {};
+  const thresholds = config.tradeEvent?.thresholds || {};
+  const eventForFlagDetection = {
+    latency_total_ms: latencies.latency_total_ms,
+    slippage_vs_expected: slippage.slippage_vs_expected,
+    expected_price: prices?.expectedPrice,
+    size_vs_depth_ratio: sizeVsDepthRatio,
+  };
+  const diagnosticFlags = detectDiagnosticFlags(eventForFlagDetection, thresholds);
+
   const record = {
     event_type: TradeEventType.EXIT,
     window_id: windowId,
@@ -310,6 +341,7 @@ export async function recordExit({
     requested_size: sizes.requestedSize ?? null,
     filled_size: sizes.filledSize ?? null,
     size_vs_depth_ratio: sizeVsDepthRatio,
+    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : null,
     level: 'info',
     event: 'trade_exit',
     notes: { exit_reason: exitReason },
@@ -447,6 +479,134 @@ export async function getEventsByPosition(positionId) {
   }
 
   return queryEventsByPosition(positionId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LATENCY ANALYSIS FUNCTIONS (Story 5.2, AC5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get latency statistics with optional filters
+ *
+ * Returns min/max/avg/p95 latency metrics grouped by latency component
+ * (decision→submit, submit→ack, ack→fill, total).
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {string} [options.timeRange.startDate] - Start date (ISO string)
+ * @param {string} [options.timeRange.endDate] - End date (ISO string)
+ * @returns {Object} Latency statistics including min/max/avg/p95
+ */
+export function getLatencyStats(options = {}) {
+  ensureInitialized();
+
+  // Get basic stats (min/max/avg)
+  const stats = queryLatencyStats(options);
+
+  // Get p95 values
+  const p95 = calculateP95Latency(options);
+
+  // Merge p95 into stats structure
+  return {
+    count: stats.count,
+    total: {
+      ...stats.total,
+      p95: p95.total,
+    },
+    decisionToSubmit: {
+      ...stats.decisionToSubmit,
+      p95: p95.decisionToSubmit,
+    },
+    submitToAck: {
+      ...stats.submitToAck,
+      p95: p95.submitToAck,
+    },
+    ackToFill: {
+      ...stats.ackToFill,
+      p95: p95.ackToFill,
+    },
+  };
+}
+
+/**
+ * Get detailed latency breakdown for a single event
+ *
+ * @param {number} eventId - Event ID
+ * @returns {Object|null} Latency breakdown or null if event not found
+ */
+export function getLatencyBreakdownById(eventId) {
+  ensureInitialized();
+
+  if (eventId === undefined || eventId === null) {
+    throw new TradeEventError(
+      TradeEventErrorCodes.MISSING_REQUIRED_FIELD,
+      'Missing required field: eventId',
+      { field: 'eventId' }
+    );
+  }
+
+  return getLatencyBreakdown(eventId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SLIPPAGE ANALYSIS FUNCTIONS (Story 5.2, AC6)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get slippage statistics with optional filters
+ *
+ * Returns min/max/avg slippage metrics for both absolute values and
+ * percentages of expected price.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {string} [options.timeRange.startDate] - Start date (ISO string)
+ * @param {string} [options.timeRange.endDate] - End date (ISO string)
+ * @returns {Object} Slippage statistics
+ */
+export function getSlippageStats(options = {}) {
+  ensureInitialized();
+  return querySlippageStats(options);
+}
+
+/**
+ * Get slippage correlation with order size
+ *
+ * Groups slippage by size buckets (small/medium/large) to identify
+ * if larger orders experience more slippage.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {Object} [options.sizeBuckets] - Size bucket thresholds
+ * @returns {Object[]} Slippage grouped by size bucket
+ */
+export function getSlippageBySize(options = {}) {
+  ensureInitialized();
+  return querySlippageBySize(options);
+}
+
+/**
+ * Get slippage correlation with spread at signal time
+ *
+ * Groups slippage by spread buckets to identify if wider spreads
+ * correlate with more slippage.
+ *
+ * @param {Object} options - Query options
+ * @param {string} [options.windowId] - Filter by window ID
+ * @param {string} [options.strategyId] - Filter by strategy ID
+ * @param {Object} [options.timeRange] - Time range filter
+ * @param {Object} [options.spreadBuckets] - Spread bucket thresholds
+ * @returns {Object[]} Slippage grouped by spread bucket
+ */
+export function getSlippageBySpread(options = {}) {
+  ensureInitialized();
+  return querySlippageBySpread(options);
 }
 
 /**

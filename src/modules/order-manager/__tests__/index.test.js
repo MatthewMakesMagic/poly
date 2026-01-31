@@ -283,6 +283,73 @@ describe('Order Manager Module', () => {
 
       expect(result.status).toBe('filled');
     });
+
+    it('returns timestamps for latency tracking (AC1, AC7)', async () => {
+      const beforeCall = new Date().toISOString();
+
+      const result = await orderManager.placeOrder({
+        tokenId: 'token-1',
+        side: 'buy',
+        size: 100,
+        price: 0.5,
+        orderType: 'GTC',
+        windowId: 'window-1',
+        marketId: 'market-1',
+      });
+
+      const afterCall = new Date().toISOString();
+
+      // Should include timestamps for trade-event module
+      expect(result.timestamps).toBeDefined();
+      expect(result.timestamps.orderSubmittedAt).toBeDefined();
+      expect(result.timestamps.orderAckedAt).toBeDefined();
+
+      // Timestamps should be valid ISO strings
+      expect(() => new Date(result.timestamps.orderSubmittedAt)).not.toThrow();
+      expect(() => new Date(result.timestamps.orderAckedAt)).not.toThrow();
+
+      // orderSubmittedAt should be before orderAckedAt
+      const submittedMs = new Date(result.timestamps.orderSubmittedAt).getTime();
+      const ackedMs = new Date(result.timestamps.orderAckedAt).getTime();
+      expect(submittedMs).toBeLessThanOrEqual(ackedMs);
+
+      // Both should be within the test call timeframe
+      expect(new Date(result.timestamps.orderSubmittedAt).getTime()).toBeGreaterThanOrEqual(new Date(beforeCall).getTime());
+      expect(new Date(result.timestamps.orderAckedAt).getTime()).toBeLessThanOrEqual(new Date(afterCall).getTime());
+    });
+
+    it('includes orderFilledAt timestamp when order is immediately filled', async () => {
+      // sell returns matched status (immediately filled)
+      const result = await orderManager.placeOrder({
+        tokenId: 'token-1',
+        side: 'sell',
+        size: 50,
+        price: 0.75,
+        orderType: 'GTC',
+        windowId: 'window-1',
+        marketId: 'market-1',
+      });
+
+      expect(result.status).toBe('filled');
+      expect(result.timestamps.orderFilledAt).toBeDefined();
+      expect(() => new Date(result.timestamps.orderFilledAt)).not.toThrow();
+    });
+
+    it('does not include orderFilledAt when order is not filled', async () => {
+      // buy returns live status (not filled)
+      const result = await orderManager.placeOrder({
+        tokenId: 'token-1',
+        side: 'buy',
+        size: 100,
+        price: 0.5,
+        orderType: 'GTC',
+        windowId: 'window-1',
+        marketId: 'market-1',
+      });
+
+      expect(result.status).toBe('open');
+      expect(result.timestamps.orderFilledAt).toBeNull();
+    });
   });
 
   describe('error handling', () => {

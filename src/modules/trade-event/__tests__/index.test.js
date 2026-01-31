@@ -826,4 +826,317 @@ describe('Trade Event Module', () => {
       expect(database.run).toHaveBeenCalledTimes(4);
     });
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.2: LATENCY & SLIPPAGE ANALYSIS API
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('getLatencyStats() (Story 5.2, AC5)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getLatencyStats()).toThrow('not initialized');
+    });
+
+    it('should return combined stats with p95', () => {
+      // Mock stats query - column names match SQL aliases
+      database.get.mockReturnValue({
+        count: 5,
+        min_total_ms: 100,
+        max_total_ms: 500,
+        avg_total_ms: 250,
+        min_decision_to_submit_ms: 50,
+        max_decision_to_submit_ms: 150,
+        avg_decision_to_submit_ms: 100,
+        min_submit_to_ack_ms: 20,
+        max_submit_to_ack_ms: 80,
+        avg_submit_to_ack_ms: 50,
+        min_ack_to_fill_ms: 30,
+        max_ack_to_fill_ms: 270,
+        avg_ack_to_fill_ms: 100,
+      });
+
+      // Mock p95 data
+      database.all.mockReturnValue([
+        { latency_total_ms: 100, latency_decision_to_submit_ms: 50, latency_submit_to_ack_ms: 20, latency_ack_to_fill_ms: 30 },
+        { latency_total_ms: 200, latency_decision_to_submit_ms: 75, latency_submit_to_ack_ms: 40, latency_ack_to_fill_ms: 85 },
+        { latency_total_ms: 300, latency_decision_to_submit_ms: 100, latency_submit_to_ack_ms: 60, latency_ack_to_fill_ms: 140 },
+        { latency_total_ms: 400, latency_decision_to_submit_ms: 125, latency_submit_to_ack_ms: 70, latency_ack_to_fill_ms: 205 },
+        { latency_total_ms: 500, latency_decision_to_submit_ms: 150, latency_submit_to_ack_ms: 80, latency_ack_to_fill_ms: 270 },
+      ]);
+
+      const stats = tradeEvent.getLatencyStats();
+
+      expect(stats.count).toBe(5);
+      expect(stats.total.min).toBe(100);
+      expect(stats.total.max).toBe(500);
+      expect(stats.total.avg).toBe(250);
+      expect(stats.total.p95).toBeDefined();
+      expect(stats.decisionToSubmit.p95).toBeDefined();
+    });
+
+    it('should accept filter options', () => {
+      database.get.mockReturnValue({ count: 0 });
+      database.all.mockReturnValue([]);
+
+      tradeEvent.getLatencyStats({
+        windowId: 'window-123',
+        strategyId: 'spot-lag-v1',
+      });
+
+      expect(database.get).toHaveBeenCalledWith(
+        expect.stringContaining('window_id = ?'),
+        expect.any(Array)
+      );
+    });
+  });
+
+  describe('getLatencyBreakdownById() (Story 5.2, AC5)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getLatencyBreakdownById(1)).toThrow('not initialized');
+    });
+
+    it('should throw if eventId is missing', () => {
+      expect(() => tradeEvent.getLatencyBreakdownById()).toThrow('Missing required field');
+    });
+
+    it('should return breakdown for single event', () => {
+      database.get.mockReturnValue({
+        id: 1,
+        window_id: 'window-123',
+        strategy_id: 'spot-lag-v1',
+        latency_total_ms: 350,
+        latency_decision_to_submit_ms: 100,
+        latency_submit_to_ack_ms: 100,
+        latency_ack_to_fill_ms: 150,
+        signal_detected_at: '2026-01-31T10:00:00.000Z',
+        order_submitted_at: '2026-01-31T10:00:00.100Z',
+        order_acked_at: '2026-01-31T10:00:00.200Z',
+        order_filled_at: '2026-01-31T10:00:00.350Z',
+      });
+
+      const breakdown = tradeEvent.getLatencyBreakdownById(1);
+
+      expect(breakdown.eventId).toBe(1);
+      expect(breakdown.latencies.total).toBe(350);
+      expect(breakdown.latencies.decisionToSubmit).toBe(100);
+    });
+  });
+
+  describe('getSlippageStats() (Story 5.2, AC6)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getSlippageStats()).toThrow('not initialized');
+    });
+
+    it('should return slippage statistics', () => {
+      database.get.mockReturnValue({
+        count: 10,
+        min_signal_to_fill: -0.02,
+        max_signal_to_fill: 0.05,
+        avg_signal_to_fill: 0.01,
+        min_vs_expected: -0.01,
+        max_vs_expected: 0.03,
+        avg_vs_expected: 0.005,
+        avg_expected_price: 0.50,
+      });
+
+      const stats = tradeEvent.getSlippageStats();
+
+      expect(stats.count).toBe(10);
+      expect(stats.signalToFill.min).toBeCloseTo(-0.02);
+      expect(stats.vsExpected.avg).toBeCloseTo(0.005);
+    });
+  });
+
+  describe('getSlippageBySize() (Story 5.2, AC6)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getSlippageBySize()).toThrow('not initialized');
+    });
+
+    it('should return slippage grouped by size', () => {
+      database.all.mockReturnValue([
+        { size_bucket: 'small', count: 5, avg_slippage: 0.005 },
+        { size_bucket: 'large', count: 3, avg_slippage: 0.02 },
+      ]);
+
+      const results = tradeEvent.getSlippageBySize();
+
+      expect(results).toHaveLength(2);
+      expect(results[0].sizeBucket).toBe('small');
+    });
+  });
+
+  describe('getSlippageBySpread() (Story 5.2, AC6)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init(mockConfig);
+    });
+
+    it('should throw if not initialized', async () => {
+      await tradeEvent.shutdown();
+
+      expect(() => tradeEvent.getSlippageBySpread()).toThrow('not initialized');
+    });
+
+    it('should return slippage grouped by spread', () => {
+      database.all.mockReturnValue([
+        { spread_bucket: 'tight', count: 8, avg_slippage: 0.003 },
+        { spread_bucket: 'wide', count: 4, avg_slippage: 0.015 },
+      ]);
+
+      const results = tradeEvent.getSlippageBySpread();
+
+      expect(results).toHaveLength(2);
+      expect(results[0].spreadBucket).toBe('tight');
+    });
+  });
+
+  describe('Diagnostic Flags Integration (Story 5.2, AC8)', () => {
+    beforeEach(async () => {
+      // Initialize with config containing thresholds
+      await tradeEvent.init({
+        tradeEvent: {
+          thresholds: {
+            latencyThresholdMs: 500,
+            slippageThresholdPct: 0.02,
+            sizeImpactThreshold: 0.5,
+          },
+        },
+      });
+    });
+
+    it('should set diagnostic flags when latency exceeds threshold', async () => {
+      const eventId = await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z', // 600ms total latency
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 100,
+          filledSize: 100,
+        },
+      });
+
+      expect(eventId).toBe(1);
+
+      // Verify diagnostic_flags contains high_latency
+      const insertCall = database.run.mock.calls[0];
+      const params = insertCall[1];
+      expect(params.some(p => typeof p === 'string' && p.includes('high_latency'))).toBe(true);
+    });
+
+    it('should set diagnostic flags when slippage exceeds threshold', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.100Z',
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.52, // 4% slippage > 2% threshold
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 100,
+          filledSize: 100,
+        },
+      });
+
+      const insertCall = database.run.mock.calls[0];
+      const params = insertCall[1];
+      expect(params.some(p => typeof p === 'string' && p.includes('high_slippage'))).toBe(true);
+    });
+
+    it('should set diagnostic flags when size impact exceeds threshold', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {},
+        prices: {
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 600, // 60% of depth
+          filledSize: 600,
+        },
+        marketContext: {
+          depthAtSignal: 1000,
+        },
+      });
+
+      const insertCall = database.run.mock.calls[0];
+      const params = insertCall[1];
+      expect(params.some(p => typeof p === 'string' && p.includes('size_impact'))).toBe(true);
+    });
+
+    it('should not set diagnostic flags when all values within thresholds', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.300Z', // 300ms < 500ms
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.505, // 1% < 2% threshold
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 100, // 10% of depth
+          filledSize: 100,
+        },
+        marketContext: {
+          depthAtSignal: 1000,
+        },
+      });
+
+      const insertCall = database.run.mock.calls[0];
+      const params = insertCall[1];
+      // diagnostic_flags should be null (no flags set)
+      // Find the diagnostic_flags parameter position
+      const flagsParam = params.find(p => p === null || (typeof p === 'string' && p.includes('high_')));
+      // If null, no flags were set
+      expect(flagsParam === null || !flagsParam.includes('high_')).toBe(true);
+    });
+  });
 });

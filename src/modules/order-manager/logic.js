@@ -151,8 +151,9 @@ export async function placeOrder(params, log) {
   // 3. Mark intent as executing
   writeAhead.markExecuting(intentId);
 
-  // 4. Record start time for latency
+  // 4. Record start time for latency and capture orderSubmittedAt BEFORE API call
   const startTime = Date.now();
+  const orderSubmittedAt = new Date().toISOString();
 
   try {
     // 5. Call Polymarket API based on side
@@ -165,16 +166,21 @@ export async function placeOrder(params, log) {
       result = await polymarketClient.sell(tokenId, size, price, orderType);
     }
 
-    // 6. Calculate latency
+    // 6. Capture orderAckedAt AFTER API response (exchange acknowledged receipt)
+    const orderAckedAt = new Date().toISOString();
+
+    // 7. Calculate latency
     const latencyMs = Date.now() - startTime;
     recordLatency(latencyMs);
 
-    // 7. Determine order status from API response
+    // 8. Determine order status from API response
     const isFoK = orderType === 'FOK';
     const status = mapPolymarketStatus(result.status, isFoK);
-    const submittedAt = new Date().toISOString();
 
-    // 8. Build order record
+    // 9. Capture orderFilledAt if order was immediately filled
+    const orderFilledAt = status === OrderStatus.FILLED ? orderAckedAt : null;
+
+    // 10. Build order record
     const orderRecord = {
       order_id: result.orderID,
       intent_id: intentId,
@@ -189,14 +195,14 @@ export async function placeOrder(params, log) {
       filled_size: status === OrderStatus.FILLED ? size : 0,
       avg_fill_price: status === OrderStatus.FILLED ? price : null,
       status,
-      submitted_at: submittedAt,
+      submitted_at: orderSubmittedAt,
       latency_ms: latencyMs,
-      filled_at: status === OrderStatus.FILLED ? submittedAt : null,
+      filled_at: orderFilledAt,
       cancelled_at: null,
       error_message: null,
     };
 
-    // 9. Insert order into database
+    // 11. Insert order into database
     const insertResult = persistence.run(
       `INSERT INTO orders (
         order_id, intent_id, position_id, window_id, market_id, token_id,
@@ -234,10 +240,10 @@ export async function placeOrder(params, log) {
       );
     }
 
-    // 10. Cache the order
+    // 12. Cache the order
     cacheOrder(orderRecord);
 
-    // 11. Mark intent completed
+    // 13. Mark intent completed
     writeAhead.markCompleted(intentId, {
       orderId: result.orderID,
       status,
@@ -253,11 +259,17 @@ export async function placeOrder(params, log) {
       price,
     });
 
+    // 14. Return result with timestamps for trade-event module (Story 5.2, AC1, AC7)
     return {
       orderId: result.orderID,
       status,
       latencyMs,
       intentId,
+      timestamps: {
+        orderSubmittedAt,
+        orderAckedAt,
+        orderFilledAt,
+      },
     };
   } catch (err) {
     // Calculate latency even on failure

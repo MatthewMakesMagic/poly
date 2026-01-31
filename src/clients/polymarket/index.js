@@ -150,6 +150,21 @@ export async function getBestPrices(tokenId) {
 }
 
 /**
+ * Get market context for latency/slippage analysis (Story 5.2, AC3)
+ *
+ * Returns bid, ask, spread, and depth (liquidity) at best prices.
+ * This is used by the trade-event module to record market conditions at signal time.
+ *
+ * @param {string} tokenId - Token ID
+ * @returns {Promise<Object>} Market context { bidAtSignal, askAtSignal, spreadAtSignal, depthAtSignal, bidDepth, askDepth }
+ * @throws {PolymarketError} On API error
+ */
+export async function getMarketContext(tokenId) {
+  ensureInitialized();
+  return client.getMarketContext(tokenId);
+}
+
+/**
  * Get balance for a conditional token (in shares)
  *
  * @param {string} tokenId - Token ID
