@@ -1,0 +1,453 @@
+/**
+ * Orchestrator Module
+ *
+ * Central coordinator for all trading modules. Implements the orchestrator pattern
+ * where modules never import each other directly - all coordination flows through here.
+ *
+ * Public interface:
+ * - init(config) - Initialize all modules in dependency order
+ * - start() - Start the execution loop
+ * - stop() - Stop the execution loop
+ * - pause() - Pause the execution loop
+ * - resume() - Resume a paused execution loop
+ * - getState() - Get orchestrator and module states
+ * - shutdown() - Gracefully shutdown all modules
+ *
+ * @module modules/orchestrator
+ */
+
+import { child } from '../logger/index.js';
+import persistence from '../../persistence/index.js';
+import * as polymarket from '../../clients/polymarket/index.js';
+import * as spot from '../../clients/spot/index.js';
+import * as positionManager from '../position-manager/index.js';
+import * as orderManager from '../order-manager/index.js';
+
+import {
+  OrchestratorError,
+  OrchestratorErrorCodes,
+  OrchestratorState,
+  ErrorCategory,
+  categorizeError,
+} from './types.js';
+import {
+  MODULE_INIT_ORDER,
+  createInitialState,
+  setModule,
+  getModule,
+  getAllModules,
+  clearModules,
+} from './state.js';
+import { ExecutionLoop } from './execution-loop.js';
+
+// Module references mapping for dynamic initialization
+const MODULE_MAP = {
+  persistence: persistence,
+  polymarket: polymarket,
+  spot: spot,
+  'position-manager': positionManager,
+  'order-manager': orderManager,
+};
+
+// Module-level state
+let log = null;
+let config = null;
+let state = createInitialState();
+let executionLoop = null;
+
+/**
+ * Initialize the orchestrator and all managed modules
+ *
+ * @param {Object} cfg - Full application configuration
+ * @returns {Promise<void>}
+ * @throws {OrchestratorError} If already initialized or module init fails
+ */
+export async function init(cfg) {
+  if (state.state !== OrchestratorState.STOPPED) {
+    throw new OrchestratorError(
+      OrchestratorErrorCodes.ALREADY_INITIALIZED,
+      'Orchestrator already initialized',
+      { currentState: state.state }
+    );
+  }
+
+  // Create child logger
+  log = child({ module: 'orchestrator' });
+  config = cfg;
+  state.state = OrchestratorState.INITIALIZING;
+
+  log.info('orchestrator_init_start');
+
+  // Initialize modules in dependency order
+  try {
+    await initializeModules(cfg);
+    state.state = OrchestratorState.INITIALIZED;
+    state.startedAt = new Date().toISOString();
+    log.info('orchestrator_initialized', {
+      moduleCount: state.initializationOrder.length,
+      modules: state.initializationOrder,
+    });
+  } catch (err) {
+    state.state = OrchestratorState.ERROR;
+    state.lastError = {
+      code: err.code || 'UNKNOWN',
+      message: err.message,
+      timestamp: new Date().toISOString(),
+    };
+    log.error('orchestrator_init_failed', {
+      error: err.message,
+      code: err.code,
+      stack: err.stack,
+    });
+    throw err;
+  }
+}
+
+/**
+ * Initialize all modules in dependency order
+ *
+ * @param {Object} cfg - Full application configuration
+ * @returns {Promise<void>}
+ * @private
+ */
+async function initializeModules(cfg) {
+  const timeoutMs = cfg.orchestrator?.moduleInitTimeoutMs || 5000;
+
+  for (const entry of MODULE_INIT_ORDER) {
+    const moduleInstance = MODULE_MAP[entry.name];
+    if (!moduleInstance) {
+      log.warn('module_not_found', { module: entry.name });
+      continue;
+    }
+
+    log.info('module_init_start', { module: entry.name });
+
+    try {
+      // Build module-specific config
+      const moduleConfig = entry.configKey ? { [entry.configKey]: cfg[entry.configKey] } : cfg;
+
+      // Initialize with timeout
+      await withTimeout(
+        moduleInstance.init(moduleConfig),
+        timeoutMs,
+        `Module ${entry.name} initialization timeout after ${timeoutMs}ms`
+      );
+
+      // Store module reference
+      setModule(entry.name, moduleInstance);
+      state.initializationOrder.push(entry.name);
+
+      log.info('module_init_complete', { module: entry.name });
+    } catch (err) {
+      log.error('module_init_failed', {
+        module: entry.name,
+        error: err.message,
+        code: err.code,
+      });
+
+      // Wrap in OrchestratorError with context
+      throw new OrchestratorError(
+        OrchestratorErrorCodes.MODULE_INIT_FAILED,
+        `Failed to initialize module: ${entry.name}`,
+        {
+          module: entry.name,
+          originalError: err.message,
+          originalCode: err.code,
+        }
+      );
+    }
+  }
+}
+
+/**
+ * Start the execution loop
+ *
+ * @throws {OrchestratorError} If not initialized
+ */
+export function start() {
+  ensureInitialized();
+
+  if (state.state === OrchestratorState.RUNNING) {
+    log.debug('orchestrator_already_running');
+    return;
+  }
+
+  // Create execution loop if not exists
+  if (!executionLoop) {
+    executionLoop = new ExecutionLoop({
+      config: config.orchestrator || { tickIntervalMs: 1000 },
+      modules: getAllModules(),
+      log: child({ module: 'execution-loop' }),
+      onError: handleLoopError,
+    });
+  }
+
+  executionLoop.start();
+  state.state = OrchestratorState.RUNNING;
+  log.info('orchestrator_started');
+}
+
+/**
+ * Stop the execution loop
+ */
+export function stop() {
+  if (executionLoop) {
+    executionLoop.stop();
+  }
+  if (state.state === OrchestratorState.RUNNING || state.state === OrchestratorState.PAUSED) {
+    state.state = OrchestratorState.INITIALIZED;
+  }
+  log.info('orchestrator_stopped');
+}
+
+/**
+ * Pause the execution loop
+ */
+export function pause() {
+  ensureInitialized();
+  if (executionLoop) {
+    executionLoop.pause();
+  }
+  if (state.state === OrchestratorState.RUNNING) {
+    state.state = OrchestratorState.PAUSED;
+  }
+  log.info('orchestrator_paused');
+}
+
+/**
+ * Resume a paused execution loop
+ */
+export function resume() {
+  ensureInitialized();
+  if (executionLoop) {
+    executionLoop.resume();
+  }
+  if (state.state === OrchestratorState.PAUSED) {
+    state.state = OrchestratorState.RUNNING;
+  }
+  log.info('orchestrator_resumed');
+}
+
+/**
+ * Get current orchestrator and module states
+ *
+ * @returns {Object} Complete state including all modules and loop metrics
+ */
+export function getState() {
+  // Aggregate module states
+  const modules = {};
+  const allModules = getAllModules();
+  for (const [name, moduleInstance] of Object.entries(allModules)) {
+    if (moduleInstance && typeof moduleInstance.getState === 'function') {
+      try {
+        modules[name] = moduleInstance.getState();
+      } catch {
+        modules[name] = { error: 'Failed to get state' };
+      }
+    }
+  }
+
+  // Get loop state
+  const loopState = executionLoop ? executionLoop.getState() : null;
+
+  return {
+    state: state.state,
+    initialized: state.state !== OrchestratorState.STOPPED,
+    running: state.state === OrchestratorState.RUNNING,
+    paused: state.state === OrchestratorState.PAUSED,
+    modules,
+    loop: loopState,
+    errorCount: state.errorCount,
+    recoveryCount: state.recoveryCount,
+    lastError: state.lastError,
+    startedAt: state.startedAt,
+  };
+}
+
+/**
+ * Gracefully shutdown the orchestrator and all modules
+ *
+ * @returns {Promise<void>}
+ */
+export async function shutdown() {
+  if (state.state === OrchestratorState.STOPPED) {
+    return;
+  }
+
+  state.state = OrchestratorState.SHUTTING_DOWN;
+  log.info('orchestrator_shutdown_start');
+
+  // 1. Stop execution loop immediately
+  if (executionLoop) {
+    executionLoop.stop();
+    executionLoop = null;
+  }
+
+  // 2. Wait for in-flight operations (if any)
+  if (state.inFlightOperations > 0) {
+    log.info('waiting_for_inflight', { count: state.inFlightOperations });
+    const inflightTimeoutMs = config?.orchestrator?.inflightTimeoutMs || 10000;
+    await waitForInflight(inflightTimeoutMs);
+  }
+
+  // 3. Shutdown modules in reverse initialization order
+  await shutdownModules();
+
+  // 4. Clean up orchestrator state
+  clearModules();
+  state = createInitialState();
+  state.stoppedAt = new Date().toISOString();
+
+  log.info('orchestrator_shutdown_complete');
+  log = null;
+  config = null;
+}
+
+/**
+ * Shutdown all modules in reverse initialization order
+ *
+ * @returns {Promise<void>}
+ * @private
+ */
+async function shutdownModules() {
+  const timeoutMs = config?.orchestrator?.moduleShutdownTimeoutMs || 5000;
+  const reverseOrder = [...state.initializationOrder].reverse();
+
+  for (const name of reverseOrder) {
+    const moduleInstance = getModule(name);
+    if (!moduleInstance || typeof moduleInstance.shutdown !== 'function') {
+      continue;
+    }
+
+    log.info('module_shutdown_start', { module: name });
+
+    try {
+      await withTimeout(
+        moduleInstance.shutdown(),
+        timeoutMs,
+        `Module ${name} shutdown timeout after ${timeoutMs}ms`
+      );
+      log.info('module_shutdown_complete', { module: name });
+    } catch (err) {
+      log.warn('module_shutdown_timeout', {
+        module: name,
+        error: err.message,
+      });
+      // Continue with other modules - don't let one block the rest
+    }
+  }
+}
+
+/**
+ * Handle errors from the execution loop
+ *
+ * @param {Error} err - Error from loop
+ * @private
+ */
+function handleLoopError(err) {
+  state.errorCount++;
+  state.lastError = {
+    code: err.code || 'UNKNOWN',
+    message: err.message,
+    timestamp: new Date().toISOString(),
+  };
+
+  const category = categorizeError(err);
+
+  if (category === ErrorCategory.FATAL) {
+    log.error('fatal_error_triggering_shutdown', {
+      error: err.message,
+      code: err.code,
+      errorCount: state.errorCount,
+    });
+    // Trigger shutdown on fatal error
+    shutdown().catch((shutdownErr) => {
+      log.error('shutdown_failed_after_fatal', { error: shutdownErr.message });
+    });
+  } else {
+    // Recoverable error - will be retried on next tick
+    state.recoveryCount++;
+    log.warn('recoverable_error', {
+      error: err.message,
+      code: err.code,
+      errorCount: state.errorCount,
+      recoveryCount: state.recoveryCount,
+    });
+  }
+}
+
+/**
+ * Wait for in-flight operations to complete
+ *
+ * @param {number} timeoutMs - Maximum wait time
+ * @returns {Promise<void>}
+ * @private
+ */
+async function waitForInflight(timeoutMs) {
+  const startTime = Date.now();
+  while (state.inFlightOperations > 0) {
+    if (Date.now() - startTime > timeoutMs) {
+      log.warn('inflight_timeout', {
+        remaining: state.inFlightOperations,
+        timeoutMs,
+      });
+      break;
+    }
+    await sleep(100);
+  }
+}
+
+/**
+ * Ensure orchestrator is initialized
+ *
+ * @throws {OrchestratorError} If not initialized
+ * @private
+ */
+function ensureInitialized() {
+  if (
+    state.state === OrchestratorState.STOPPED ||
+    state.state === OrchestratorState.INITIALIZING
+  ) {
+    throw new OrchestratorError(
+      OrchestratorErrorCodes.NOT_INITIALIZED,
+      'Orchestrator not initialized. Call init() first.',
+      { currentState: state.state }
+    );
+  }
+}
+
+/**
+ * Execute a promise with timeout
+ *
+ * @param {Promise} promise - Promise to execute
+ * @param {number} ms - Timeout in milliseconds
+ * @param {string} errorMessage - Error message on timeout
+ * @returns {Promise} Result of promise or timeout error
+ * @private
+ */
+async function withTimeout(promise, ms, errorMessage) {
+  const timeout = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(errorMessage)), ms);
+  });
+  return Promise.race([promise, timeout]);
+}
+
+/**
+ * Sleep utility
+ *
+ * @param {number} ms - Milliseconds to sleep
+ * @returns {Promise<void>}
+ * @private
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Re-export types
+export {
+  OrchestratorError,
+  OrchestratorErrorCodes,
+  OrchestratorState,
+  ErrorCategory,
+  categorizeError,
+} from './types.js';

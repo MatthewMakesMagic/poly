@@ -1,0 +1,50 @@
+name: strategy-workshop
+description: Quant strategy ideation and adversarial review with the full trading team
+version: 1.0.0
+
+# Context files for the team to understand the system
+context_files:
+  - "{project-root}/_bmad-output/planning-artifacts/architecture.md"
+  - "{project-root}/_bmad-output/planning-artifacts/epics.md"
+
+# The quant team agents
+team:
+  lead: hf-manager        # Marcus - runs the session
+  reviewers:
+    - quant-researcher    # Vera - statistical rigor
+    - risk-manager        # Nadia - downside protection
+    - market-specialist   # Theo - execution feasibility
+    - skeptic             # Cassandra - adversarial review
+
+# Workflow phases
+phases:
+  1-setup:
+    name: "Workshop Setup"
+    description: "Establish context, goals, and refine strategy template with the team"
+    step_file: "steps/step-01-setup.md"
+
+  2-ideation:
+    name: "Strategy Ideation"
+    description: "Marcus leads brainstorming with user, generating raw strategy hypotheses"
+    step_file: "steps/step-02-ideation.md"
+
+  3-team-review:
+    name: "Team Review"
+    description: "Each team member critiques from their domain expertise"
+    step_file: "steps/step-03-team-review.md"
+
+  4-refinement:
+    name: "Refinement"
+    description: "Marcus synthesizes feedback, kills weak ideas, strengthens survivors"
+    step_file: "steps/step-04-refinement.md"
+
+  5-spec-output:
+    name: "Strategy Specification"
+    description: "Document surviving strategies in implementation-ready format"
+    step_file: "steps/step-05-spec-output.md"
+
+# Output configuration
+output:
+  directory: "{output_folder}/strategies"
+  session_file: "strategy-workshop-{date}.md"
+  strategy_files: "strategy-{strategy_id}.md"

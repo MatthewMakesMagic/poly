@@ -54,4 +54,14 @@ export default {
     windowDurationMs: 15 * 60 * 1000,  // 15 minutes
     minTimeRemainingMs: 60 * 1000,      // Don't enter with <1 min remaining
   },
+
+  // Orchestrator configuration
+  orchestrator: {
+    tickIntervalMs: 1000,           // 1 second between ticks
+    moduleInitTimeoutMs: 5000,      // 5 seconds per module init
+    moduleShutdownTimeoutMs: 5000,  // 5 seconds per module shutdown
+    maxRetryAttempts: 3,            // Retries for recoverable errors
+    retryBackoffMs: 1000,           // Base backoff (doubles each retry)
+    inflightTimeoutMs: 10000,       // Max wait for in-flight ops
+  },
 };
