@@ -68,70 +68,70 @@ So that **I can stop everything in <5 seconds even if the main process is hung (
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1: Create Kill Switch Directory Structure** (AC: 1, 4)
-  - [ ] 1.1 Create `kill-switch/watchdog.js` - Main watchdog entry point
-  - [ ] 1.2 Create `kill-switch/commands.js` - CLI command handlers
-  - [ ] 1.3 Create `kill-switch/process-manager.js` - Process signal/monitoring logic
-  - [ ] 1.4 Create `kill-switch/state.js` - Watchdog state tracking
-  - [ ] 1.5 Create `kill-switch/types.js` - Error types and constants
-  - [ ] 1.6 Create `kill-switch/__tests__/` directory for tests
-  - [ ] 1.7 Update `kill-switch/README.md` with usage documentation
+- [x] **Task 1: Create Kill Switch Directory Structure** (AC: 1, 4)
+  - [x] 1.1 Create `kill-switch/watchdog.js` - Main watchdog entry point
+  - [x] 1.2 Create `kill-switch/commands.js` - CLI command handlers
+  - [x] 1.3 Create `kill-switch/process-manager.js` - Process signal/monitoring logic
+  - [x] 1.4 Create `kill-switch/state.js` - Watchdog state tracking
+  - [x] 1.5 Create `kill-switch/types.js` - Error types and constants
+  - [x] 1.6 Create `kill-switch/__tests__/` directory for tests
+  - [x] 1.7 Update `kill-switch/README.md` with usage documentation
 
-- [ ] **Task 2: Implement PID File Management** (AC: 5)
-  - [ ] 2.1 Create function to write PID file at `data/main.pid`
-  - [ ] 2.2 Create function to read PID file
-  - [ ] 2.3 Create function to remove PID file on shutdown
-  - [ ] 2.4 Detect stale PID files (process doesn't exist)
-  - [ ] 2.5 Handle concurrent access to PID file safely
-  - [ ] 2.6 Add PID file write to main process startup (orchestrator or src/index.js)
+- [x] **Task 2: Implement PID File Management** (AC: 5)
+  - [x] 2.1 Create function to write PID file at `data/main.pid`
+  - [x] 2.2 Create function to read PID file
+  - [x] 2.3 Create function to remove PID file on shutdown
+  - [x] 2.4 Detect stale PID files (process doesn't exist)
+  - [x] 2.5 Handle concurrent access to PID file safely
+  - [x] 2.6 Add PID file write to main process startup (orchestrator or src/index.js)
 
-- [ ] **Task 3: Implement Process Manager** (AC: 2, 3)
-  - [ ] 3.1 Create `sendGracefulShutdown(pid)` - sends SIGTERM
-  - [ ] 3.2 Create `sendForceKill(pid)` - sends SIGKILL
-  - [ ] 3.3 Create `isProcessRunning(pid)` - checks if PID exists
-  - [ ] 3.4 Create `waitForProcessExit(pid, timeoutMs)` - waits for process to exit
-  - [ ] 3.5 Implement kill sequence: SIGTERM → wait 2s → SIGKILL if needed
-  - [ ] 3.6 Return kill result with timing and method used
+- [x] **Task 3: Implement Process Manager** (AC: 2, 3)
+  - [x] 3.1 Create `sendGracefulShutdown(pid)` - sends SIGTERM
+  - [x] 3.2 Create `sendForceKill(pid)` - sends SIGKILL
+  - [x] 3.3 Create `isProcessRunning(pid)` - checks if PID exists
+  - [x] 3.4 Create `waitForProcessExit(pid, timeoutMs)` - waits for process to exit
+  - [x] 3.5 Implement kill sequence: SIGTERM → wait 2s → SIGKILL if needed
+  - [x] 3.6 Return kill result with timing and method used
 
-- [ ] **Task 4: Implement Watchdog Commands** (AC: 4)
-  - [ ] 4.1 Implement `start` command - starts watching main process
-  - [ ] 4.2 Implement `stop` command - stops watchdog gracefully
-  - [ ] 4.3 Implement `kill` command - triggers kill sequence
-  - [ ] 4.4 Implement `status` command - reports main process and watchdog status
-  - [ ] 4.5 Implement `help` command - shows usage information
-  - [ ] 4.6 Parse command line arguments with clear syntax
+- [x] **Task 4: Implement Watchdog Commands** (AC: 4)
+  - [x] 4.1 Implement `start` command - starts watching main process
+  - [x] 4.2 Implement `stop` command - stops watchdog gracefully
+  - [x] 4.3 Implement `kill` command - triggers kill sequence
+  - [x] 4.4 Implement `status` command - reports main process and watchdog status
+  - [x] 4.5 Implement `help` command - shows usage information
+  - [x] 4.6 Parse command line arguments with clear syntax
 
-- [ ] **Task 5: Implement Health Monitoring** (AC: 6)
-  - [ ] 5.1 Create `checkHealth()` function - polls main process status
-  - [ ] 5.2 Track last known status (running, stopped, unresponsive)
-  - [ ] 5.3 Log status changes for audit trail
-  - [ ] 5.4 Optional heartbeat file monitoring (for deeper health checks)
-  - [ ] 5.5 Report comprehensive status including uptime, last check time
+- [x] **Task 5: Implement Health Monitoring** (AC: 6)
+  - [x] 5.1 Create `checkHealth()` function - polls main process status
+  - [x] 5.2 Track last known status (running, stopped, unresponsive)
+  - [x] 5.3 Log status changes for audit trail
+  - [x] 5.4 Optional heartbeat file monitoring (for deeper health checks)
+  - [x] 5.5 Report comprehensive status including uptime, last check time
 
-- [ ] **Task 6: Implement Watchdog Logging** (AC: 2, 3)
-  - [ ] 6.1 Create simple file logger for watchdog (independent of main logger)
-  - [ ] 6.2 Log all kill sequence steps with timestamps
-  - [ ] 6.3 Log health check results
-  - [ ] 6.4 Structured JSON format matching architecture
-  - [ ] 6.5 Log file at `logs/watchdog.log`
+- [x] **Task 6: Implement Watchdog Logging** (AC: 2, 3)
+  - [x] 6.1 Create simple file logger for watchdog (independent of main logger)
+  - [x] 6.2 Log all kill sequence steps with timestamps
+  - [x] 6.3 Log health check results
+  - [x] 6.4 Structured JSON format matching architecture
+  - [x] 6.5 Log file at `logs/watchdog.log`
 
-- [ ] **Task 7: Integrate with CLI** (AC: 4)
-  - [ ] 7.1 Create `cli/commands/kill.js` - wraps watchdog kill command
-  - [ ] 7.2 Add kill command to CLI router
-  - [ ] 7.3 Provide user feedback during kill sequence
-  - [ ] 7.4 Handle edge cases (watchdog not running, main not running)
+- [x] **Task 7: Integrate with CLI** (AC: 4)
+  - [x] 7.1 Create `cli/commands/kill.js` - wraps watchdog kill command
+  - [x] 7.2 Add kill command to CLI router
+  - [x] 7.3 Provide user feedback during kill sequence
+  - [x] 7.4 Handle edge cases (watchdog not running, main not running)
 
-- [ ] **Task 8: Write Tests** (AC: all)
-  - [ ] 8.1 Test PID file write/read/remove
-  - [ ] 8.2 Test stale PID detection
-  - [ ] 8.3 Test sendGracefulShutdown() sends SIGTERM
-  - [ ] 8.4 Test sendForceKill() sends SIGKILL
-  - [ ] 8.5 Test isProcessRunning() for existing and non-existing PIDs
-  - [ ] 8.6 Test kill sequence completes within 5 seconds
-  - [ ] 8.7 Test kill sequence uses SIGKILL after timeout
-  - [ ] 8.8 Test watchdog commands (start, stop, kill, status)
-  - [ ] 8.9 Test health monitoring detects process status changes
-  - [ ] 8.10 Integration test: start main → start watchdog → kill → verify stopped
+- [x] **Task 8: Write Tests** (AC: all)
+  - [x] 8.1 Test PID file write/read/remove
+  - [x] 8.2 Test stale PID detection
+  - [x] 8.3 Test sendGracefulShutdown() sends SIGTERM
+  - [x] 8.4 Test sendForceKill() sends SIGKILL
+  - [x] 8.5 Test isProcessRunning() for existing and non-existing PIDs
+  - [x] 8.6 Test kill sequence completes within 5 seconds
+  - [x] 8.7 Test kill sequence uses SIGKILL after timeout
+  - [x] 8.8 Test watchdog commands (start, stop, kill, status)
+  - [x] 8.9 Test health monitoring detects process status changes
+  - [x] 8.10 Integration test: start main → start watchdog → kill → verify stopped
 
 ## Dev Notes
 
@@ -580,11 +580,51 @@ describe('ProcessManager', () => {
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Claude Opus 4.5 (claude-opus-4-5-20251101)
 
 ### Debug Log References
 
+- All tests pass: 1017 tests across 33 test files
+- Kill switch specific tests: 43 tests (26 process-manager, 13 commands, 4 integration)
+- NFR2 compliance verified: kill sequence completes in <5 seconds
+
 ### Completion Notes List
 
+- ✅ Implemented kill switch watchdog as separate Node.js process in `kill-switch/` directory
+- ✅ PID file management: write on init, read for watchdog, remove on shutdown
+- ✅ Process manager with SIGTERM (graceful) → wait 2s → SIGKILL (force) sequence
+- ✅ Watchdog commands: start, stop, kill, status, help
+- ✅ Health monitoring with periodic polling and status change logging
+- ✅ Independent JSON logger at `logs/watchdog.log`
+- ✅ CLI integration via `cli/commands/kill.js`
+- ✅ Comprehensive test suite including integration tests
+- ✅ Orchestrator integration: writes PID on init, removes on shutdown
+
 ### File List
+
+**New files:**
+- kill-switch/watchdog.js - Main entry point and CLI interface
+- kill-switch/commands.js - Command handlers (start, stop, kill, status, help)
+- kill-switch/process-manager.js - Signal sending, kill sequence, PID management
+- kill-switch/state.js - Watchdog state tracking
+- kill-switch/types.js - Error codes, constants, WatchdogError class
+- kill-switch/logger.js - Independent JSON file logger
+- kill-switch/README.md - Usage documentation
+- kill-switch/__tests__/process-manager.test.js - Unit and integration tests
+- kill-switch/__tests__/commands.test.js - Command handler tests
+- kill-switch/__tests__/watchdog.test.js - End-to-end integration tests
+- cli/commands/kill.js - CLI wrapper for kill command
+
+**Modified files:**
+- src/modules/orchestrator/index.js - Added PID file write/remove on init/shutdown
+
+## Change Log
+
+- 2026-01-31: Implemented Story 4.1 - Kill Switch Watchdog Process
+  - Created kill-switch module with watchdog.js entry point
+  - Implemented 2-phase kill sequence (SIGTERM → SIGKILL)
+  - Added PID file management for main process tracking
+  - Integrated with orchestrator for automatic PID file handling
+  - Added comprehensive test suite (43 tests)
+  - Verified NFR2 compliance (<5 second kill time)
 
