@@ -47,6 +47,8 @@ export default {
   killSwitch: {
     gracefulTimeoutMs: 2000,     // 2 seconds for graceful shutdown
     stateFilePath: './data/last-known-state.json',
+    stateUpdateIntervalMs: 5000, // Periodic state update interval
+    stateStaleThresholdMs: 5000, // Consider snapshot stale after this
   },
 
   // Trading window configuration

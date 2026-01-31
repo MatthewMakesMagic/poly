@@ -39,6 +39,13 @@ import {
   recordKillResult,
 } from './state.js';
 import { log, info, warn, error, configure as configureLogger } from './logger.js';
+import {
+  readSnapshot,
+  writeSnapshot,
+  isSnapshotStale,
+  getSnapshotAge,
+  markAsForcedKill,
+} from './state-snapshot.js';
 
 let healthCheckInterval = null;
 let config = null;
@@ -57,6 +64,8 @@ export function initialize(cfg = {}) {
     pidFilePath: cfg.pidFilePath || WatchdogDefaults.PID_FILE_PATH,
     logFilePath: cfg.logFilePath || WatchdogDefaults.LOG_FILE_PATH,
     watchdogPidFile: cfg.watchdogPidFile || WatchdogDefaults.WATCHDOG_PID_FILE,
+    stateFilePath: cfg.stateFilePath || WatchdogDefaults.STATE_FILE_PATH,
+    stateStaleThresholdMs: cfg.stateStaleThresholdMs || WatchdogDefaults.STATE_STALE_THRESHOLD_MS,
   };
 
   configureLogger({ logFile: config.logFilePath });
@@ -201,6 +210,58 @@ export async function killCommand() {
     setMainProcessStatus(ProcessStatus.STOPPED);
   }
 
+  // Read and process state snapshot after kill
+  let stateSnapshot = null;
+  let snapshotSummary = null;
+
+  try {
+    stateSnapshot = readSnapshot(config.stateFilePath);
+
+    if (stateSnapshot) {
+      const staleThreshold = config.stateStaleThresholdMs;
+      const snapshotStale = isSnapshotStale(config.stateFilePath, staleThreshold);
+      const snapshotAgeMs = getSnapshotAge(config.stateFilePath);
+
+      // If forced kill, update the snapshot with forced_kill flag
+      if (result.method === KillMethod.FORCE) {
+        stateSnapshot = markAsForcedKill(stateSnapshot, snapshotStale);
+
+        // Re-write the snapshot with updated flags
+        try {
+          await writeSnapshot(stateSnapshot, config.stateFilePath);
+        } catch (writeErr) {
+          warn('state_snapshot_update_failed', { error: writeErr.message });
+        }
+
+        if (snapshotStale) {
+          warn('state_snapshot_stale_warning', {
+            age_ms: snapshotAgeMs,
+            threshold_ms: staleThreshold,
+            message: 'State snapshot from last known - verify with exchange',
+          });
+        }
+      }
+
+      // Build summary for logging
+      snapshotSummary = {
+        forced_kill: stateSnapshot.forced_kill,
+        stale_warning: stateSnapshot.stale_warning,
+        open_positions: stateSnapshot.summary?.open_positions || 0,
+        open_orders: stateSnapshot.summary?.open_orders || 0,
+        total_exposure: stateSnapshot.summary?.total_exposure || 0,
+        snapshot_age_ms: snapshotAgeMs,
+      };
+
+      info('kill_complete_state_summary', snapshotSummary);
+    } else {
+      info('kill_complete_no_state', {
+        message: 'No state snapshot available - manual exchange verification required',
+      });
+    }
+  } catch (snapshotErr) {
+    warn('state_snapshot_read_failed', { error: snapshotErr.message });
+  }
+
   const methodDescriptions = {
     [KillMethod.GRACEFUL]: 'Graceful shutdown (SIGTERM)',
     [KillMethod.FORCE]: 'Forced kill (SIGKILL) - main process was unresponsive',
@@ -218,6 +279,7 @@ export async function killCommand() {
     durationMs: result.durationMs,
     gracefulSent: result.gracefulSent,
     forceSent: result.forceSent,
+    stateSnapshot: snapshotSummary,
   };
 }
 

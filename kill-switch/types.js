@@ -66,6 +66,16 @@ export const WatchdogDefaults = {
   LOG_FILE_PATH: './logs/watchdog.log',
   WATCHDOG_PID_FILE: './data/watchdog.pid',
   STATE_FILE_PATH: './data/last-known-state.json',
+  STATE_UPDATE_INTERVAL_MS: 5000,
+  STATE_STALE_THRESHOLD_MS: 5000,
+};
+
+/**
+ * State snapshot schema version
+ * Used for format compatibility checking
+ */
+export const SnapshotVersion = {
+  CURRENT: 1,
 };
 
 /**

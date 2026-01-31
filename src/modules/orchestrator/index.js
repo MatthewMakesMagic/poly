@@ -29,6 +29,7 @@ import * as positionSizer from '../position-sizer/index.js';
 import * as stopLoss from '../stop-loss/index.js';
 import * as takeProfit from '../take-profit/index.js';
 import * as windowExpiry from '../window-expiry/index.js';
+import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 
 import {
   OrchestratorError,
@@ -69,6 +70,7 @@ let log = null;
 let config = null;
 let state = createInitialState();
 let executionLoop = null;
+let stateUpdateInterval = null;
 
 /**
  * Write the main process PID file for watchdog integration
@@ -113,6 +115,95 @@ function removePidFile() {
 }
 
 /**
+ * Start periodic state updates for kill switch recovery
+ *
+ * Writes state snapshot at regular intervals for use by the watchdog
+ * in case of forced kill. Writes are non-blocking and failures
+ * are logged but don't block trading.
+ *
+ * @private
+ */
+function startPeriodicStateUpdates() {
+  const intervalMs = config?.killSwitch?.stateUpdateIntervalMs || 5000;
+
+  stateUpdateInterval = setInterval(async () => {
+    try {
+      await writeStateSnapshot(false);
+    } catch (err) {
+      if (log) {
+        log.warn('state_snapshot_write_failed', { error: err.message });
+      }
+      // Don't throw - non-blocking
+    }
+  }, intervalMs);
+
+  if (log) {
+    log.info('periodic_state_updates_started', { intervalMs });
+  }
+}
+
+/**
+ * Stop periodic state updates
+ *
+ * @private
+ */
+function stopPeriodicStateUpdates() {
+  if (stateUpdateInterval) {
+    clearInterval(stateUpdateInterval);
+    stateUpdateInterval = null;
+    if (log) {
+      log.info('periodic_state_updates_stopped');
+    }
+  }
+}
+
+/**
+ * Write a state snapshot to disk
+ *
+ * Collects state from all modules and writes to the configured state file.
+ *
+ * @param {boolean} isFinalSnapshot - Whether this is the final snapshot on shutdown
+ * @returns {Promise<void>}
+ * @private
+ */
+async function writeStateSnapshot(isFinalSnapshot = false) {
+  const orchestratorState = {
+    state: state.state,
+    startedAt: state.startedAt,
+    errorCount: state.errorCount,
+  };
+
+  // Get positions from position-manager
+  const positionManagerModule = getModule('position-manager');
+  let positions = [];
+  if (positionManagerModule && typeof positionManagerModule.getState === 'function') {
+    const pmState = positionManagerModule.getState();
+    positions = pmState.openPositions || [];
+  }
+
+  // Get orders from order-manager
+  const orderManagerModule = getModule('order-manager');
+  let orders = [];
+  if (orderManagerModule && typeof orderManagerModule.getState === 'function') {
+    const omState = orderManagerModule.getState();
+    orders = omState.openOrders || [];
+  }
+
+  const snapshot = buildSnapshot(orchestratorState, positions, orders);
+  const stateFilePath = config?.killSwitch?.stateFilePath || './data/last-known-state.json';
+
+  await writeSnapshot(snapshot, stateFilePath);
+
+  if (log && isFinalSnapshot) {
+    log.info('final_state_snapshot_written', {
+      path: stateFilePath,
+      positions_count: positions.length,
+      orders_count: orders.length,
+    });
+  }
+}
+
+/**
  * Initialize the orchestrator and all managed modules
  *
  * @param {Object} cfg - Full application configuration
@@ -143,6 +234,10 @@ export async function init(cfg) {
     await initializeModules(cfg);
     state.state = OrchestratorState.INITIALIZED;
     state.startedAt = new Date().toISOString();
+
+    // Start periodic state updates for kill switch recovery
+    startPeriodicStateUpdates();
+
     log.info('orchestrator_initialized', {
       moduleCount: state.initializationOrder.length,
       modules: state.initializationOrder,
@@ -338,26 +433,37 @@ export async function shutdown() {
   state.state = OrchestratorState.SHUTTING_DOWN;
   log.info('orchestrator_shutdown_start');
 
-  // 1. Stop execution loop immediately
+  // 1. Stop periodic state updates
+  stopPeriodicStateUpdates();
+
+  // 2. Stop execution loop immediately
   if (executionLoop) {
     executionLoop.stop();
     executionLoop = null;
   }
 
-  // 2. Wait for in-flight operations (if any)
+  // 3. Wait for in-flight operations (if any)
   if (state.inFlightOperations > 0) {
     log.info('waiting_for_inflight', { count: state.inFlightOperations });
     const inflightTimeoutMs = config?.orchestrator?.inflightTimeoutMs || 10000;
     await waitForInflight(inflightTimeoutMs);
   }
 
-  // 3. Shutdown modules in reverse initialization order
+  // 4. Write final state snapshot (forced_kill: false for graceful shutdown)
+  try {
+    await writeStateSnapshot(true);
+  } catch (err) {
+    log.warn('final_state_snapshot_failed', { error: err.message });
+    // Continue with shutdown even if snapshot fails
+  }
+
+  // 5. Shutdown modules in reverse initialization order
   await shutdownModules();
 
-  // 4. Remove PID file
+  // 6. Remove PID file
   removePidFile();
 
-  // 5. Clean up orchestrator state
+  // 7. Clean up orchestrator state
   clearModules();
   state = createInitialState();
   state.stoppedAt = new Date().toISOString();
