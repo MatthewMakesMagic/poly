@@ -89,7 +89,7 @@ development_status:
   # Epic 6: Strategy Composition
   epic-6: in-progress
   6-1-strategy-component-registry: done
-  6-2-strategy-composition: backlog
+  6-2-strategy-composition: done
   6-3-strategy-forking: backlog
   6-4-central-component-updates: backlog
   6-5-strategy-configuration: backlog

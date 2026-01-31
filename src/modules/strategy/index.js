@@ -40,6 +40,11 @@ import {
   listStrategies,
   deactivateStrategy,
 } from './logic.js';
+import {
+  createStrategy as createStrategyLogic,
+  executeStrategy as executeStrategyLogic,
+  validateStrategy as validateStrategyLogic,
+} from './composer.js';
 
 // Module state
 let log = null;
@@ -303,6 +308,102 @@ export async function rediscoverComponents(componentsPath) {
   });
 
   return catalog;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPOSER FUNCTIONS (Story 6.2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create a new strategy from component version IDs
+ *
+ * Validates all components exist, validates config against each component,
+ * then persists the strategy.
+ *
+ * @param {string} name - Human-readable strategy name
+ * @param {Object} components - Component version IDs
+ * @param {string} components.probability - Probability component version ID
+ * @param {string} components.entry - Entry component version ID
+ * @param {string} components.exit - Exit component version ID
+ * @param {string} components.sizing - Sizing component version ID
+ * @param {Object} [config={}] - Strategy configuration JSON
+ * @returns {string} New strategy ID
+ */
+export function createStrategy(name, components, config = {}) {
+  ensureInitialized();
+
+  const strategyId = createStrategyLogic(name, components, config);
+
+  log.info('strategy_created', {
+    strategy_id: strategyId,
+    name,
+    components,
+    config_keys: Object.keys(config),
+  });
+
+  return strategyId;
+}
+
+/**
+ * Execute a strategy by running all components in pipeline order
+ *
+ * Pipeline order: probability -> entry -> sizing -> exit
+ * Each component receives context, config, and results from previous components.
+ *
+ * @param {string} strategyId - Strategy instance ID
+ * @param {Object} context - Execution context (market data, position state)
+ * @returns {Object} Aggregated execution result with decision and component outputs
+ */
+export function executeStrategy(strategyId, context) {
+  ensureInitialized();
+
+  const startTime = Date.now();
+
+  try {
+    const result = executeStrategyLogic(strategyId, context);
+
+    log.info('strategy_executed', {
+      strategy_id: strategyId,
+      action: result.decision.action,
+      direction: result.decision.direction,
+      size: result.decision.size,
+      probability: result.decision.probability,
+      duration_ms: Date.now() - startTime,
+    });
+
+    return result;
+  } catch (err) {
+    log.error('strategy_execution_failed', {
+      strategy_id: strategyId,
+      error: err.message,
+      code: err.code,
+      duration_ms: Date.now() - startTime,
+    });
+    throw err;
+  }
+}
+
+/**
+ * Validate a strategy's components and configuration
+ *
+ * Checks strategy exists, is active, all components are in catalog,
+ * and config passes each component's validation.
+ *
+ * @param {string} strategyId - Strategy instance ID
+ * @returns {Object} Validation result { valid, errors?, details }
+ */
+export function validateStrategy(strategyId) {
+  ensureInitialized();
+
+  const result = validateStrategyLogic(strategyId);
+
+  log.info('strategy_validated', {
+    strategy_id: strategyId,
+    valid: result.valid,
+    error_count: result.errors?.length ?? 0,
+  });
+
+  return result;
 }
 
 // Re-export types and constants
