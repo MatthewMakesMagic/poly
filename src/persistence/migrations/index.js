@@ -56,12 +56,17 @@ export async function runMigrations() {
   const applied = [];
   const migrations = getMigrationFiles();
 
+  console.log(`[migrations] Found ${migrations.length} migration files: ${migrations.join(', ')}`);
+
   for (const filename of migrations) {
     const { version, name } = parseMigrationFilename(filename);
 
     if (migrationApplied(version)) {
+      console.log(`[migrations] Skipping ${version}-${name} (already applied)`);
       continue;
     }
+
+    console.log(`[migrations] Running ${version}-${name}...`);
 
     try {
       // Dynamically import migration
@@ -80,7 +85,9 @@ export async function runMigrations() {
       // Record the migration
       recordMigration(version, name);
       applied.push(version);
+      console.log(`[migrations] Applied ${version}-${name}`);
     } catch (error) {
+      console.error(`[migrations] Failed ${version}-${name}:`, error.message);
       throw new PersistenceError(
         ErrorCodes.DB_MIGRATION_FAILED,
         `Migration ${version}-${name} failed: ${error.message}`,

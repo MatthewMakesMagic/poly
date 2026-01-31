@@ -45,16 +45,32 @@ async function init(config) {
     );
   }
 
+  console.log(`[persistence] Initializing with database path: ${dbPath}`);
+
   // Open database connection
   database.open(dbPath);
+  console.log('[persistence] Database connection opened');
 
   // Apply base schema (idempotent with CREATE IF NOT EXISTS)
-  applySchema();
+  try {
+    applySchema();
+    console.log('[persistence] Base schema applied');
+  } catch (err) {
+    console.error('[persistence] Failed to apply schema:', err.message);
+    throw err;
+  }
 
   // Run any pending migrations
-  await runMigrations();
+  try {
+    const applied = await runMigrations();
+    console.log(`[persistence] Migrations complete. Applied: ${applied.length > 0 ? applied.join(', ') : 'none (all up to date)'}`);
+  } catch (err) {
+    console.error('[persistence] Migration failed:', err.message);
+    throw err;
+  }
 
   initialized = true;
+  console.log('[persistence] Initialization complete');
 }
 
 /**
