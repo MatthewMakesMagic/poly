@@ -11,6 +11,13 @@
  * - Record alerts for divergence and error conditions
  * - Query events by window, position, or filters
  *
+ * Monitoring Philosophy (Story 5.5 - FR24):
+ * - "Silence = Trust" - No alerts when everything works as expected
+ * - Info logs: Capture all trade data for later analysis (normal operation)
+ * - Warn logs: Moderate divergence (latency, slippage) requiring attention
+ * - Error logs: Severe divergence (size, state mismatch) requiring immediate action
+ * - getState().divergence.silentOperationConfirmed: True when divergence rate is 0%
+ *
  * @module modules/trade-event
  */
 
@@ -883,13 +890,17 @@ export { getDivergenceSeverity };
  * Get current module state
  *
  * Returns initialization status, stats, and divergence summary.
+ * Includes silentOperationConfirmed flag (Story 5.5) that indicates
+ * whether the system is operating in "silence = trust" mode (FR24).
  *
  * @returns {Object} Current state including initialization status, stats, and divergence summary
+ * @returns {boolean} state.divergence.silentOperationConfirmed - True when divergence rate is 0% (silence = health)
  */
 export function getState() {
   const baseState = getStateSnapshot();
 
   // Add divergence stats if initialized (Story 5.3)
+  // Story 5.5: Add silentOperationConfirmed for "silence = trust" philosophy
   if (baseState.initialized) {
     try {
       const divergenceSummary = queryDivergenceSummary();
@@ -899,6 +910,9 @@ export function getState() {
           eventsWithDivergence: divergenceSummary.eventsWithDivergence,
           divergenceRate: divergenceSummary.divergenceRate,
           flagCounts: divergenceSummary.flagCounts,
+          // Story 5.5: Silent operation confirmed when divergence rate is 0%
+          // This implements FR24: "silence = trust" monitoring philosophy
+          silentOperationConfirmed: divergenceSummary.divergenceRate === 0,
         },
       };
     } catch {

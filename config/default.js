@@ -32,6 +32,11 @@ export default {
   },
 
   // Logging configuration
+  // Story 5.5: "Silence = Trust" monitoring philosophy
+  // - 'info': All logs emitted (default for development)
+  // - 'warn': Info suppressed, warn/error emitted (production silent mode)
+  // - 'error': Only error logs emitted
+  // Note: warn/error are NEVER suppressed regardless of level setting
   logging: {
     level: process.env.LOG_LEVEL || 'info',
     directory: './logs',

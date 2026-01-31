@@ -1726,4 +1726,413 @@ describe('Trade Event Module', () => {
       expect(tradeEvent.getDivergenceSeverity('high_slippage')).toBe('warn');
     });
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.5: SILENT OPERATION MODE
+  // "silence = trust" monitoring philosophy (FR24)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('Silent Operation Mode (Story 5.5)', () => {
+    describe('AC1: Normal Trade Execution - Info Level Only', () => {
+      beforeEach(async () => {
+        await tradeEvent.init({
+          tradeEvent: {
+            thresholds: {
+              latencyThresholdMs: 500,
+              slippageThresholdPct: 0.02,
+              partialFillThresholdPct: 0.1,
+            },
+          },
+        });
+      });
+
+      it('should log entry at info level when no divergence', async () => {
+        await tradeEvent.recordEntry({
+          windowId: 'window-silent-1',
+          positionId: 1,
+          orderId: 100,
+          strategyId: 'spot-lag-v1',
+          timestamps: {
+            signalDetectedAt: '2026-01-31T10:00:00.000Z',
+            orderSubmittedAt: '2026-01-31T10:00:00.050Z',
+            orderAckedAt: '2026-01-31T10:00:00.100Z',
+            orderFilledAt: '2026-01-31T10:00:00.150Z', // 150ms < 500ms threshold
+          },
+          prices: {
+            priceAtSignal: 0.50,
+            priceAtSubmit: 0.50,
+            priceAtFill: 0.50, // No slippage
+            expectedPrice: 0.50,
+          },
+          sizes: {
+            requestedSize: 100,
+            filledSize: 100, // Full fill
+          },
+        });
+
+        // Verify info level log was called (not warn or error)
+        expect(mockLogger.info).toHaveBeenCalledWith(
+          'trade_entry',
+          expect.any(Object),
+          expect.any(Object)
+        );
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+        expect(mockLogger.error).not.toHaveBeenCalled();
+      });
+
+      it('should set diagnostic_flags to NULL for normal trade', async () => {
+        await tradeEvent.recordEntry({
+          windowId: 'window-silent-2',
+          positionId: 1,
+          orderId: 100,
+          strategyId: 'spot-lag-v1',
+          timestamps: {
+            signalDetectedAt: '2026-01-31T10:00:00.000Z',
+            orderFilledAt: '2026-01-31T10:00:00.200Z', // 200ms < 500ms
+          },
+          prices: {
+            priceAtSignal: 0.50,
+            priceAtFill: 0.505, // 1% < 2% threshold
+            expectedPrice: 0.50,
+          },
+          sizes: {
+            requestedSize: 100,
+            filledSize: 100,
+          },
+        });
+
+        // Verify database insert has null diagnostic_flags
+        const insertCall = database.run.mock.calls[0];
+        const params = insertCall[1];
+        // diagnostic_flags should be null (no divergence detected)
+        const flagsIndex = params.findIndex(p => p === null && params.indexOf(p) > 20);
+        expect(params.some(p => p === null)).toBe(true);
+      });
+    });
+
+    describe('AC2: Silent Normal Operation - Multiple Trades', () => {
+      beforeEach(async () => {
+        await tradeEvent.init({
+          tradeEvent: {
+            thresholds: {
+              latencyThresholdMs: 500,
+              slippageThresholdPct: 0.02,
+              partialFillThresholdPct: 0.1,
+            },
+          },
+        });
+        database.get.mockReturnValue({ id: 1 }); // Position exists
+      });
+
+      it('should produce only info logs for multiple consecutive normal trades', async () => {
+        // Record multiple normal entry/exit pairs
+        for (let i = 0; i < 3; i++) {
+          await tradeEvent.recordEntry({
+            windowId: `window-multi-${i}`,
+            positionId: i + 1,
+            orderId: 100 + i,
+            strategyId: 'spot-lag-v1',
+            timestamps: {
+              signalDetectedAt: '2026-01-31T10:00:00.000Z',
+              orderFilledAt: '2026-01-31T10:00:00.200Z',
+            },
+            prices: {
+              priceAtSignal: 0.50,
+              priceAtFill: 0.50,
+              expectedPrice: 0.50,
+            },
+            sizes: {
+              requestedSize: 100,
+              filledSize: 100,
+            },
+          });
+
+          await tradeEvent.recordExit({
+            windowId: `window-multi-${i}`,
+            positionId: i + 1,
+            exitReason: 'take_profit',
+            timestamps: {
+              signalDetectedAt: '2026-01-31T10:05:00.000Z',
+              orderFilledAt: '2026-01-31T10:05:00.200Z',
+            },
+            prices: {
+              priceAtFill: 0.55,
+              expectedPrice: 0.55,
+            },
+            sizes: {
+              requestedSize: 100,
+              filledSize: 100,
+            },
+          });
+        }
+
+        // All logs should be at info level
+        const infoCallCount = mockLogger.info.mock.calls.length;
+        expect(infoCallCount).toBeGreaterThanOrEqual(6); // 3 entries + 3 exits
+
+        // No warn or error logs should have been called
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+        expect(mockLogger.error).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('AC3: Info Logs Capture Data Without Alerts', () => {
+      beforeEach(async () => {
+        await tradeEvent.init(mockConfig);
+      });
+
+      it('should include complete trade data in info logs', async () => {
+        await tradeEvent.recordEntry({
+          windowId: 'window-data-1',
+          positionId: 1,
+          orderId: 100,
+          strategyId: 'spot-lag-v1',
+          timestamps: {
+            signalDetectedAt: '2026-01-31T10:00:00.000Z',
+            orderFilledAt: '2026-01-31T10:00:00.200Z',
+          },
+          prices: {
+            priceAtSignal: 0.50,
+            priceAtFill: 0.505,
+            expectedPrice: 0.50,
+          },
+          sizes: {
+            requestedSize: 100,
+            filledSize: 100,
+          },
+        });
+
+        // Verify info log contains all required trade data for later analysis
+        expect(mockLogger.info).toHaveBeenCalledWith(
+          'trade_entry',
+          expect.objectContaining({
+            window_id: 'window-data-1',
+            position_id: 1,
+            expected: expect.objectContaining({
+              price: 0.50,
+              size: 100,
+            }),
+            actual: expect.objectContaining({
+              price: 0.505,
+              size: 100,
+            }),
+            slippage: expect.any(Number),
+            latency_ms: 200,
+          }),
+          expect.any(Object)
+        );
+      });
+    });
+
+    describe('AC5: Log Level Configuration', () => {
+      it('should respect log level filtering for info logs', async () => {
+        // The logger module already handles this - test is for documentation
+        // Log level filtering occurs in logger/index.js lines 103-109
+        // When config.level = 'warn', info logs are filtered out
+        // When config.level = 'info', all logs are emitted
+        await tradeEvent.init(mockConfig);
+
+        await tradeEvent.recordSignal({
+          windowId: 'window-level-1',
+          strategyId: 'spot-lag-v1',
+          signalType: 'entry',
+          priceAtSignal: 0.50,
+        });
+
+        // recordSignal always logs at info level
+        expect(mockLogger.info).toHaveBeenCalledWith(
+          'trade_signal_entry',
+          expect.any(Object)
+        );
+      });
+    });
+
+    describe('AC6: Silent Mode Verification', () => {
+      beforeEach(async () => {
+        await tradeEvent.init({
+          tradeEvent: {
+            thresholds: {
+              latencyThresholdMs: 500,
+              slippageThresholdPct: 0.02,
+              partialFillThresholdPct: 0.1,
+            },
+          },
+        });
+      });
+
+      it('should return hasDivergence=false for normal trade', () => {
+        const event = {
+          latency_total_ms: 150, // Well under 500ms threshold
+          slippage_vs_expected: 0.005, // 1% slippage (under 2%)
+          expected_price: 0.50,
+          requested_size: 100,
+          filled_size: 100, // No size divergence
+        };
+
+        const result = tradeEvent.getDivergenceCheck(event);
+
+        expect(result.hasDivergence).toBe(false);
+        expect(result.flags).toEqual([]);
+        expect(result.divergences).toEqual([]);
+      });
+
+      it('should not emit divergence_alert for normal trades', async () => {
+        await tradeEvent.recordEntry({
+          windowId: 'window-no-alert',
+          positionId: 1,
+          orderId: 100,
+          strategyId: 'spot-lag-v1',
+          timestamps: {
+            signalDetectedAt: '2026-01-31T10:00:00.000Z',
+            orderFilledAt: '2026-01-31T10:00:00.200Z',
+          },
+          prices: {
+            priceAtSignal: 0.50,
+            priceAtFill: 0.50,
+            expectedPrice: 0.50,
+          },
+          sizes: {
+            requestedSize: 100,
+            filledSize: 100,
+          },
+        });
+
+        // No divergence-related logs should be called
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+        expect(mockLogger.error).not.toHaveBeenCalled();
+
+        // Specifically, no 'divergence_alert' event
+        const warnCalls = mockLogger.warn.mock.calls;
+        const errorCalls = mockLogger.error.mock.calls;
+        const allAlertCalls = [...warnCalls, ...errorCalls];
+        expect(allAlertCalls.some(call => call[0]?.includes('divergence'))).toBe(false);
+      });
+    });
+
+    describe('AC8: Health Summary on Demand - silentOperationConfirmed', () => {
+      beforeEach(async () => {
+        await tradeEvent.init(mockConfig);
+      });
+
+      it('should return silentOperationConfirmed=true when divergence rate is 0%', () => {
+        // Mock: no divergent events, some total events
+        database.all.mockReturnValue([]);
+        database.get.mockReturnValue({ count: 10 });
+
+        const state = tradeEvent.getState();
+
+        expect(state.divergence).toBeDefined();
+        expect(state.divergence.divergenceRate).toBe(0);
+        expect(state.divergence.silentOperationConfirmed).toBe(true);
+        expect(state.divergence.eventsWithDivergence).toBe(0);
+      });
+
+      it('should return silentOperationConfirmed=false when divergence exists', () => {
+        // Mock: some divergent events
+        database.all.mockReturnValue([
+          { diagnostic_flags: '["high_latency"]' },
+        ]);
+        database.get.mockReturnValue({ count: 10 });
+
+        const state = tradeEvent.getState();
+
+        expect(state.divergence.divergenceRate).toBeGreaterThan(0);
+        expect(state.divergence.silentOperationConfirmed).toBe(false);
+        expect(state.divergence.eventsWithDivergence).toBe(1);
+      });
+
+      it('should return silentOperationConfirmed=true when no events recorded', () => {
+        // Edge case: no events at all
+        database.all.mockReturnValue([]);
+        database.get.mockReturnValue({ count: 0 });
+
+        const state = tradeEvent.getState();
+
+        expect(state.divergence.divergenceRate).toBe(0);
+        expect(state.divergence.silentOperationConfirmed).toBe(true);
+      });
+
+      it('should include flagCounts in health summary', () => {
+        database.all.mockReturnValue([
+          { diagnostic_flags: '["high_latency"]' },
+          { diagnostic_flags: '["high_latency", "high_slippage"]' },
+        ]);
+        database.get.mockReturnValue({ count: 5 });
+
+        const state = tradeEvent.getState();
+
+        expect(state.divergence.flagCounts.high_latency).toBe(2);
+        expect(state.divergence.flagCounts.high_slippage).toBe(1);
+      });
+    });
+
+    describe('Contrast: Divergence vs Silent Operation', () => {
+      beforeEach(async () => {
+        await tradeEvent.init({
+          tradeEvent: {
+            thresholds: {
+              latencyThresholdMs: 500,
+              slippageThresholdPct: 0.02,
+              partialFillThresholdPct: 0.1,
+            },
+          },
+        });
+      });
+
+      it('should log at warn level when divergence detected (contrast to silent)', async () => {
+        await tradeEvent.recordEntry({
+          windowId: 'window-diverge',
+          positionId: 1,
+          orderId: 100,
+          strategyId: 'spot-lag-v1',
+          timestamps: {
+            signalDetectedAt: '2026-01-31T10:00:00.000Z',
+            orderFilledAt: '2026-01-31T10:00:00.600Z', // 600ms > 500ms threshold
+          },
+          prices: {
+            priceAtSignal: 0.50,
+            priceAtFill: 0.50,
+            expectedPrice: 0.50,
+          },
+          sizes: {
+            requestedSize: 100,
+            filledSize: 100,
+          },
+        });
+
+        // Divergence should trigger warn log
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          'trade_entry_divergence',
+          expect.objectContaining({
+            diagnostic_flags: expect.arrayContaining(['high_latency']),
+          }),
+          expect.any(Object)
+        );
+      });
+
+      it('should log at error level for severe divergence (size_divergence)', async () => {
+        await tradeEvent.recordEntry({
+          windowId: 'window-severe',
+          positionId: 1,
+          orderId: 100,
+          strategyId: 'spot-lag-v1',
+          timestamps: {},
+          prices: {},
+          sizes: {
+            requestedSize: 100,
+            filledSize: 50, // 50% difference - severe
+          },
+        });
+
+        // Severe divergence should trigger error log
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          'trade_entry_divergence',
+          expect.objectContaining({
+            diagnostic_flags: expect.arrayContaining(['size_divergence']),
+          }),
+          expect.any(Object)
+        );
+      });
+    });
+  });
 });

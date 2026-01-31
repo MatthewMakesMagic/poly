@@ -210,6 +210,85 @@ async executeExit(position, reason, tick) {
 
 ---
 
+## Monitoring Philosophy: "Silence = Trust" (Story 5.5, FR24)
+
+**Status:** IMPLEMENTED
+**Story:** 5-5-silent-operation-mode
+**Requirement:** FR24 - System can operate silently when behavior matches expectations
+
+### Philosophy
+
+Epic 5 implements a monitoring philosophy where:
+
+1. **Info logs** capture all trade data for post-mortem analysis
+2. **Warn logs** indicate moderate divergence requiring attention
+3. **Error logs** indicate severe divergence requiring immediate action
+4. **No warn/error = trust** - the system is operating as expected
+
+This approach prevents alert fatigue while ensuring:
+- All trades are fully logged for later analysis
+- Divergence is detected and surfaced immediately
+- Normal operation doesn't interrupt the trader
+- Trust is earned through demonstrated reliability
+
+### Log Level Guidelines
+
+| Level | Meaning | Action Required |
+|-------|---------|-----------------|
+| info | Normal operation | None - review later if needed |
+| warn | Moderate divergence (latency, slippage) | Investigate soon |
+| error | Severe divergence (size, state mismatch) | Investigate immediately |
+
+### Querying Silent Operation
+
+```javascript
+const state = tradeEvent.getState();
+
+if (state.divergence.silentOperationConfirmed) {
+  console.log('System operating normally - all trades within expectations');
+} else {
+  console.log(`Divergence rate: ${(state.divergence.divergenceRate * 100).toFixed(1)}%`);
+  console.log('Flag distribution:', state.divergence.flagCounts);
+}
+```
+
+### Health Summary Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `divergence.eventsWithDivergence` | number | Count of events with any divergence |
+| `divergence.divergenceRate` | number | Ratio of divergent events to total (0-1) |
+| `divergence.flagCounts` | object | Count per divergence flag type |
+| `divergence.silentOperationConfirmed` | boolean | True when divergence rate is 0% |
+
+### Log Level Configuration
+
+Configure log level in `config/default.js`:
+
+```javascript
+logging: {
+  level: process.env.LOG_LEVEL || 'info',  // 'info', 'warn', or 'error'
+  directory: './logs',
+  jsonFormat: true,
+}
+```
+
+- **info**: All logs emitted (default for development)
+- **warn**: Info logs suppressed, only warn/error emitted
+- **error**: Only error logs emitted
+
+**Note:** warn and error logs are NEVER suppressed regardless of config level.
+
+### Related Stories
+
+- **Story 5.1:** Trade event logging with expected vs actual values
+- **Story 5.2:** Latency and slippage recording with thresholds
+- **Story 5.3:** Divergence detection with flags
+- **Story 5.4:** Divergence alerting with structured alerts
+- **Story 5.5:** Silent operation mode (this enhancement)
+
+---
+
 ## Future Enhancements
 
 (Add additional enhancements here as identified)
