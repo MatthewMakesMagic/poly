@@ -5,7 +5,7 @@
  * and database operations.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 
 // Mock the database before importing logic
 const mockDb = {
@@ -42,6 +42,11 @@ import {
   detectStateDivergence,
   queryDivergentEvents,
   queryDivergenceSummary,
+  // Story 5.4: Divergence Alerting
+  getDivergenceSeverity,
+  formatDivergenceAlert,
+  shouldEscalate,
+  alertOnDivergence,
 } from '../logic.js';
 import { TradeEventErrorCodes } from '../types.js';
 import { resetState } from '../state.js';
@@ -1236,6 +1241,328 @@ describe('Trade Event Logic', () => {
         expect.stringContaining('window_id = ?'),
         expect.arrayContaining(['window-123'])
       );
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.4: DIVERGENCE ALERTING FUNCTIONS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('getDivergenceSeverity() (Story 5.4, AC1)', () => {
+    it('should return error for state_divergence', () => {
+      expect(getDivergenceSeverity('state_divergence')).toBe('error');
+    });
+
+    it('should return error for size_divergence', () => {
+      expect(getDivergenceSeverity('size_divergence')).toBe('error');
+    });
+
+    it('should return warn for high_latency', () => {
+      expect(getDivergenceSeverity('high_latency')).toBe('warn');
+    });
+
+    it('should return warn for high_slippage', () => {
+      expect(getDivergenceSeverity('high_slippage')).toBe('warn');
+    });
+
+    it('should return warn for entry_slippage', () => {
+      expect(getDivergenceSeverity('entry_slippage')).toBe('warn');
+    });
+
+    it('should return warn for size_impact', () => {
+      expect(getDivergenceSeverity('size_impact')).toBe('warn');
+    });
+
+    it('should return warn for unknown flags', () => {
+      expect(getDivergenceSeverity('unknown_flag')).toBe('warn');
+    });
+  });
+
+  describe('formatDivergenceAlert() (Story 5.4, AC2, AC3)', () => {
+    it('should format high_latency alert with actionable message', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['high_latency'],
+        divergences: [{
+          type: 'high_latency',
+          severity: 'warn',
+          details: { latency_ms: 600, threshold_ms: 500 },
+        }],
+      };
+      const event = {
+        window_id: 'window-1',
+        position_id: 1,
+        strategy_id: 'spot-lag-v1',
+        latency_total_ms: 600,
+      };
+
+      const alert = formatDivergenceAlert(divergenceResult, event);
+
+      expect(alert.message).toContain('High latency: 600ms');
+      expect(alert.message).toContain('threshold: 500ms');
+      expect(alert.structured.flags).toContain('high_latency');
+      expect(alert.structured.context.window_id).toBe('window-1');
+      expect(alert.structured.context.position_id).toBe(1);
+      expect(alert.suggestions).toContain('Check network latency and API response times');
+    });
+
+    it('should format slippage alert with percentage', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['entry_slippage'],
+        divergences: [{
+          type: 'entry_slippage',
+          severity: 'warn',
+          details: { expected: 0.42, actual: 0.45 },
+        }],
+      };
+      const event = {
+        expected_price: 0.42,
+        price_at_fill: 0.45,
+      };
+
+      const alert = formatDivergenceAlert(divergenceResult, event);
+
+      expect(alert.message).toContain('Entry slippage');
+      expect(alert.message).toContain('expected 0.4200');
+      expect(alert.message).toContain('got 0.4500');
+      expect(alert.suggestions).toContain('Review orderbook depth and timing of entry signals');
+    });
+
+    it('should format size_divergence alert', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['size_divergence'],
+        divergences: [{
+          type: 'size_divergence',
+          severity: 'error',
+          details: { requested: 100, filled: 50 },
+        }],
+      };
+
+      const alert = formatDivergenceAlert(divergenceResult, {});
+
+      expect(alert.message).toContain('Size divergence');
+      expect(alert.message).toContain('requested 100');
+      expect(alert.message).toContain('filled 50');
+      expect(alert.suggestions).toContain('Check for partial fills and orderbook depth');
+    });
+
+    it('should include CRITICAL suggestion for state_divergence', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['state_divergence'],
+        divergences: [{
+          type: 'state_divergence',
+          severity: 'error',
+          details: {},
+        }],
+      };
+
+      const alert = formatDivergenceAlert(divergenceResult, {});
+
+      expect(alert.suggestions).toContain('CRITICAL: Run position reconciliation immediately');
+    });
+
+    it('should include all required context fields (AC2)', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['high_latency'],
+        divergences: [{
+          type: 'high_latency',
+          severity: 'warn',
+          details: { latency_ms: 600, threshold_ms: 500 },
+        }],
+      };
+      const event = {
+        window_id: 'window-123',
+        position_id: 42,
+        strategy_id: 'test-strategy',
+        event_type: 'entry',
+        signal_detected_at: '2026-01-31T10:00:00Z',
+        order_filled_at: '2026-01-31T10:00:00.600Z',
+      };
+
+      const alert = formatDivergenceAlert(divergenceResult, event);
+
+      // AC2: context (window_id, position_id, strategy_id)
+      expect(alert.structured.context.window_id).toBe('window-123');
+      expect(alert.structured.context.position_id).toBe(42);
+      expect(alert.structured.context.strategy_id).toBe('test-strategy');
+      expect(alert.structured.context.event_type).toBe('entry');
+      // Timestamps
+      expect(alert.structured.timestamps.signal_detected_at).toBe('2026-01-31T10:00:00Z');
+      expect(alert.structured.timestamps.order_filled_at).toBe('2026-01-31T10:00:00.600Z');
+    });
+
+    it('should format multiple divergences in single alert', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['high_latency', 'high_slippage'],
+        divergences: [
+          { type: 'high_latency', severity: 'warn', details: { latency_ms: 600, threshold_ms: 500 } },
+          { type: 'high_slippage', severity: 'warn', details: { expected: 0.50, actual: 0.52 } },
+        ],
+      };
+
+      const alert = formatDivergenceAlert(divergenceResult, { expected_price: 0.50, price_at_fill: 0.52 });
+
+      expect(alert.message).toContain('High latency');
+      expect(alert.message).toContain('High slippage');
+      expect(alert.message).toContain('|'); // Separator between divergences
+      expect(alert.structured.divergences).toHaveLength(2);
+    });
+
+    it('should handle null/undefined inputs gracefully', () => {
+      expect(() => formatDivergenceAlert(null, null)).not.toThrow();
+      expect(() => formatDivergenceAlert(undefined, undefined)).not.toThrow();
+      expect(() => formatDivergenceAlert({}, {})).not.toThrow();
+
+      const alert = formatDivergenceAlert(null, null);
+      expect(alert.message).toBe('No divergence details');
+      expect(alert.structured.flags).toEqual([]);
+      expect(alert.suggestions).toEqual([]);
+    });
+  });
+
+  describe('shouldEscalate() (Story 5.4, AC1)', () => {
+    it('should return true for state_divergence', () => {
+      const result = {
+        divergences: [{ type: 'state_divergence', severity: 'error' }],
+      };
+
+      expect(shouldEscalate(result)).toBe(true);
+    });
+
+    it('should return true for size_divergence', () => {
+      const result = {
+        divergences: [{ type: 'size_divergence', severity: 'error' }],
+      };
+
+      expect(shouldEscalate(result)).toBe(true);
+    });
+
+    it('should return false for only warnings', () => {
+      const result = {
+        divergences: [
+          { type: 'high_latency', severity: 'warn' },
+          { type: 'high_slippage', severity: 'warn' },
+        ],
+      };
+
+      expect(shouldEscalate(result)).toBe(false);
+    });
+
+    it('should return true if ANY divergence is error severity', () => {
+      const result = {
+        divergences: [
+          { type: 'high_latency', severity: 'warn' },
+          { type: 'size_divergence', severity: 'error' },
+        ],
+      };
+
+      expect(shouldEscalate(result)).toBe(true);
+    });
+
+    it('should return false for null input', () => {
+      expect(shouldEscalate(null)).toBe(false);
+    });
+
+    it('should return false for empty object', () => {
+      expect(shouldEscalate({})).toBe(false);
+    });
+
+    it('should return false for undefined divergences', () => {
+      expect(shouldEscalate({ divergences: undefined })).toBe(false);
+    });
+
+    it('should return false for empty divergences array', () => {
+      expect(shouldEscalate({ divergences: [] })).toBe(false);
+    });
+  });
+
+  describe('alertOnDivergence() (Story 5.4, AC5, AC6)', () => {
+    it('should return alerted:false when no divergence', () => {
+      const result = alertOnDivergence({}, { hasDivergence: false });
+
+      expect(result.alerted).toBe(false);
+      expect(result.reason).toBe('no_divergence');
+    });
+
+    it('should return alerted:false when divergenceResult is null', () => {
+      const result = alertOnDivergence({}, null);
+
+      expect(result.alerted).toBe(false);
+      expect(result.reason).toBe('no_divergence');
+    });
+
+    it('should never throw even with invalid input (AC5 - fail-loud principle)', () => {
+      expect(() => alertOnDivergence(null, null)).not.toThrow();
+      expect(() => alertOnDivergence(undefined, undefined)).not.toThrow();
+      expect(() => alertOnDivergence({}, {})).not.toThrow();
+    });
+
+    it('should return alert details when divergence exists', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['high_latency'],
+        divergences: [{ type: 'high_latency', severity: 'warn', details: { latency_ms: 600 } }],
+      };
+
+      const result = alertOnDivergence({ window_id: 'w1' }, divergenceResult);
+
+      expect(result.alerted).toBe(true);
+      expect(result.level).toBe('warn');
+      expect(result.flags).toContain('high_latency');
+      expect(result.message).toContain('High latency');
+    });
+
+    it('should escalate to error level for severe divergence (AC1)', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['state_divergence'],
+        divergences: [{ type: 'state_divergence', severity: 'error', details: {} }],
+      };
+
+      const result = alertOnDivergence({}, divergenceResult);
+
+      expect(result.alerted).toBe(true);
+      expect(result.level).toBe('error');
+    });
+
+    it('should use warn level for non-severe divergence (AC1)', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['high_latency'],
+        divergences: [{ type: 'high_latency', severity: 'warn', details: { latency_ms: 600 } }],
+      };
+
+      const result = alertOnDivergence({}, divergenceResult);
+
+      expect(result.level).toBe('warn');
+    });
+
+    it('should handle internal errors gracefully and report them (AC5)', () => {
+      // Create a divergenceResult that will cause an error in formatting
+      const badResult = {
+        hasDivergence: true,
+        get flags() { throw new Error('Simulated internal error'); },
+      };
+
+      // Mock console.error to verify error is logged
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = alertOnDivergence({}, badResult);
+
+      expect(result.alerted).toBe(false);
+      expect(result.reason).toBe('alert_system_error');
+      expect(result.error).toBeDefined();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'ALERT_SYSTEM_ERROR: Failed to generate divergence alert',
+        expect.any(Object)
+      );
+
+      consoleSpy.mockRestore();
     });
   });
 });

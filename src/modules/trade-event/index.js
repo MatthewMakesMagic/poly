@@ -44,6 +44,11 @@ import {
   detectStateDivergence,
   queryDivergentEvents,
   queryDivergenceSummary,
+  // Story 5.4: Divergence Alerting
+  formatDivergenceAlert,
+  shouldEscalate,
+  alertOnDivergence,
+  getDivergenceSeverity,
 } from './logic.js';
 
 // Module state
@@ -253,28 +258,67 @@ export async function recordEntry({
 
   const eventId = insertTradeEvent(record);
 
-  // Log entry event with appropriate level based on divergence (Story 5.3)
-  const logData = {
+  // Build event object with full context for alert formatting (Story 5.4)
+  const eventWithContext = {
+    ...eventForFlagDetection,
     window_id: windowId,
     position_id: positionId,
-    expected: {
-      price: prices.expectedPrice,
-      size: sizes.requestedSize,
-    },
-    actual: {
-      price: prices.priceAtFill,
-      size: sizes.filledSize,
-    },
-    slippage: slippage.slippage_vs_expected,
-    latency_ms: latencies.latency_total_ms,
-    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : undefined,
+    strategy_id: strategyId,
+    signal_detected_at: timestamps.signalDetectedAt,
+    order_filled_at: timestamps.orderFilledAt,
   };
 
-  if (logLevel === 'error') {
-    log.error('trade_entry_divergence', logData, { strategy_id: strategyId });
-  } else if (logLevel === 'warn') {
-    log.warn('trade_entry_divergence', logData, { strategy_id: strategyId });
+  // Log entry event with appropriate level based on divergence (Story 5.3 + 5.4)
+  if (divergenceResult.hasDivergence) {
+    // Use formatDivergenceAlert for structured alert messages (Story 5.4)
+    const alert = formatDivergenceAlert(divergenceResult, eventWithContext);
+
+    const logData = {
+      window_id: windowId,
+      position_id: positionId,
+      // Story 5.4: Include structured alert message
+      alert_message: alert.message,
+      expected: {
+        price: prices.expectedPrice,
+        size: sizes.requestedSize,
+      },
+      actual: {
+        price: prices.priceAtFill,
+        size: sizes.filledSize,
+      },
+      slippage: slippage.slippage_vs_expected,
+      slippage_pct: prices.expectedPrice
+        ? ((slippage.slippage_vs_expected ?? 0) / prices.expectedPrice * 100).toFixed(2) + '%'
+        : null,
+      latency_ms: latencies.latency_total_ms,
+      diagnostic_flags: diagnosticFlags,
+      // Story 5.4: Include threshold information for actionable context
+      divergences: alert.structured.divergences,
+      suggestions: alert.suggestions,
+    };
+
+    if (logLevel === 'error') {
+      log.error('trade_entry_divergence', logData, { strategy_id: strategyId });
+    } else {
+      log.warn('trade_entry_divergence', logData, { strategy_id: strategyId });
+    }
   } else {
+    // Normal entry - no divergence
+    const logData = {
+      window_id: windowId,
+      position_id: positionId,
+      expected: {
+        price: prices.expectedPrice,
+        size: sizes.requestedSize,
+      },
+      actual: {
+        price: prices.priceAtFill,
+        size: sizes.filledSize,
+      },
+      slippage: slippage.slippage_vs_expected,
+      latency_ms: latencies.latency_total_ms,
+    };
+
     log.info('trade_entry', logData, { strategy_id: strategyId });
   }
 
@@ -394,29 +438,69 @@ export async function recordExit({
 
   const eventId = insertTradeEvent(record);
 
-  // Log exit event with appropriate level based on divergence (Story 5.3)
-  const logData = {
+  // Build event object with full context for alert formatting (Story 5.4)
+  const eventWithContext = {
+    ...eventForFlagDetection,
     window_id: windowId,
     position_id: positionId,
-    exit_reason: exitReason,
-    expected: {
-      price: prices?.expectedPrice,
-      size: sizes.requestedSize,
-    },
-    actual: {
-      price: prices?.priceAtFill,
-      size: sizes.filledSize,
-    },
-    slippage: slippage.slippage_vs_expected,
-    latency_ms: latencies.latency_total_ms,
-    diagnostic_flags: diagnosticFlags.length > 0 ? diagnosticFlags : undefined,
+    strategy_id: strategyId,
+    signal_detected_at: timestamps?.signalDetectedAt,
+    order_filled_at: timestamps?.orderFilledAt,
   };
 
-  if (logLevel === 'error') {
-    log.error('trade_exit_divergence', logData, { strategy_id: strategyId });
-  } else if (logLevel === 'warn') {
-    log.warn('trade_exit_divergence', logData, { strategy_id: strategyId });
+  // Log exit event with appropriate level based on divergence (Story 5.3 + 5.4)
+  if (divergenceResult.hasDivergence) {
+    // Use formatDivergenceAlert for structured alert messages (Story 5.4)
+    const alert = formatDivergenceAlert(divergenceResult, eventWithContext);
+
+    const logData = {
+      window_id: windowId,
+      position_id: positionId,
+      exit_reason: exitReason,
+      // Story 5.4: Include structured alert message
+      alert_message: alert.message,
+      expected: {
+        price: prices?.expectedPrice,
+        size: sizes.requestedSize,
+      },
+      actual: {
+        price: prices?.priceAtFill,
+        size: sizes.filledSize,
+      },
+      slippage: slippage.slippage_vs_expected,
+      slippage_pct: prices?.expectedPrice
+        ? ((slippage.slippage_vs_expected ?? 0) / prices.expectedPrice * 100).toFixed(2) + '%'
+        : null,
+      latency_ms: latencies.latency_total_ms,
+      diagnostic_flags: diagnosticFlags,
+      // Story 5.4: Include threshold information for actionable context
+      divergences: alert.structured.divergences,
+      suggestions: alert.suggestions,
+    };
+
+    if (logLevel === 'error') {
+      log.error('trade_exit_divergence', logData, { strategy_id: strategyId });
+    } else {
+      log.warn('trade_exit_divergence', logData, { strategy_id: strategyId });
+    }
   } else {
+    // Normal exit - no divergence
+    const logData = {
+      window_id: windowId,
+      position_id: positionId,
+      exit_reason: exitReason,
+      expected: {
+        price: prices?.expectedPrice,
+        size: sizes.requestedSize,
+      },
+      actual: {
+        price: prices?.priceAtFill,
+        size: sizes.filledSize,
+      },
+      slippage: slippage.slippage_vs_expected,
+      latency_ms: latencies.latency_total_ms,
+    };
+
     log.info('trade_exit', logData, { strategy_id: strategyId });
   }
 
@@ -736,6 +820,64 @@ export function getStateDivergence(localState, exchangeState) {
   ensureInitialized();
   return detectStateDivergence(localState, exchangeState);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIVERGENCE ALERTING FUNCTIONS (Story 5.4, AC6)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Generate alert for divergence - main entry point
+ *
+ * Formats the alert, determines severity, logs appropriately, and returns
+ * alert details. Wraps all operations in try/catch to ensure alerting never
+ * crashes the trade flow (fail-loud principle).
+ *
+ * @param {Object} event - Trade event with metrics
+ * @param {Object} divergenceResult - Result from getDivergenceCheck()
+ * @returns {Object} Alert details (or error info if alerting failed)
+ * @returns {boolean} result.alerted - Whether alert was generated
+ * @returns {string} [result.level] - Log level used ('error' or 'warn')
+ * @returns {string} [result.message] - Alert message
+ * @returns {string[]} [result.flags] - Divergence flags
+ */
+export { alertOnDivergence };
+
+/**
+ * Format a divergence alert with structured, actionable information
+ *
+ * Creates both a human-readable summary message and machine-readable
+ * structured data suitable for analysis and debugging.
+ *
+ * @param {Object} divergenceResult - Result from getDivergenceCheck()
+ * @param {Object} event - Original trade event with metrics
+ * @returns {Object} Formatted alert with message and structured data
+ * @returns {string} result.message - Human-readable summary
+ * @returns {Object} result.structured - Machine-readable structured data
+ * @returns {string[]} result.suggestions - Actionable next steps
+ */
+export { formatDivergenceAlert };
+
+/**
+ * Determine if divergence should escalate to error level
+ *
+ * Returns true if any divergence in the result has 'error' severity,
+ * which indicates state_divergence or size_divergence.
+ *
+ * @param {Object} divergenceResult - Result from getDivergenceCheck()
+ * @returns {boolean} True if any divergence requires error-level escalation
+ */
+export { shouldEscalate };
+
+/**
+ * Get severity level for a divergence flag
+ *
+ * State and size divergence are more severe (error level),
+ * while latency and slippage issues are warnings.
+ *
+ * @param {string} flag - Divergence flag name
+ * @returns {string} Severity level ('error' or 'warn')
+ */
+export { getDivergenceSeverity };
 
 /**
  * Get current module state

@@ -4,6 +4,105 @@ Required enhancements before live trading. These are fundamental safety issues t
 
 ---
 
+## Polymarket Market Mechanism [REFERENCE]
+
+**This is fundamental to all strategy design and must be understood before implementation.**
+
+### Conditional Token Model
+
+Polymarket uses **conditional tokens** (ERC-1155) - physical blockchain assets, NOT derivatives.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    POLYMARKET MARKET                            │
+│                                                                 │
+│   Each market has TWO separate tokens:                         │
+│                                                                 │
+│   ┌─────────────┐              ┌─────────────┐                 │
+│   │  UP Token   │              │ DOWN Token  │                 │
+│   │  (tokenId A)│              │ (tokenId B) │                 │
+│   └─────────────┘              └─────────────┘                 │
+│         │                            │                          │
+│         │ Separate order book        │ Separate order book     │
+│         │ Separate liquidity         │ Separate liquidity      │
+│         ▼                            ▼                          │
+│   ┌─────────────┐              ┌─────────────┐                 │
+│   │ Bids  Asks  │              │ Bids  Asks  │                 │
+│   │ 0.44  0.46  │              │ 0.54  0.56  │                 │
+│   └─────────────┘              └─────────────┘                 │
+│                                                                 │
+│   At resolution: Winner pays $1.00, Loser pays $0.00           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### No Short Selling
+
+**You can only sell tokens you physically own.** There is no margin, no borrowing, no shorting.
+
+| Action | Requires | Result |
+|--------|----------|--------|
+| BUY UP | USDC balance | Receive UP tokens |
+| SELL UP | **UP token balance** | Receive USDC |
+| BUY DOWN | USDC balance | Receive DOWN tokens |
+| SELL DOWN | **DOWN token balance** | Receive USDC |
+
+If you try to sell tokens you don't have: `"not enough balance / allowance"` - order rejected entirely.
+
+### Directional Betting
+
+```
+Traditional Market:               Polymarket:
+─────────────────                 ────────────
+Bullish = Long asset              Bullish = BUY UP token
+Bearish = Short asset             Bearish = BUY DOWN token (NOT short UP)
+```
+
+To bet AGAINST an outcome, you BUY the opposite token. You do not short.
+
+### Market Making Implications
+
+Market makers must:
+
+1. **Hold inventory of BOTH tokens** - Cannot quote asks without owning the tokens to sell
+2. **Manage two separate order books** - UP and DOWN have independent liquidity
+3. **Accept inventory risk** - If you sell all your UP tokens, you can't quote UP asks until you acquire more
+4. **Price relationship** - UP + DOWN prices don't always equal $1.00 due to spreads and independent books
+
+```
+Market Maker Inventory Example:
+─────────────────────────────
+Holdings: 1000 UP tokens, 800 DOWN tokens
+
+Can quote:
+  UP:   Bid 0.44 (buy more)  |  Ask 0.46 (sell from inventory)
+  DOWN: Bid 0.54 (buy more)  |  Ask 0.56 (sell from inventory)
+
+If someone lifts all 1000 UP tokens:
+  UP:   Bid 0.44 (buy more)  |  Ask ??? (NO INVENTORY - cannot quote)
+  DOWN: Bid 0.54 (buy more)  |  Ask 0.56 (still have inventory)
+```
+
+### Strategy Design Implications
+
+1. **Entry**: Always a BUY (either UP or DOWN token)
+2. **Exit before resolution**: SELL the token you bought
+3. **Hold to resolution**: Let Oracle settle - winning token pays $1, losing pays $0
+4. **No hedging via shorts**: To reduce UP exposure, must SELL UP tokens (not short)
+5. **Liquidity asymmetry**: UP and DOWN books may have different depth - check both
+
+### Resolution Mechanics
+
+At window expiry, Oracle determines outcome:
+
+| Outcome | UP Token Value | DOWN Token Value |
+|---------|---------------|------------------|
+| Spot went UP | $1.00 | $0.00 |
+| Spot went DOWN | $0.00 | $1.00 |
+
+Tokens are settled automatically. No action required if holding to resolution.
+
+---
+
 ## E1: Pre-Exit Balance Verification [CRITICAL]
 
 **Status:** NOT IMPLEMENTED
@@ -14,9 +113,11 @@ Required enhancements before live trading. These are fundamental safety issues t
 
 The current exit logic trusts `position.shares` from in-memory state without verifying against the exchange before selling. This creates risk of:
 
-1. **Overselling** - Attempting to sell more shares than we actually hold
-2. **Double-selling** - Attempting to sell after already exited (race condition)
-3. **Accidental short** - In extreme edge cases, could theoretically create opposite position
+1. **Wasted API calls** - Attempting to sell more shares than we hold (API rejects, but wastes time/rate limit)
+2. **Double-sell attempts** - Attempting to sell after already exited (API rejects, but causes confusion)
+3. **Stale state confusion** - System believes it has position when it doesn't, leading to incorrect decisions
+
+Note: Polymarket uses conditional tokens (physical assets), NOT derivatives. You cannot short-sell or create a position by selling tokens you don't own. The API will reject with "not enough balance / allowance". However, relying on API rejection is not defense-in-depth.
 
 ### Current Behavior
 

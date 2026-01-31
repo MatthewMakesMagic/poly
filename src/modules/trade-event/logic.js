@@ -8,6 +8,10 @@
 import { run, get, all } from '../../persistence/database.js';
 import { TradeEventType, TradeEventError, TradeEventErrorCodes } from './types.js';
 import { incrementEventCount } from './state.js';
+import { child } from '../logger/index.js';
+
+// Module-level logger for alert functions
+let alertLog = null;
 
 /**
  * Parse and validate an ISO timestamp string
@@ -777,19 +781,8 @@ export function detectDiagnosticFlags(event, thresholds = {}) {
 // DIVERGENCE DETECTION FUNCTIONS (Story 5.3)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Get severity level for a divergence flag
- *
- * State and size divergence are more severe (error level),
- * while latency and slippage issues are warnings.
- *
- * @param {string} flag - Divergence flag name
- * @returns {string} Severity level ('error' or 'warn')
- */
-function getDivergenceSeverity(flag) {
-  const severeFlags = ['state_divergence', 'size_divergence'];
-  return severeFlags.includes(flag) ? 'error' : 'warn';
-}
+// Note: getDivergenceSeverity is defined in the Alerting section (Story 5.4)
+// and is exported for use by other modules
 
 /**
  * Get detailed context for a divergence flag
@@ -1107,4 +1100,271 @@ export function queryDivergenceSummary({ windowId, strategyId, timeRange } = {})
       ])
     ),
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIVERGENCE ALERTING FUNCTIONS (Story 5.4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get severity level for a divergence flag (exported for use in alerting)
+ *
+ * State and size divergence are more severe (error level),
+ * while latency and slippage issues are warnings.
+ *
+ * @param {string} flag - Divergence flag name
+ * @returns {string} Severity level ('error' or 'warn')
+ */
+export function getDivergenceSeverity(flag) {
+  const severeFlags = ['state_divergence', 'size_divergence'];
+  return severeFlags.includes(flag) ? 'error' : 'warn';
+}
+
+/**
+ * Format a single divergence detail into a human-readable message
+ *
+ * @param {string} type - Divergence type
+ * @param {Object} details - Divergence details from checkDivergence
+ * @param {Object} event - Original trade event with metrics
+ * @returns {string} Human-readable description
+ */
+function formatDivergenceDetail(type, details, event) {
+  switch (type) {
+    case 'high_latency':
+      return `High latency: ${details.latency_ms ?? 'N/A'}ms (threshold: ${details.threshold_ms ?? 500}ms)`;
+
+    case 'slow_decision_to_submit':
+      return `Slow decision→submit: ${details.latency_ms ?? 'N/A'}ms (threshold: ${details.threshold_ms ?? 100}ms)`;
+
+    case 'slow_submit_to_ack':
+      return `Slow submit→ack: ${details.latency_ms ?? 'N/A'}ms (threshold: ${details.threshold_ms ?? 200}ms)`;
+
+    case 'slow_ack_to_fill':
+      return `Slow ack→fill: ${details.latency_ms ?? 'N/A'}ms (threshold: ${details.threshold_ms ?? 300}ms)`;
+
+    case 'high_slippage':
+    case 'entry_slippage': {
+      const expected = details.expected ?? event?.expected_price;
+      const actual = details.actual ?? event?.price_at_fill;
+      let slippagePct = 'N/A';
+      if (expected != null && actual != null && expected !== 0) {
+        slippagePct = ((actual - expected) / expected * 100).toFixed(2) + '%';
+      }
+      const typeLabel = type === 'entry_slippage' ? 'Entry slippage' : 'High slippage';
+      return `${typeLabel}: ${slippagePct} - expected ${expected?.toFixed(4) ?? 'N/A'}, got ${actual?.toFixed(4) ?? 'N/A'}`;
+    }
+
+    case 'size_impact':
+      return `Size impact: ${((details.ratio ?? 0) * 100).toFixed(1)}% of depth (threshold: ${((details.threshold ?? 0) * 100).toFixed(1)}%)`;
+
+    case 'size_divergence':
+      return `Size divergence: requested ${details.requested ?? 'N/A'}, filled ${details.filled ?? 'N/A'}`;
+
+    case 'state_divergence':
+      return `State divergence: local vs exchange mismatch detected`;
+
+    default:
+      return `${type}: divergence detected`;
+  }
+}
+
+/**
+ * Get known threshold values for reference in alerts
+ *
+ * @param {string} flag - Divergence flag name
+ * @returns {string} Human-readable threshold description
+ */
+function getThresholdForFlag(flag) {
+  const thresholds = {
+    high_latency: '500ms',
+    slow_decision_to_submit: '100ms',
+    slow_submit_to_ack: '200ms',
+    slow_ack_to_fill: '300ms',
+    high_slippage: '2%',
+    entry_slippage: '2%',
+    size_impact: '50% of depth',
+    size_divergence: '10% difference',
+    state_divergence: 'any mismatch',
+  };
+  return thresholds[flag] || 'N/A';
+}
+
+/**
+ * Get actionable suggestions based on divergence flags
+ *
+ * @param {string[]} flags - Array of divergence flag names
+ * @returns {string[]} Array of suggested actions
+ */
+function getSuggestionsForDivergences(flags) {
+  const suggestions = [];
+
+  if (flags.includes('high_latency')) {
+    suggestions.push('Check network latency and API response times');
+  }
+  if (flags.includes('slow_decision_to_submit')) {
+    suggestions.push('Check local processing bottlenecks');
+  }
+  if (flags.includes('slow_submit_to_ack')) {
+    suggestions.push('Check API connection and exchange responsiveness');
+  }
+  if (flags.includes('slow_ack_to_fill')) {
+    suggestions.push('Check market liquidity and order book depth');
+  }
+  if (flags.includes('high_slippage') || flags.includes('entry_slippage')) {
+    suggestions.push('Review orderbook depth and timing of entry signals');
+  }
+  if (flags.includes('size_impact')) {
+    suggestions.push('Consider reducing position size or improving liquidity detection');
+  }
+  if (flags.includes('size_divergence')) {
+    suggestions.push('Check for partial fills and orderbook depth');
+  }
+  if (flags.includes('state_divergence')) {
+    suggestions.push('CRITICAL: Run position reconciliation immediately');
+  }
+
+  return suggestions;
+}
+
+/**
+ * Format a divergence alert with structured, actionable information
+ *
+ * Creates both a human-readable summary message and machine-readable
+ * structured data suitable for analysis and debugging.
+ *
+ * @param {Object} divergenceResult - Result from checkDivergence()
+ * @param {Object} event - Original trade event with metrics
+ * @returns {Object} Formatted alert with message and structured data
+ * @returns {string} result.message - Human-readable summary
+ * @returns {Object} result.structured - Machine-readable structured data
+ * @returns {string[]} result.suggestions - Actionable next steps
+ */
+export function formatDivergenceAlert(divergenceResult, event) {
+  const { flags = [], divergences = [] } = divergenceResult || {};
+
+  // Build human-readable summary
+  const summaryParts = [];
+  for (const divergence of divergences) {
+    const { type, details = {} } = divergence;
+    summaryParts.push(formatDivergenceDetail(type, details, event));
+  }
+
+  return {
+    // Human-readable summary
+    message: summaryParts.join(' | ') || 'No divergence details',
+
+    // Structured data for analysis
+    structured: {
+      flags,
+      divergences: divergences.map(d => ({
+        type: d.type,
+        severity: d.severity,
+        expected: d.details?.expected ?? d.details?.threshold ?? d.details?.requested ?? null,
+        actual: d.details?.actual ?? d.details?.latency_ms ?? d.details?.ratio ?? d.details?.filled ?? null,
+        threshold: getThresholdForFlag(d.type),
+      })),
+      context: {
+        window_id: event?.window_id ?? null,
+        position_id: event?.position_id ?? null,
+        strategy_id: event?.strategy_id ?? null,
+        event_type: event?.event_type ?? null,
+      },
+      timestamps: {
+        signal_detected_at: event?.signal_detected_at ?? null,
+        order_filled_at: event?.order_filled_at ?? null,
+      },
+    },
+
+    // Suggested next steps
+    suggestions: getSuggestionsForDivergences(flags),
+  };
+}
+
+/**
+ * Determine if divergence should escalate to error level
+ *
+ * Returns true if any divergence in the result has 'error' severity,
+ * which indicates state_divergence or size_divergence.
+ *
+ * @param {Object} divergenceResult - Result from checkDivergence()
+ * @returns {boolean} True if any divergence requires error-level escalation
+ */
+export function shouldEscalate(divergenceResult) {
+  if (!divergenceResult || !divergenceResult.divergences) {
+    return false;
+  }
+
+  // Check if any divergence has 'error' severity
+  return divergenceResult.divergences.some(d => d.severity === 'error');
+}
+
+/**
+ * Generate alert for divergence - fail-loud, never throws
+ *
+ * Main entry point for divergence alerting. Formats the alert,
+ * determines severity, logs appropriately, and returns alert details.
+ * Wraps all operations in try/catch to ensure alerting never crashes
+ * the trade flow.
+ *
+ * @param {Object} event - Trade event with metrics
+ * @param {Object} divergenceResult - Result from checkDivergence()
+ * @returns {Object} Alert details (or error info if alerting failed)
+ * @returns {boolean} result.alerted - Whether alert was generated
+ * @returns {string} [result.level] - Log level used ('error' or 'warn')
+ * @returns {string} [result.message] - Alert message
+ * @returns {string[]} [result.flags] - Divergence flags
+ * @returns {string} [result.reason] - Reason if not alerted
+ * @returns {string} [result.error] - Error message if alerting failed
+ */
+export function alertOnDivergence(event, divergenceResult) {
+  try {
+    // Return early if no divergence
+    if (!divergenceResult || !divergenceResult.hasDivergence) {
+      return { alerted: false, reason: 'no_divergence' };
+    }
+
+    // Format the alert
+    const alert = formatDivergenceAlert(divergenceResult, event);
+
+    // Determine log level
+    const level = shouldEscalate(divergenceResult) ? 'error' : 'warn';
+
+    // Get or create logger
+    if (!alertLog) {
+      alertLog = child({ module: 'trade-event' });
+    }
+
+    // Build log data
+    const logData = {
+      message: alert.message,
+      ...alert.structured,
+      suggestions: alert.suggestions,
+    };
+
+    // Log the alert - never suppress
+    if (level === 'error') {
+      alertLog.error('divergence_alert', logData);
+    } else {
+      alertLog.warn('divergence_alert', logData);
+    }
+
+    return {
+      alerted: true,
+      level,
+      message: alert.message,
+      flags: divergenceResult.flags,
+    };
+  } catch (error) {
+    // Fail-loud but don't crash - log the alerting failure
+    console.error('ALERT_SYSTEM_ERROR: Failed to generate divergence alert', {
+      error: error.message,
+      event_id: event?.id,
+    });
+
+    return {
+      alerted: false,
+      reason: 'alert_system_error',
+      error: error.message,
+    };
+  }
 }

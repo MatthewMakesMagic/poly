@@ -1471,4 +1471,259 @@ describe('Trade Event Module', () => {
       );
     });
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STORY 5.4: DIVERGENCE ALERTING - ENHANCED STRUCTURED ALERTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('recordEntry with enhanced alert structure (Story 5.4)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init({
+        tradeEvent: {
+          thresholds: {
+            latencyThresholdMs: 500,
+            slippageThresholdPct: 0.02,
+            partialFillThresholdPct: 0.1,
+          },
+        },
+      });
+    });
+
+    it('should include structured alert_message when divergence detected (AC2)', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z', // 600ms > 500ms
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: {
+          requestedSize: 100,
+          filledSize: 100,
+        },
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          alert_message: expect.stringContaining('High latency'),
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should include divergences array with type, severity, threshold (AC2)', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z',
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: { requestedSize: 100, filledSize: 100 },
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          divergences: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'high_latency',
+              severity: 'warn',
+              threshold: '500ms',
+            }),
+          ]),
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should include actionable suggestions (AC3)', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z',
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.50,
+          expectedPrice: 0.50,
+        },
+        sizes: { requestedSize: 100, filledSize: 100 },
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          suggestions: expect.arrayContaining([
+            expect.stringContaining('Check network latency'),
+          ]),
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should include slippage_pct when slippage divergence occurs', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {},
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.55, // 10% slippage > 2% threshold
+          expectedPrice: 0.50,
+        },
+        sizes: { requestedSize: 100, filledSize: 100 },
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          slippage_pct: expect.stringMatching(/\d+\.\d+%/),
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should include multiple divergences in single alert (AC4)', async () => {
+      await tradeEvent.recordEntry({
+        windowId: 'window-123',
+        positionId: 1,
+        orderId: 100,
+        strategyId: 'spot-lag-v1',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z', // 600ms > 500ms
+        },
+        prices: {
+          priceAtSignal: 0.50,
+          priceAtFill: 0.55, // 10% slippage
+          expectedPrice: 0.50,
+        },
+        sizes: { requestedSize: 100, filledSize: 100 },
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_entry_divergence',
+        expect.objectContaining({
+          diagnostic_flags: expect.arrayContaining(['high_latency', 'high_slippage']),
+        }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('recordExit with enhanced alert structure (Story 5.4)', () => {
+    beforeEach(async () => {
+      await tradeEvent.init({
+        tradeEvent: {
+          thresholds: {
+            latencyThresholdMs: 500,
+            partialFillThresholdPct: 0.1,
+          },
+        },
+      });
+      database.get.mockReturnValue({ id: 1 }); // Position exists
+    });
+
+    it('should include structured alert_message when divergence detected (AC2)', async () => {
+      await tradeEvent.recordExit({
+        windowId: 'window-123',
+        positionId: 1,
+        exitReason: 'stop_loss',
+        timestamps: {
+          signalDetectedAt: '2026-01-31T10:00:00.000Z',
+          orderFilledAt: '2026-01-31T10:00:00.600Z',
+        },
+        prices: {},
+        sizes: {},
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'trade_exit_divergence',
+        expect.objectContaining({
+          alert_message: expect.stringContaining('High latency'),
+          suggestions: expect.any(Array),
+        }),
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('Exported alert functions (Story 5.4, AC6)', () => {
+    it('should export alertOnDivergence', () => {
+      expect(tradeEvent.alertOnDivergence).toBeDefined();
+      expect(typeof tradeEvent.alertOnDivergence).toBe('function');
+    });
+
+    it('should export formatDivergenceAlert', () => {
+      expect(tradeEvent.formatDivergenceAlert).toBeDefined();
+      expect(typeof tradeEvent.formatDivergenceAlert).toBe('function');
+    });
+
+    it('should export shouldEscalate', () => {
+      expect(tradeEvent.shouldEscalate).toBeDefined();
+      expect(typeof tradeEvent.shouldEscalate).toBe('function');
+    });
+
+    it('should export getDivergenceSeverity', () => {
+      expect(tradeEvent.getDivergenceSeverity).toBeDefined();
+      expect(typeof tradeEvent.getDivergenceSeverity).toBe('function');
+    });
+
+    it('formatDivergenceAlert should return structured data', () => {
+      const divergenceResult = {
+        hasDivergence: true,
+        flags: ['high_latency'],
+        divergences: [{ type: 'high_latency', severity: 'warn', details: { latency_ms: 600, threshold_ms: 500 } }],
+      };
+      const event = { window_id: 'w1', position_id: 1 };
+
+      const alert = tradeEvent.formatDivergenceAlert(divergenceResult, event);
+
+      expect(alert).toHaveProperty('message');
+      expect(alert).toHaveProperty('structured');
+      expect(alert).toHaveProperty('suggestions');
+      expect(alert.structured.flags).toContain('high_latency');
+    });
+
+    it('shouldEscalate should return true for severe divergence', () => {
+      const severeResult = {
+        divergences: [{ type: 'state_divergence', severity: 'error' }],
+      };
+      const warnResult = {
+        divergences: [{ type: 'high_latency', severity: 'warn' }],
+      };
+
+      expect(tradeEvent.shouldEscalate(severeResult)).toBe(true);
+      expect(tradeEvent.shouldEscalate(warnResult)).toBe(false);
+    });
+
+    it('getDivergenceSeverity should return correct levels', () => {
+      expect(tradeEvent.getDivergenceSeverity('state_divergence')).toBe('error');
+      expect(tradeEvent.getDivergenceSeverity('size_divergence')).toBe('error');
+      expect(tradeEvent.getDivergenceSeverity('high_latency')).toBe('warn');
+      expect(tradeEvent.getDivergenceSeverity('high_slippage')).toBe('warn');
+    });
+  });
 });
