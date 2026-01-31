@@ -259,7 +259,10 @@ export async function killCommand() {
       });
     }
   } catch (snapshotErr) {
-    warn('state_snapshot_read_failed', { error: snapshotErr.message });
+    warn('state_snapshot_processing_failed', {
+      error: snapshotErr.message,
+      message: 'Failed to process state snapshot - manual exchange verification required',
+    });
   }
 
   const methodDescriptions = {

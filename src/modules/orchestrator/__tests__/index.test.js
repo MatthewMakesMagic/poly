@@ -62,6 +62,20 @@ vi.mock('../../logger/index.js', () => ({
   }),
 }));
 
+vi.mock('../../../../kill-switch/state-snapshot.js', () => ({
+  writeSnapshot: vi.fn().mockResolvedValue(undefined),
+  buildSnapshot: vi.fn().mockReturnValue({
+    version: 1,
+    timestamp: new Date().toISOString(),
+    pid: process.pid,
+    forced_kill: false,
+    stale_warning: false,
+    positions: [],
+    orders: [],
+    summary: { open_positions: 0, open_orders: 0, total_exposure: 0 },
+  }),
+}));
+
 // Import after mocks
 import * as orchestrator from '../index.js';
 import persistence from '../../../persistence/index.js';
@@ -70,6 +84,7 @@ import * as spot from '../../../clients/spot/index.js';
 import * as positionManager from '../../position-manager/index.js';
 import * as orderManager from '../../order-manager/index.js';
 import { OrchestratorErrorCodes, OrchestratorState } from '../types.js';
+import { writeSnapshot, buildSnapshot } from '../../../../kill-switch/state-snapshot.js';
 
 // Test configuration
 const mockConfig = {
@@ -432,6 +447,72 @@ describe('Orchestrator Module', () => {
       await orchestrator.shutdown();
 
       expect(orchestrator.getState().modules).toEqual({});
+    });
+  });
+
+  describe('Periodic State Updates', () => {
+    it('starts periodic state updates after init', async () => {
+      const configWithShortInterval = {
+        ...mockConfig,
+        killSwitch: { stateUpdateIntervalMs: 50 },
+      };
+
+      await orchestrator.init(configWithShortInterval);
+
+      // Wait for at least 2 intervals
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      // writeSnapshot should have been called at least once
+      expect(writeSnapshot).toHaveBeenCalled();
+    });
+
+    it('stops periodic state updates on shutdown', async () => {
+      const configWithShortInterval = {
+        ...mockConfig,
+        killSwitch: { stateUpdateIntervalMs: 50 },
+      };
+
+      await orchestrator.init(configWithShortInterval);
+
+      // Wait for at least one update
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      const callCountBeforeShutdown = writeSnapshot.mock.calls.length;
+
+      await orchestrator.shutdown();
+
+      // Wait to ensure no more updates
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Should not have more calls after shutdown (allow +1 for final snapshot)
+      expect(writeSnapshot.mock.calls.length).toBeLessThanOrEqual(callCountBeforeShutdown + 1);
+    });
+
+    it('writes final state snapshot on graceful shutdown', async () => {
+      await orchestrator.init(mockConfig);
+      writeSnapshot.mockClear();
+
+      await orchestrator.shutdown();
+
+      // Final snapshot should be written
+      expect(writeSnapshot).toHaveBeenCalled();
+    });
+
+    it('handles writeSnapshot failure without blocking', async () => {
+      const configWithShortInterval = {
+        ...mockConfig,
+        killSwitch: { stateUpdateIntervalMs: 50 },
+      };
+
+      writeSnapshot.mockRejectedValueOnce(new Error('Write failed'));
+
+      await orchestrator.init(configWithShortInterval);
+
+      // Wait for the failed write
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      // Should still be running (not crashed)
+      expect(orchestrator.getState().state).toBe(OrchestratorState.INITIALIZED);
     });
   });
 });

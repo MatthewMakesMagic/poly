@@ -30,6 +30,7 @@ import * as positionSizer from '../position-sizer/index.js';
 import * as stopLoss from '../stop-loss/index.js';
 import * as takeProfit from '../take-profit/index.js';
 import * as windowExpiry from '../window-expiry/index.js';
+import * as tradeEvent from '../trade-event/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 
 import {
@@ -62,6 +63,7 @@ const MODULE_MAP = {
   'stop-loss': stopLoss,
   'take-profit': takeProfit,
   'window-expiry': windowExpiry,
+  'trade-event': tradeEvent,
 };
 
 // PID file path for kill switch watchdog integration
@@ -73,6 +75,7 @@ let config = null;
 let state = createInitialState();
 let executionLoop = null;
 let stateUpdateInterval = null;
+let stateWriteInProgress = false;
 
 /**
  * Write the main process PID file for watchdog integration
@@ -129,6 +132,15 @@ function startPeriodicStateUpdates() {
   const intervalMs = config?.killSwitch?.stateUpdateIntervalMs || 5000;
 
   stateUpdateInterval = setInterval(async () => {
+    // Guard against overlapping writes
+    if (stateWriteInProgress) {
+      if (log) {
+        log.debug('state_snapshot_skipped_in_progress');
+      }
+      return;
+    }
+
+    stateWriteInProgress = true;
     try {
       await writeStateSnapshot(false);
     } catch (err) {
@@ -136,6 +148,8 @@ function startPeriodicStateUpdates() {
         log.warn('state_snapshot_write_failed', { error: err.message });
       }
       // Don't throw - non-blocking
+    } finally {
+      stateWriteInProgress = false;
     }
   }, intervalMs);
 
@@ -153,6 +167,7 @@ function stopPeriodicStateUpdates() {
   if (stateUpdateInterval) {
     clearInterval(stateUpdateInterval);
     stateUpdateInterval = null;
+    stateWriteInProgress = false;
     if (log) {
       log.info('periodic_state_updates_stopped');
     }

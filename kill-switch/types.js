@@ -57,6 +57,12 @@ export const WatchdogCommands = {
 
 /**
  * Default configuration values
+ *
+ * NOTE: These defaults are intentionally duplicated from config/default.js
+ * to ensure watchdog independence. The watchdog must function even if the
+ * main process's config loading is broken. If paths change in config/default.js,
+ * they should also be updated here. See architecture.md: "Kill switch is
+ * independent (only shares state file location)"
  */
 export const WatchdogDefaults = {
   GRACEFUL_TIMEOUT_MS: 2000,

@@ -12,6 +12,7 @@
  */
 
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import { WatchdogDefaults } from './types.js';
 import { log, warn } from './logger.js';
@@ -32,6 +33,7 @@ export const DEFAULT_STALE_THRESHOLD_MS = 5000;
  *
  * Uses a temp file + rename pattern to ensure atomic writes.
  * This prevents corrupted state files if the process crashes mid-write.
+ * Uses async I/O to avoid blocking the event loop (AC3 requirement).
  *
  * @param {Object} snapshot - State snapshot to write
  * @param {string} [filePath] - Path to state file (defaults to config path)
@@ -41,30 +43,45 @@ export async function writeSnapshot(snapshot, filePath = WatchdogDefaults.STATE_
   const tempFile = `${filePath}.tmp`;
   const dir = path.dirname(filePath);
 
-  // Ensure directory exists
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    // Ensure directory exists
+    if (!fs.existsSync(dir)) {
+      await fsPromises.mkdir(dir, { recursive: true });
+    }
+
+    // Write to temp file first (atomic, non-blocking)
+    await fsPromises.writeFile(tempFile, JSON.stringify(snapshot, null, 2), 'utf-8');
+
+    // Rename to final path (atomic on most filesystems)
+    await fsPromises.rename(tempFile, filePath);
+
+    log('state_snapshot_written', {
+      path: filePath,
+      version: snapshot.version,
+      positions_count: snapshot.positions?.length || 0,
+      orders_count: snapshot.orders?.length || 0,
+    });
+  } catch (err) {
+    // Clean up temp file on error to prevent accumulation
+    try {
+      if (fs.existsSync(tempFile)) {
+        await fsPromises.unlink(tempFile);
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw err;
   }
-
-  // Write to temp file first (atomic)
-  fs.writeFileSync(tempFile, JSON.stringify(snapshot, null, 2), 'utf-8');
-
-  // Rename to final path (atomic on most filesystems)
-  fs.renameSync(tempFile, filePath);
-
-  log('state_snapshot_written', {
-    path: filePath,
-    version: snapshot.version,
-    positions_count: snapshot.positions?.length || 0,
-    orders_count: snapshot.orders?.length || 0,
-  });
 }
 
 /**
  * Read a state snapshot from file
  *
+ * Validates the snapshot schema before returning. Returns null for
+ * invalid/incompatible snapshots with appropriate warnings.
+ *
  * @param {string} [filePath] - Path to state file (defaults to config path)
- * @returns {Object|null} Parsed snapshot or null if not found/invalid
+ * @returns {Object|null} Parsed and validated snapshot or null if not found/invalid
  */
 export function readSnapshot(filePath = WatchdogDefaults.STATE_FILE_PATH) {
   try {
@@ -77,7 +94,36 @@ export function readSnapshot(filePath = WatchdogDefaults.STATE_FILE_PATH) {
       return null;
     }
 
-    return JSON.parse(content);
+    const snapshot = JSON.parse(content);
+
+    // Validate required schema fields
+    if (!snapshot || typeof snapshot !== 'object') {
+      warn('state_snapshot_invalid_format', {
+        path: filePath,
+        reason: 'Not an object',
+      });
+      return null;
+    }
+
+    // Validate version compatibility
+    if (snapshot.version !== SNAPSHOT_VERSION) {
+      warn('state_snapshot_version_mismatch', {
+        path: filePath,
+        expected: SNAPSHOT_VERSION,
+        actual: snapshot.version,
+      });
+      // Still return the snapshot for backwards compatibility, but log warning
+    }
+
+    // Validate required fields exist
+    if (!snapshot.timestamp) {
+      warn('state_snapshot_missing_timestamp', {
+        path: filePath,
+      });
+      return null;
+    }
+
+    return snapshot;
   } catch (err) {
     warn('state_snapshot_read_failed', {
       path: filePath,
