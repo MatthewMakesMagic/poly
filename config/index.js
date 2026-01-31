@@ -9,7 +9,8 @@ import { config as loadEnv } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-// Load .env file if it exists
+// Load .env.local first (takes precedence), then .env as fallback
+loadEnv({ path: '.env.local' });
 loadEnv();
 
 const __filename = fileURLToPath(import.meta.url);

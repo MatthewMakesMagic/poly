@@ -134,6 +134,8 @@ export function evaluateEntryConditions(marketState) {
       spot_price,
       market_price: window.market_price,
       time_remaining_ms: window.time_remaining_ms,
+      token_id_up: window.token_id_up,
+      token_id_down: window.token_id_down,
       thresholds,
       log,
     });

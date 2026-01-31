@@ -77,6 +77,9 @@ export function createEntrySignal({
   spot_lag,
   spot_lag_pct,
   time_remaining_ms,
+  token_id,
+  token_id_up,
+  token_id_down,
 }) {
   return {
     window_id,
@@ -88,6 +91,9 @@ export function createEntrySignal({
     spot_lag,
     spot_lag_pct,
     time_remaining_ms,
+    token_id,
+    token_id_up,
+    token_id_down,
     signal_at: new Date().toISOString(),
   };
 }

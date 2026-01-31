@@ -41,6 +41,8 @@ export function evaluateEntry({
   spot_price,
   market_price,
   time_remaining_ms,
+  token_id_up,
+  token_id_down,
   thresholds,
   log = null,
 }) {
@@ -100,6 +102,9 @@ export function evaluateEntry({
   const direction = Direction.LONG;
   const confidence = calculateConfidence(market_price, entryThreshold);
 
+  // Select token based on direction (LONG = UP token, market_price is UP price)
+  const token_id = direction === Direction.LONG ? token_id_up : token_id_down;
+
   // Create entry signal
   const signal = createEntrySignal({
     window_id,
@@ -111,6 +116,9 @@ export function evaluateEntry({
     spot_lag: 0, // Not used in simple strategy
     spot_lag_pct: 0,
     time_remaining_ms,
+    token_id,
+    token_id_up,
+    token_id_down,
   });
 
   // Mark this window as entered
