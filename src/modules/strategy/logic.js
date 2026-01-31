@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { run, get, all } from '../../persistence/database.js';
 import { ComponentType, TypePrefix, StrategyError, StrategyErrorCodes } from './types.js';
 import { getCatalog, setCatalog, addToCatalog, getFromCatalog, incrementStrategyCount } from './state.js';
+import { deepMerge } from './composer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -578,4 +579,457 @@ export function getStrategyForks(strategyId, { activeOnly = false } = {}) {
       { strategyId, error: err.message }
     );
   }
+}
+
+/**
+ * Find all strategies using a specific component version
+ *
+ * Queries the database for strategies where any component column
+ * matches the given versionId.
+ *
+ * @param {string} versionId - Component version ID
+ * @param {Object} [options] - Query options
+ * @param {boolean} [options.activeOnly=false] - Only return active strategies
+ * @returns {Object[]} Array of strategy summaries with componentSlot
+ * @throws {StrategyError} If database error occurs
+ */
+export function getStrategiesUsingComponent(versionId, { activeOnly = false } = {}) {
+  if (!versionId) {
+    return [];
+  }
+
+  let sql = `
+    SELECT id, name, active,
+      CASE
+        WHEN probability_component = ? THEN 'probability'
+        WHEN entry_component = ? THEN 'entry'
+        WHEN exit_component = ? THEN 'exit'
+        WHEN sizing_component = ? THEN 'sizing'
+      END as component_slot
+    FROM strategy_instances
+    WHERE probability_component = ?
+       OR entry_component = ?
+       OR exit_component = ?
+       OR sizing_component = ?`;
+
+  const params = [
+    versionId, versionId, versionId, versionId,
+    versionId, versionId, versionId, versionId,
+  ];
+
+  if (activeOnly) {
+    sql += ' AND active = 1';
+  }
+
+  sql += ' ORDER BY name ASC';
+
+  try {
+    const rows = all(sql, params);
+    return rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      active: row.active === 1,
+      componentSlot: row.component_slot,
+    }));
+  } catch (err) {
+    throw new StrategyError(
+      StrategyErrorCodes.DATABASE_ERROR,
+      `Failed to get strategies using component: ${err.message}`,
+      { versionId, error: err.message }
+    );
+  }
+}
+
+/**
+ * Get version history for a component by type and name
+ *
+ * Queries the in-memory catalog for all versions matching the
+ * type and name pattern, returning them sorted by version descending.
+ *
+ * @param {string} type - Component type (probability, entry, exit, sizing)
+ * @param {string} name - Component name (kebab-case)
+ * @returns {Object[]} Array of version entries sorted by version descending
+ */
+export function getComponentVersionHistory(type, name) {
+  if (!type || !name) {
+    return [];
+  }
+
+  const catalog = getCatalog();
+  const typeComponents = catalog[type];
+
+  if (!typeComponents) {
+    return [];
+  }
+
+  // Find all components matching type and name
+  const prefix = TypePrefix[type];
+  if (!prefix) {
+    return [];
+  }
+
+  const versionPattern = new RegExp(`^${prefix}-${name}-v(\\d+)$`);
+  const versions = [];
+
+  for (const [versionId, component] of Object.entries(typeComponents)) {
+    const match = versionId.match(versionPattern);
+    if (match) {
+      versions.push({
+        versionId,
+        version: parseInt(match[1], 10),
+        createdAt: component.createdAt || null,
+      });
+    }
+  }
+
+  // Sort by version descending (newest first)
+  versions.sort((a, b) => b.version - a.version);
+
+  return versions;
+}
+
+/**
+ * Update a strategy's component in the database
+ *
+ * Internal function used by upgradeStrategyComponent.
+ *
+ * @param {string} strategyId - Strategy ID to update
+ * @param {string} componentType - Component slot to update (probability, entry, exit, sizing)
+ * @param {string} newVersionId - New component version ID
+ * @returns {boolean} True if update succeeded
+ * @throws {StrategyError} If database error occurs
+ */
+export function updateStrategyComponent(strategyId, componentType, newVersionId) {
+  const columnMap = {
+    probability: 'probability_component',
+    entry: 'entry_component',
+    exit: 'exit_component',
+    sizing: 'sizing_component',
+  };
+
+  const column = columnMap[componentType];
+  if (!column) {
+    throw new StrategyError(
+      StrategyErrorCodes.INVALID_COMPONENT_TYPE,
+      `Invalid component type: ${componentType}`,
+      { componentType, validTypes: Object.keys(columnMap) }
+    );
+  }
+
+  try {
+    const result = run(
+      `UPDATE strategy_instances SET ${column} = ? WHERE id = ?`,
+      [newVersionId, strategyId]
+    );
+    return result.changes > 0;
+  } catch (err) {
+    throw new StrategyError(
+      StrategyErrorCodes.DATABASE_ERROR,
+      `Failed to update strategy component: ${err.message}`,
+      { strategyId, componentType, newVersionId, error: err.message }
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STORY 6.5: STRATEGY CONFIGURATION FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Component execution order for strategy pipeline
+ */
+const COMPONENT_ORDER = ['probability', 'entry', 'sizing', 'exit'];
+
+/**
+ * Get a strategy's configuration JSON
+ *
+ * @param {string} strategyId - Strategy ID
+ * @returns {Object|null} Strategy config or null if not found
+ */
+export function getStrategyConfig(strategyId) {
+  if (!strategyId) {
+    return null;
+  }
+
+  const strategy = getStrategy(strategyId);
+  return strategy ? strategy.config : null;
+}
+
+/**
+ * Validate a strategy's current configuration against its components
+ *
+ * @param {string} strategyId - Strategy ID to validate
+ * @returns {Object} Validation result { valid, errors, componentResults }
+ */
+export function validateStrategyConfig(strategyId) {
+  if (!strategyId) {
+    return {
+      valid: false,
+      errors: ['Strategy ID is required'],
+      componentResults: {},
+    };
+  }
+
+  const strategy = getStrategy(strategyId);
+  if (!strategy) {
+    return {
+      valid: false,
+      errors: [`Strategy ${strategyId} not found`],
+      componentResults: {},
+    };
+  }
+
+  const errors = [];
+  const componentResults = {};
+
+  // Validate config against each component's validateConfig()
+  for (const type of COMPONENT_ORDER) {
+    const versionId = strategy.components[type];
+    const component = getFromCatalog(versionId);
+
+    if (!component) {
+      errors.push(`Component ${versionId} (${type}) not found in catalog`);
+      componentResults[type] = {
+        valid: false,
+        errors: ['Component not found in catalog'],
+      };
+      continue;
+    }
+
+    if (component.module && typeof component.module.validateConfig === 'function') {
+      const validation = component.module.validateConfig(strategy.config);
+      componentResults[type] = {
+        valid: validation.valid,
+        errors: validation.errors,
+      };
+
+      if (!validation.valid) {
+        errors.push(`Config validation failed for ${type}: ${(validation.errors || []).join(', ')}`);
+      }
+    } else {
+      componentResults[type] = { valid: true };
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors: errors.length > 0 ? errors : undefined,
+    componentResults,
+  };
+}
+
+/**
+ * Build a diff of config changes between current and proposed
+ *
+ * @param {Object} currentConfig - Current configuration
+ * @param {Object} proposedConfig - Proposed configuration
+ * @returns {Object} Diff { changed, added, removed }
+ */
+function buildConfigDiff(currentConfig, proposedConfig) {
+  const changed = {};
+  const added = {};
+  const removed = {};
+
+  // Find changed and added keys
+  for (const key of Object.keys(proposedConfig)) {
+    if (!(key in currentConfig)) {
+      added[key] = proposedConfig[key];
+    } else if (JSON.stringify(currentConfig[key]) !== JSON.stringify(proposedConfig[key])) {
+      changed[key] = { from: currentConfig[key], to: proposedConfig[key] };
+    }
+  }
+
+  // Find removed keys
+  for (const key of Object.keys(currentConfig)) {
+    if (!(key in proposedConfig)) {
+      removed[key] = currentConfig[key];
+    }
+  }
+
+  return { changed, added, removed };
+}
+
+/**
+ * Validate config against all strategy components
+ *
+ * @param {Object} strategy - Strategy object with components
+ * @param {Object} config - Config to validate
+ * @returns {Object} Validation result { valid, errors, componentResults }
+ */
+function validateConfigAgainstComponents(strategy, config) {
+  const errors = [];
+  const componentResults = {};
+
+  for (const type of COMPONENT_ORDER) {
+    const versionId = strategy.components[type];
+    const component = getFromCatalog(versionId);
+
+    if (!component) {
+      errors.push(`Component ${versionId} (${type}) not found in catalog`);
+      componentResults[type] = {
+        valid: false,
+        errors: ['Component not found in catalog'],
+      };
+      continue;
+    }
+
+    if (component.module && typeof component.module.validateConfig === 'function') {
+      const validation = component.module.validateConfig(config);
+      componentResults[type] = {
+        valid: validation.valid,
+        errors: validation.errors,
+      };
+
+      if (!validation.valid) {
+        errors.push(`Config validation failed for ${type}: ${(validation.errors || []).join(', ')}`);
+      }
+    } else {
+      componentResults[type] = { valid: true };
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors: errors.length > 0 ? errors : undefined,
+    componentResults,
+  };
+}
+
+/**
+ * Preview a config update without making changes
+ *
+ * @param {string} strategyId - Strategy ID
+ * @param {Object} newConfig - Proposed new configuration
+ * @param {Object} [options={}] - Preview options
+ * @param {boolean} [options.merge=true] - Deep merge with existing (true) or replace (false)
+ * @returns {Object} Preview result { canUpdate, currentConfig, proposedConfig, diff, validationResult }
+ */
+export function previewConfigUpdate(strategyId, newConfig, options = {}) {
+  const { merge = true } = options;
+
+  if (!strategyId) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      'Strategy ID is required',
+      { strategyId }
+    );
+  }
+
+  const strategy = getStrategy(strategyId);
+  if (!strategy) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${strategyId} not found`,
+      { strategyId }
+    );
+  }
+
+  const currentConfig = strategy.config || {};
+
+  // Build proposed config based on merge option
+  let proposedConfig;
+  if (merge) {
+    proposedConfig = deepMerge(currentConfig, newConfig || {});
+  } else {
+    proposedConfig = newConfig || {};
+  }
+
+  // Build diff
+  const diff = buildConfigDiff(currentConfig, proposedConfig);
+
+  // Validate proposed config against all components
+  const validationResult = validateConfigAgainstComponents(strategy, proposedConfig);
+
+  return {
+    canUpdate: validationResult.valid,
+    currentConfig,
+    proposedConfig,
+    diff,
+    validationResult,
+  };
+}
+
+/**
+ * Update a strategy's configuration
+ *
+ * @param {string} strategyId - Strategy ID to update
+ * @param {Object} newConfig - New configuration values
+ * @param {Object} [options={}] - Update options
+ * @param {boolean} [options.merge=true] - Deep merge with existing (true) or replace (false)
+ * @returns {Object} Updated strategy with new config
+ * @throws {StrategyError} If strategy not found or config validation fails
+ */
+export function updateStrategyConfig(strategyId, newConfig, options = {}) {
+  const { merge = true } = options;
+
+  if (!strategyId) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      'Strategy ID is required',
+      { strategyId }
+    );
+  }
+
+  // Load strategy
+  const strategy = getStrategy(strategyId);
+  if (!strategy) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${strategyId} not found`,
+      { strategyId }
+    );
+  }
+
+  const currentConfig = strategy.config || {};
+
+  // Build proposed config based on merge option
+  let proposedConfig;
+  try {
+    if (merge) {
+      proposedConfig = deepMerge(currentConfig, newConfig || {});
+    } else {
+      proposedConfig = newConfig || {};
+    }
+  } catch (err) {
+    throw new StrategyError(
+      StrategyErrorCodes.CONFIG_MERGE_FAILED,
+      `Failed to merge config: ${err.message}`,
+      { strategyId, error: err.message }
+    );
+  }
+
+  // Validate proposed config against all components
+  const validationResult = validateConfigAgainstComponents(strategy, proposedConfig);
+
+  if (!validationResult.valid) {
+    throw new StrategyError(
+      StrategyErrorCodes.CONFIG_UPDATE_FAILED,
+      `Config validation failed: ${(validationResult.errors || []).join(', ')}`,
+      {
+        strategyId,
+        errors: validationResult.errors,
+        componentResults: validationResult.componentResults,
+      }
+    );
+  }
+
+  // Update database
+  try {
+    run(
+      'UPDATE strategy_instances SET config = ? WHERE id = ?',
+      [JSON.stringify(proposedConfig), strategyId]
+    );
+  } catch (err) {
+    throw new StrategyError(
+      StrategyErrorCodes.DATABASE_ERROR,
+      `Failed to update strategy config: ${err.message}`,
+      { strategyId, error: err.message }
+    );
+  }
+
+  // Return updated strategy
+  return {
+    ...strategy,
+    config: proposedConfig,
+  };
 }

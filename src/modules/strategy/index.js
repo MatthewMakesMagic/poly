@@ -41,6 +41,11 @@ import {
   deactivateStrategy,
   getStrategyLineage as getStrategyLineageLogic,
   getStrategyForks as getStrategyForksLogic,
+  // Story 6.5: Strategy Configuration functions
+  getStrategyConfig as getStrategyConfigLogic,
+  validateStrategyConfig as validateStrategyConfigLogic,
+  previewConfigUpdate as previewConfigUpdateLogic,
+  updateStrategyConfig as updateStrategyConfigLogic,
 } from './logic.js';
 import {
   createStrategy as createStrategyLogic,
@@ -529,6 +534,104 @@ export function diffFromParent(forkId) {
   });
 
   return diff;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIGURATION FUNCTIONS (Story 6.5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get a strategy's configuration JSON
+ *
+ * @param {string} strategyId - Strategy ID
+ * @returns {Object|null} Strategy config or null if not found
+ */
+export function getStrategyConfig(strategyId) {
+  ensureInitialized();
+
+  const config = getStrategyConfigLogic(strategyId);
+
+  log.info('strategy_config_retrieved', {
+    strategy_id: strategyId,
+    has_config: config !== null,
+    config_keys: config ? Object.keys(config) : [],
+  });
+
+  return config;
+}
+
+/**
+ * Validate a strategy's current configuration against its components
+ *
+ * @param {string} strategyId - Strategy ID to validate
+ * @returns {Object} Validation result { valid, errors, componentResults }
+ */
+export function validateStrategyConfig(strategyId) {
+  ensureInitialized();
+
+  const result = validateStrategyConfigLogic(strategyId);
+
+  log.info('strategy_config_validated', {
+    strategy_id: strategyId,
+    valid: result.valid,
+    error_count: result.errors?.length ?? 0,
+  });
+
+  return result;
+}
+
+/**
+ * Preview a config update without making changes
+ *
+ * @param {string} strategyId - Strategy ID
+ * @param {Object} newConfig - Proposed new configuration
+ * @param {Object} [options={}] - Preview options
+ * @param {boolean} [options.merge=true] - Deep merge with existing (true) or replace (false)
+ * @returns {Object} Preview result { canUpdate, currentConfig, proposedConfig, diff, validationResult }
+ */
+export function previewConfigUpdate(strategyId, newConfig, options = {}) {
+  ensureInitialized();
+
+  const preview = previewConfigUpdateLogic(strategyId, newConfig, options);
+
+  log.info('strategy_config_preview', {
+    strategy_id: strategyId,
+    can_update: preview.canUpdate,
+    merge_mode: options.merge !== false,
+    changed_keys: Object.keys(preview.diff.changed),
+    added_keys: Object.keys(preview.diff.added),
+    removed_keys: Object.keys(preview.diff.removed),
+  });
+
+  return preview;
+}
+
+/**
+ * Update a strategy's configuration
+ *
+ * @param {string} strategyId - Strategy ID to update
+ * @param {Object} newConfig - New configuration values
+ * @param {Object} [options={}] - Update options
+ * @param {boolean} [options.merge=true] - Deep merge with existing (true) or replace (false)
+ * @returns {Object} Updated strategy with new config
+ * @throws {StrategyError} If strategy not found or config validation fails
+ */
+export function updateStrategyConfig(strategyId, newConfig, options = {}) {
+  ensureInitialized();
+
+  // Get current config for logging
+  const currentConfig = getStrategyConfigLogic(strategyId);
+
+  const updatedStrategy = updateStrategyConfigLogic(strategyId, newConfig, options);
+
+  log.info('strategy_config_updated', {
+    strategy_id: strategyId,
+    merge_mode: options.merge !== false,
+    old_config_keys: currentConfig ? Object.keys(currentConfig) : [],
+    new_config_keys: Object.keys(updatedStrategy.config),
+  });
+
+  return updatedStrategy;
 }
 
 // Re-export types and constants
