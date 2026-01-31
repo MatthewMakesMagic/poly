@@ -64,7 +64,7 @@ development_status:
   3-1-orchestrator-module-execution-loop: done
   3-2-strategy-entry-evaluation: done
   3-3-position-sizing-liquidity: done
-  3-4-stop-loss-module: backlog
+  3-4-stop-loss-module: done
   3-5-take-profit-module: backlog
   3-6-window-expiry-handling: backlog
   epic-3-retrospective: optional

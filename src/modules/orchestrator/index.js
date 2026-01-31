@@ -24,6 +24,7 @@ import * as positionManager from '../position-manager/index.js';
 import * as orderManager from '../order-manager/index.js';
 import * as strategyEvaluator from '../strategy-evaluator/index.js';
 import * as positionSizer from '../position-sizer/index.js';
+import * as stopLoss from '../stop-loss/index.js';
 
 import {
   OrchestratorError,
@@ -51,6 +52,7 @@ const MODULE_MAP = {
   'order-manager': orderManager,
   'strategy-evaluator': strategyEvaluator,
   'position-sizer': positionSizer,
+  'stop-loss': stopLoss,
 };
 
 // Module-level state

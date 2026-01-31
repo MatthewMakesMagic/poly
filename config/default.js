@@ -79,5 +79,10 @@ export default {
       maxSlippagePct: 0.01,          // 1% max slippage
       confidenceMultiplier: 0.5,     // Size adjustment based on confidence (0 = disabled)
     },
+    // Stop-loss configuration
+    stopLoss: {
+      enabled: true,                 // Enable/disable stop-loss evaluation
+      defaultStopLossPct: 0.05,      // 5% default stop-loss
+    },
   },
 };

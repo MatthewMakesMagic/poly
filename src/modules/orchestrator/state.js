@@ -30,6 +30,8 @@ export const MODULE_INIT_ORDER = [
   // Strategy modules
   { name: 'strategy-evaluator', module: null, configKey: null },
   { name: 'position-sizer', module: null, configKey: null },
+  // Exit condition modules
+  { name: 'stop-loss', module: null, configKey: null },
 ];
 
 /**
