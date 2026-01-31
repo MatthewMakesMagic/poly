@@ -112,6 +112,24 @@ describe('Spot Client Module', () => {
 
       expect(child).toHaveBeenCalledWith({ module: 'spot-client' });
     });
+
+    it('should throw for invalid hermesUrl format', async () => {
+      await expect(
+        spotClient.init({
+          spot: {
+            hermesUrl: 'not-a-valid-url',
+          },
+        })
+      ).rejects.toThrow(SpotClientError);
+
+      await expect(
+        spotClient.init({
+          spot: {
+            hermesUrl: 'not-a-valid-url',
+          },
+        })
+      ).rejects.toThrow('Invalid hermesUrl format');
+    });
   });
 
   describe('getCurrentPrice()', () => {
@@ -244,6 +262,34 @@ describe('Spot Client Module', () => {
 
       expect(() => spotClient.subscribe('btc', 'not a function')).toThrow(SpotClientError);
       expect(() => spotClient.subscribe('btc', null)).toThrow(SpotClientError);
+    });
+
+    it('should not break other subscribers when one callback throws', async () => {
+      await spotClient.init({});
+
+      const failingCallback = vi.fn(() => {
+        throw new Error('Callback error');
+      });
+      const successCallback = vi.fn();
+
+      spotClient.subscribe('btc', failingCallback);
+      spotClient.subscribe('btc', successCallback);
+
+      // Trigger polling to invoke callbacks
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // Both callbacks should have been called
+      expect(failingCallback).toHaveBeenCalled();
+      expect(successCallback).toHaveBeenCalled();
+
+      // Error should be logged
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'subscriber_callback_error',
+        expect.objectContaining({
+          crypto: 'btc',
+          error: 'Callback error',
+        })
+      );
     });
   });
 
@@ -453,7 +499,7 @@ describe('Spot Client Module', () => {
       await spotClient.init({});
 
       // Advance time to make prices stale (> 10 seconds)
-      vi.advanceTimersByTime(15000);
+      await vi.advanceTimersByTimeAsync(15000);
 
       // Get price should trigger staleness warning
       spotClient.getCurrentPrice('btc');
@@ -470,7 +516,7 @@ describe('Spot Client Module', () => {
     it('should include staleness in getState response', async () => {
       await spotClient.init({});
 
-      vi.advanceTimersByTime(5000);
+      await vi.advanceTimersByTimeAsync(5000);
 
       const state = spotClient.getState();
 

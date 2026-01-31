@@ -81,6 +81,17 @@ export class SpotClient {
       );
     }
 
+    // Validate URL format
+    try {
+      new URL(this.config.hermesUrl);
+    } catch {
+      throw new SpotClientError(
+        SpotClientErrorCodes.CONNECTION_FAILED,
+        `Invalid hermesUrl format: ${this.config.hermesUrl}`,
+        { hermesUrl: this.config.hermesUrl }
+      );
+    }
+
     // Initialize price storage for all supported cryptos
     for (const crypto of SUPPORTED_CRYPTOS) {
       this.prices[crypto] = null;
@@ -143,7 +154,7 @@ export class SpotClient {
     this.log.info('polling_start', { intervalMs: this.config.pollIntervalMs });
 
     this.pollingInterval = setInterval(async () => {
-      if (this.disabled) {
+      if (this.disabled || !this.initialized) {
         this.stopPolling();
         return;
       }
@@ -151,7 +162,9 @@ export class SpotClient {
       try {
         await this.fetchPrices();
       } catch (err) {
-        // Error handling is done in fetchPrices
+        // Primary error handling is done in fetchPrices via handleError
+        // Log here in case of unexpected errors that escape the handler
+        this.log.warn('polling_fetch_error', { error: err.message });
       }
     }, this.config.pollIntervalMs);
   }
@@ -279,6 +292,13 @@ export class SpotClient {
 
     this.reconnectTimeout = setTimeout(async () => {
       this.reconnectTimeout = null;
+
+      // Check if shutdown was called during the delay
+      if (!this.initialized) {
+        this.log.info('reconnect_cancelled', { reason: 'client_shutdown' });
+        return;
+      }
+
       this.reconnectAttempts++;
       this.stats.reconnects++;
 
