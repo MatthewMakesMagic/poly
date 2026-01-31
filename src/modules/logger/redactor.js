@@ -5,6 +5,9 @@
  * following NFR12 requirement that credentials are never logged.
  */
 
+// Maximum recursion depth to prevent stack overflow on deeply nested objects
+const MAX_DEPTH = 50;
+
 // Patterns that indicate sensitive field names
 const SENSITIVE_PATTERNS = [
   /key/i,
@@ -38,9 +41,15 @@ function isSensitiveField(fieldName) {
  *
  * @param {any} obj - Object to redact
  * @param {WeakSet} [seen=new WeakSet()] - Tracks circular references
+ * @param {number} [depth=0] - Current recursion depth
  * @returns {any} Object with sensitive values redacted
  */
-export function redactSensitive(obj, seen = new WeakSet()) {
+export function redactSensitive(obj, seen = new WeakSet(), depth = 0) {
+  // Prevent stack overflow on deeply nested objects
+  if (depth > MAX_DEPTH) {
+    return '[Max Depth Exceeded]';
+  }
+
   // Handle null/undefined
   if (obj === null || obj === undefined) {
     return obj;
@@ -59,7 +68,7 @@ export function redactSensitive(obj, seen = new WeakSet()) {
 
   // Handle arrays
   if (Array.isArray(obj)) {
-    return obj.map((item) => redactSensitive(item, seen));
+    return obj.map((item) => redactSensitive(item, seen, depth + 1));
   }
 
   // Handle objects
@@ -68,7 +77,7 @@ export function redactSensitive(obj, seen = new WeakSet()) {
     if (isSensitiveField(key)) {
       redacted[key] = REDACTED_VALUE;
     } else if (typeof value === 'object' && value !== null) {
-      redacted[key] = redactSensitive(value, seen);
+      redacted[key] = redactSensitive(value, seen, depth + 1);
     } else {
       redacted[key] = value;
     }

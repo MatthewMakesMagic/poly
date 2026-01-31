@@ -66,6 +66,10 @@ describe('Logger Module', () => {
     it('exports shutdown function', () => {
       expect(typeof logger.shutdown).toBe('function');
     });
+
+    it('exports flush function', () => {
+      expect(typeof logger.flush).toBe('function');
+    });
   });
 
   describe('init (AC3)', () => {
@@ -105,6 +109,18 @@ describe('Logger Module', () => {
 
       expect(existsSync(newLogDir)).toBe(true);
     });
+
+    it('validates log level and defaults to info for invalid levels', async () => {
+      await logger.init({
+        logging: {
+          level: 'invalid_level',
+          directory: logDir,
+        },
+      });
+
+      const state = logger.getState();
+      expect(state.config.level).toBe('info');
+    });
   });
 
   describe('info/warn/error (AC1, AC2)', () => {
@@ -120,6 +136,7 @@ describe('Logger Module', () => {
 
     it('info produces JSON with required fields', async () => {
       logger.info('test_event', { value: 1 });
+      await logger.flush();
 
       // Read the log file
       const today = new Date().toISOString().split('T')[0];
@@ -135,6 +152,7 @@ describe('Logger Module', () => {
 
     it('warn produces JSON with required fields', async () => {
       logger.warn('warning_event', { count: 5 });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -148,6 +166,7 @@ describe('Logger Module', () => {
 
     it('error produces JSON with required fields', async () => {
       logger.error('error_event', { code: 'ERR' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -160,6 +179,7 @@ describe('Logger Module', () => {
 
     it('timestamp is valid ISO 8601 format with milliseconds', async () => {
       logger.info('timestamp_test');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -174,6 +194,7 @@ describe('Logger Module', () => {
       logger.info('info_test');
       logger.warn('warn_test');
       logger.error('error_test');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -187,6 +208,7 @@ describe('Logger Module', () => {
 
     it('includes optional data and context', async () => {
       logger.info('data_test', { user: 'test' }, { session: 'abc123' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -202,6 +224,7 @@ describe('Logger Module', () => {
       err.code = 'TEST_ERROR';
 
       logger.error('error_with_obj', { context: 'test' }, {}, err);
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -228,6 +251,7 @@ describe('Logger Module', () => {
       logger.info('info_msg');
       logger.warn('warn_msg');
       logger.error('error_msg');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -249,6 +273,7 @@ describe('Logger Module', () => {
       logger.info('info_msg'); // Should be filtered
       logger.warn('warn_msg');
       logger.error('error_msg');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -272,6 +297,7 @@ describe('Logger Module', () => {
       logger.info('info_msg'); // Should be filtered
       logger.warn('warn_msg'); // Should be filtered
       logger.error('error_msg');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -296,6 +322,7 @@ describe('Logger Module', () => {
 
     it('redacts fields containing "key"', async () => {
       logger.info('sensitive_test', { apiKey: 'secret123', normalField: 'visible' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -308,6 +335,7 @@ describe('Logger Module', () => {
 
     it('redacts fields containing "secret"', async () => {
       logger.info('sensitive_test', { apiSecret: 'hidden', user: 'visible' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -327,6 +355,7 @@ describe('Logger Module', () => {
           },
         },
       });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -344,6 +373,7 @@ describe('Logger Module', () => {
           { name: 'item2', token: 'secret2' },
         ],
       });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -370,6 +400,7 @@ describe('Logger Module', () => {
     it('includes default fields in all logs', async () => {
       const log = logger.child({ module: 'position-manager' });
       log.info('position_opened', { window_id: 'w123' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -384,6 +415,7 @@ describe('Logger Module', () => {
     it('merges with per-log fields', async () => {
       const log = logger.child({ module: 'order-manager', strategy: 'spot-lag' });
       log.info('order_placed', { order_id: 'o456' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -409,6 +441,7 @@ describe('Logger Module', () => {
       const log = logger.child({ module: 'test-module' });
       log.info('filtered_event'); // Should be filtered
       log.warn('warn_event');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -423,6 +456,7 @@ describe('Logger Module', () => {
       const parent = logger.child({ module: 'orchestrator' });
       const child = parent.child({ component: 'scheduler' });
       child.info('scheduled_task', { task_id: 't789' });
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -450,6 +484,7 @@ describe('Logger Module', () => {
       logger.info('event1');
       logger.info('event2');
       logger.info('event3');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -465,6 +500,7 @@ describe('Logger Module', () => {
 
     it('uses daily rotation filename', async () => {
       logger.info('test_event');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
       const expectedFile = join(logDir, `poly-${today}.log`);
@@ -474,6 +510,7 @@ describe('Logger Module', () => {
 
     it('appends to existing file', async () => {
       logger.info('first_event');
+      await logger.flush();
 
       // Re-initialize without clearing file
       await logger.shutdown();
@@ -486,6 +523,7 @@ describe('Logger Module', () => {
       });
 
       logger.info('second_event');
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);
@@ -623,6 +661,7 @@ describe('Logger Module', () => {
 
       // Should not throw
       logger.info('circular_test', circular);
+      await logger.flush();
 
       const today = new Date().toISOString().split('T')[0];
       const logFile = join(logDir, `poly-${today}.log`);

@@ -7,8 +7,11 @@
  * - All field names use snake_case
  */
 
+// Maximum recursion depth to prevent stack overflow on deeply nested objects
+const MAX_DEPTH = 50;
+
 /**
- * Format a log entry as JSON
+ * Format a log entry as JSON string
  *
  * @param {string} level - Log level (info, warn, error)
  * @param {string|null} moduleName - Module name
@@ -19,6 +22,24 @@
  * @returns {string} JSON formatted log entry
  */
 export function formatLogEntry(level, moduleName, event, data = {}, context = {}, err = null) {
+  const { entryString } = formatLogEntryObject(level, moduleName, event, data, context, err);
+  return entryString;
+}
+
+/**
+ * Format a log entry, returning both object and string representations
+ *
+ * This avoids double JSON parsing when both are needed (e.g., for console output).
+ *
+ * @param {string} level - Log level (info, warn, error)
+ * @param {string|null} moduleName - Module name
+ * @param {string} event - Event name
+ * @param {Object} [data={}] - Event data
+ * @param {Object} [context={}] - Additional context
+ * @param {Error|null} [err=null] - Error object
+ * @returns {{ entryObject: Object, entryString: string }} Both representations
+ */
+export function formatLogEntryObject(level, moduleName, event, data = {}, context = {}, err = null) {
   const entry = {
     timestamp: new Date().toISOString(),
     level,
@@ -28,12 +49,12 @@ export function formatLogEntry(level, moduleName, event, data = {}, context = {}
 
   // Add optional data if not empty
   if (data && Object.keys(data).length > 0) {
-    entry.data = serializeValue(data);
+    entry.data = serializeValue(data, new WeakSet(), 0);
   }
 
   // Add optional context if not empty
   if (context && Object.keys(context).length > 0) {
-    entry.context = serializeValue(context);
+    entry.context = serializeValue(context, new WeakSet(), 0);
   }
 
   // Add error info if provided
@@ -41,7 +62,10 @@ export function formatLogEntry(level, moduleName, event, data = {}, context = {}
     entry.error = formatError(err);
   }
 
-  return JSON.stringify(entry);
+  return {
+    entryObject: entry,
+    entryString: JSON.stringify(entry),
+  };
 }
 
 /**
@@ -49,9 +73,15 @@ export function formatLogEntry(level, moduleName, event, data = {}, context = {}
  *
  * @param {any} value - Value to serialize
  * @param {WeakSet} [seen=new WeakSet()] - Tracks circular references
+ * @param {number} [depth=0] - Current recursion depth
  * @returns {any} Serialized value
  */
-function serializeValue(value, seen = new WeakSet()) {
+function serializeValue(value, seen = new WeakSet(), depth = 0) {
+  // Prevent stack overflow on deeply nested objects
+  if (depth > MAX_DEPTH) {
+    return '[Max Depth Exceeded]';
+  }
+
   if (value === null || value === undefined) {
     return value;
   }
@@ -73,7 +103,7 @@ function serializeValue(value, seen = new WeakSet()) {
 
   // Handle arrays
   if (Array.isArray(value)) {
-    return value.map((item) => serializeValue(item, seen));
+    return value.map((item) => serializeValue(item, seen, depth + 1));
   }
 
   // Handle objects
@@ -86,8 +116,7 @@ function serializeValue(value, seen = new WeakSet()) {
 
     const result = {};
     for (const [key, val] of Object.entries(value)) {
-      // Convert camelCase to snake_case for top-level keys
-      result[key] = serializeValue(val, seen);
+      result[key] = serializeValue(val, seen, depth + 1);
     }
     return result;
   }

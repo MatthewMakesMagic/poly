@@ -13,18 +13,28 @@
  * - child(defaultFields) - Create child logger with bound fields
  * - getState() - Get current logger state
  * - shutdown() - Gracefully shutdown logger
+ * - flush() - Flush pending writes (for testing)
  */
 
 import { mkdirSync, existsSync } from 'node:fs';
-import { formatLogEntry } from './formatter.js';
+import { formatLogEntry, formatLogEntryObject } from './formatter.js';
 import { redactSensitive } from './redactor.js';
-import { writeToFile, closeWriter, getWriterStats } from './writer.js';
+import { writeToFile, closeWriter, getWriterStats, flushWrites } from './writer.js';
+import { isValidLevel } from './schema.js';
 
 // Log level priorities (lower number = higher priority)
 const LOG_LEVELS = {
   error: 0,
   warn: 1,
   info: 2,
+};
+
+// ANSI color codes for console output
+const CONSOLE_COLORS = {
+  error: '\x1b[31m', // Red
+  warn: '\x1b[33m',  // Yellow
+  info: '\x1b[36m',  // Cyan
+  reset: '\x1b[0m',
 };
 
 // Module state
@@ -51,9 +61,13 @@ let state = {
 export async function init(config) {
   const loggingConfig = config.logging || {};
 
+  // Validate and set log level
+  const requestedLevel = loggingConfig.level || 'info';
+  const validLevel = isValidLevel(requestedLevel) ? requestedLevel : 'info';
+
   // Set defaults
   state.config = {
-    level: loggingConfig.level || 'info',
+    level: validLevel,
     directory: loggingConfig.directory || './logs',
     console: loggingConfig.console !== undefined
       ? loggingConfig.console
@@ -98,8 +112,15 @@ function log(level, moduleName, event, data = {}, context = {}, err = null) {
   const redactedData = redactSensitive(data);
   const redactedContext = redactSensitive(context);
 
-  // Format the log entry
-  const logEntry = formatLogEntry(level, moduleName, event, redactedData, redactedContext, err);
+  // Format the log entry - get both object and string
+  const { entryObject, entryString } = formatLogEntryObject(
+    level,
+    moduleName,
+    event,
+    redactedData,
+    redactedContext,
+    err
+  );
 
   // Update stats
   state.stats.totalLogs++;
@@ -110,16 +131,16 @@ function log(level, moduleName, event, data = {}, context = {}, err = null) {
 
   // Write to file
   try {
-    writeToFile(logEntry, state.config.directory);
+    writeToFile(entryString, state.config.directory);
   } catch (writeErr) {
     // Fail-open: log to console on write failure
     console.error('[logger write failed]', writeErr.message);
     state.stats.errorCount++;
   }
 
-  // Console output in development
+  // Console output in development (use object directly, no re-parsing)
   if (state.config.console) {
-    outputToConsole(level, logEntry);
+    outputToConsole(level, entryObject);
   }
 }
 
@@ -127,37 +148,29 @@ function log(level, moduleName, event, data = {}, context = {}, err = null) {
  * Output log entry to console with formatting
  *
  * @param {string} level - Log level
- * @param {string} logEntry - JSON log entry
+ * @param {Object} entry - Log entry object (avoids re-parsing JSON)
  */
-function outputToConsole(level, logEntry) {
-  const parsed = JSON.parse(logEntry);
-
-  // Color codes for different levels
-  const colors = {
-    error: '\x1b[31m', // Red
-    warn: '\x1b[33m',  // Yellow
-    info: '\x1b[36m',  // Cyan
-  };
-  const reset = '\x1b[0m';
-  const color = colors[level] || '';
+function outputToConsole(level, entry) {
+  const color = CONSOLE_COLORS[level] || '';
+  const reset = CONSOLE_COLORS.reset;
 
   // Pretty format for console
-  const timestamp = parsed.timestamp;
-  const module = parsed.module || '-';
-  const event = parsed.event;
+  const timestamp = entry.timestamp;
+  const module = entry.module || '-';
+  const event = entry.event;
 
   let output = `${color}[${timestamp}] ${level.toUpperCase()} [${module}] ${event}${reset}`;
 
-  if (parsed.data && Object.keys(parsed.data).length > 0) {
-    output += `\n  data: ${JSON.stringify(parsed.data, null, 2).replace(/\n/g, '\n  ')}`;
+  if (entry.data && Object.keys(entry.data).length > 0) {
+    output += `\n  data: ${JSON.stringify(entry.data, null, 2).replace(/\n/g, '\n  ')}`;
   }
 
-  if (parsed.context && Object.keys(parsed.context).length > 0) {
-    output += `\n  context: ${JSON.stringify(parsed.context, null, 2).replace(/\n/g, '\n  ')}`;
+  if (entry.context && Object.keys(entry.context).length > 0) {
+    output += `\n  context: ${JSON.stringify(entry.context, null, 2).replace(/\n/g, '\n  ')}`;
   }
 
-  if (parsed.error) {
-    output += `\n  error: ${JSON.stringify(parsed.error, null, 2).replace(/\n/g, '\n  ')}`;
+  if (entry.error) {
+    output += `\n  error: ${JSON.stringify(entry.error, null, 2).replace(/\n/g, '\n  ')}`;
   }
 
   console.log(output);
@@ -221,6 +234,17 @@ export function child(defaultFields = {}) {
       return child({ ...defaultFields, ...additionalFields });
     },
   };
+}
+
+/**
+ * Flush pending log writes to disk
+ *
+ * Useful for testing to ensure writes complete before assertions.
+ *
+ * @returns {Promise<void>}
+ */
+export async function flush() {
+  await flushWrites();
 }
 
 /**
