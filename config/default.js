@@ -51,6 +51,12 @@ export default {
     stateStaleThresholdMs: 5000, // Consider snapshot stale after this
   },
 
+  // Safety module configuration
+  safety: {
+    startingCapital: parseFloat(process.env.STARTING_CAPITAL) || 1000,
+    unrealizedUpdateIntervalMs: 5000,  // Update unrealized P&L every 5 seconds
+  },
+
   // Trading window configuration
   trading: {
     windowDurationMs: 15 * 60 * 1000,  // 15 minutes

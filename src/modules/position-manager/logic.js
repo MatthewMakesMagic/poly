@@ -25,6 +25,7 @@ import {
   countPositionsByMarket,
   setLastReconciliation,
 } from './state.js';
+import * as safety from '../safety/index.js';
 
 /**
  * Validate position parameters
@@ -545,6 +546,14 @@ export async function closePosition(positionId, params, log) {
       pnl,
       emergency,
     });
+
+    // 6. Notify safety module about realized P&L (fire-and-forget)
+    try {
+      safety.recordRealizedPnl(pnl);
+    } catch (err) {
+      // Don't block position close - log and continue
+      log.warn('safety_pnl_record_failed', { error: err.message, pnl, positionId });
+    }
 
     return closedPosition;
   } catch (err) {
