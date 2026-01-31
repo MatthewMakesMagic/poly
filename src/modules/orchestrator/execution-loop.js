@@ -319,8 +319,61 @@ export class ExecutionLoop {
         }
       }
 
-      // 6. Future: Process any pending orders
-      // 7. Future: Check window expiry (Story 3.6)
+      // 6. Evaluate exit conditions - window expiry (Story 3.6)
+      let windowExpiryResults = { expiring: [], resolved: [], summary: { evaluated: 0, expiring: 0, resolved: 0, safe: 0 } };
+      if (this.modules['window-expiry'] && this.modules['position-manager']) {
+        const windowExpiryModule = this.modules['window-expiry'];
+        const positionManager = this.modules['position-manager'];
+
+        // Get all open positions (positions not already closed by stop-loss/take-profit)
+        const openPositions = positionManager.getPositions();
+
+        if (openPositions.length > 0) {
+          // Get window data (resolution info) for each window
+          const getWindowData = (windowId) => {
+            // Future: Query polymarket for window resolution data
+            // For now, return empty (window will be checked by timing only)
+            // When resolution data is available, it should include:
+            // { resolution_price: 0 or 1, resolved_at: ISO timestamp }
+            return {};
+          };
+
+          windowExpiryResults = windowExpiryModule.evaluateAll(openPositions, getWindowData);
+
+          // Handle resolved positions - close with resolution P&L
+          for (const result of windowExpiryResults.resolved) {
+            try {
+              await positionManager.closePosition(result.position_id, {
+                closePrice: result.resolution_price ?? result.current_price,
+                reason: 'window_expiry',
+                resolution_outcome: result.outcome,
+                pnl: result.pnl,
+              });
+
+              this.log.info('window_expiry_position_closed', {
+                position_id: result.position_id,
+                window_id: result.window_id,
+                entry_price: result.entry_price,
+                resolution_price: result.resolution_price,
+                outcome: result.outcome,
+                pnl: result.pnl,
+                pnl_pct: result.pnl_pct,
+              });
+            } catch (closeErr) {
+              this.log.error('window_expiry_close_failed', {
+                position_id: result.position_id,
+                error: closeErr.message,
+                code: closeErr.code,
+              });
+            }
+          }
+
+          // Note: Expiring positions are logged but not closed - they will resolve naturally
+          // The expiring flag can be used to block new entries in expiring windows
+        }
+      }
+
+      // 7. Future: Process any pending orders
 
       const tickDurationMs = Date.now() - tickStart;
       this.log.info('tick_complete', {
@@ -334,6 +387,9 @@ export class ExecutionLoop {
         stopLossTriggered: stopLossResults.summary.triggered,
         takeProfitEvaluated: takeProfitResults.summary.evaluated,
         takeProfitTriggered: takeProfitResults.summary.triggered,
+        windowExpiryEvaluated: windowExpiryResults.summary.evaluated,
+        windowExpiryExpiring: windowExpiryResults.summary.expiring,
+        windowExpiryResolved: windowExpiryResults.summary.resolved,
       });
     } catch (err) {
       const tickDurationMs = Date.now() - tickStart;

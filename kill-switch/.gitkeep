@@ -1,2 +1,0 @@
-# Kill switch watchdog process (separate from main)
-# Files to be added: watchdog.js, state-snapshot.js, README.md

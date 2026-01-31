@@ -89,5 +89,10 @@ export default {
       enabled: true,                  // Enable/disable take-profit evaluation
       defaultTakeProfitPct: 0.10,     // 10% default take-profit
     },
+    // Window expiry configuration
+    windowExpiry: {
+      enabled: true,                        // Enable/disable window expiry evaluation
+      expiryWarningThresholdMs: 30 * 1000,  // 30 seconds - warn when this close to expiry
+    },
   },
 };

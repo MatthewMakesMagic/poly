@@ -66,12 +66,12 @@ development_status:
   3-3-position-sizing-liquidity: done
   3-4-stop-loss-module: done
   3-5-take-profit-module: done
-  3-6-window-expiry-handling: backlog
+  3-6-window-expiry-handling: done
   epic-3-retrospective: optional
 
   # Epic 4: Safety Controls
-  epic-4: backlog
-  4-1-kill-switch-watchdog-process: backlog
+  epic-4: in-progress
+  4-1-kill-switch-watchdog-process: in-progress
   4-2-state-snapshot-on-kill: backlog
   4-3-drawdown-tracking: backlog
   4-4-drawdown-limit-enforcement-auto-stop: backlog

@@ -33,6 +33,7 @@ export const MODULE_INIT_ORDER = [
   // Exit condition modules
   { name: 'stop-loss', module: null, configKey: null },
   { name: 'take-profit', module: null, configKey: null },
+  { name: 'window-expiry', module: null, configKey: null },
 ];
 
 /**

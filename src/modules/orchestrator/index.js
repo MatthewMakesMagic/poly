@@ -16,6 +16,8 @@
  * @module modules/orchestrator
  */
 
+import fs from 'fs';
+import path from 'path';
 import { child } from '../logger/index.js';
 import persistence from '../../persistence/index.js';
 import * as polymarket from '../../clients/polymarket/index.js';
@@ -26,6 +28,7 @@ import * as strategyEvaluator from '../strategy-evaluator/index.js';
 import * as positionSizer from '../position-sizer/index.js';
 import * as stopLoss from '../stop-loss/index.js';
 import * as takeProfit from '../take-profit/index.js';
+import * as windowExpiry from '../window-expiry/index.js';
 
 import {
   OrchestratorError,
@@ -55,13 +58,59 @@ const MODULE_MAP = {
   'position-sizer': positionSizer,
   'stop-loss': stopLoss,
   'take-profit': takeProfit,
+  'window-expiry': windowExpiry,
 };
+
+// PID file path for kill switch watchdog integration
+const PID_FILE = './data/main.pid';
 
 // Module-level state
 let log = null;
 let config = null;
 let state = createInitialState();
 let executionLoop = null;
+
+/**
+ * Write the main process PID file for watchdog integration
+ *
+ * @private
+ */
+function writePidFile() {
+  try {
+    const dir = path.dirname(PID_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(PID_FILE, process.pid.toString(), 'utf-8');
+    if (log) {
+      log.info('pid_file_written', { path: PID_FILE, pid: process.pid });
+    }
+  } catch (err) {
+    if (log) {
+      log.warn('pid_file_write_failed', { path: PID_FILE, error: err.message });
+    }
+  }
+}
+
+/**
+ * Remove the main process PID file on shutdown
+ *
+ * @private
+ */
+function removePidFile() {
+  try {
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+      if (log) {
+        log.info('pid_file_removed', { path: PID_FILE });
+      }
+    }
+  } catch (err) {
+    if (log) {
+      log.warn('pid_file_remove_failed', { path: PID_FILE, error: err.message });
+    }
+  }
+}
 
 /**
  * Initialize the orchestrator and all managed modules
@@ -86,6 +135,9 @@ export async function init(cfg) {
 
   log.info('orchestrator_init_start');
 
+  // Write PID file for kill switch watchdog integration
+  writePidFile();
+
   // Initialize modules in dependency order
   try {
     await initializeModules(cfg);
@@ -94,6 +146,7 @@ export async function init(cfg) {
     log.info('orchestrator_initialized', {
       moduleCount: state.initializationOrder.length,
       modules: state.initializationOrder,
+      pid: process.pid,
     });
   } catch (err) {
     state.state = OrchestratorState.ERROR;
@@ -301,7 +354,10 @@ export async function shutdown() {
   // 3. Shutdown modules in reverse initialization order
   await shutdownModules();
 
-  // 4. Clean up orchestrator state
+  // 4. Remove PID file
+  removePidFile();
+
+  // 5. Clean up orchestrator state
   clearModules();
   state = createInitialState();
   state.stoppedAt = new Date().toISOString();
