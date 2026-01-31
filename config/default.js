@@ -25,9 +25,9 @@ export default {
 
   // Risk management limits
   risk: {
-    maxPositionSize: 100,        // Maximum size per position
-    maxExposure: 500,            // Maximum total exposure
-    dailyDrawdownLimit: 0.05,    // 5% daily drawdown limit
+    maxPositionSize: 5,          // Maximum size per position ($5 cap)
+    maxExposure: 20,             // Maximum total exposure ($20 cap)
+    dailyDrawdownLimit: 0.10,    // 10% daily drawdown limit
     positionLimitPerMarket: 1,   // Max positions per market
   },
 
@@ -111,26 +111,30 @@ export default {
   // Strategy configuration
   strategy: {
     entry: {
-      spotLagThresholdPct: 0.02,   // 2% lag required to enter
+      spotLagThresholdPct: 0.001,  // 0.1% lag to enter (low threshold for ExecutionTest)
       minConfidence: 0.6,          // Minimum confidence to enter
       // minTimeRemainingMs comes from trading.minTimeRemainingMs
     },
     // Position sizing configuration
     sizing: {
-      baseSizeDollars: 10,           // Base position size in dollars
+      baseSizeDollars: 2,            // Base position size in dollars ($2 default)
       minSizeDollars: 1,             // Minimum tradeable size
       maxSlippagePct: 0.01,          // 1% max slippage
-      confidenceMultiplier: 0.5,     // Size adjustment based on confidence (0 = disabled)
+      confidenceMultiplier: 0,       // Disabled - fixed $2 size
     },
     // Stop-loss configuration
     stopLoss: {
       enabled: true,                 // Enable/disable stop-loss evaluation
-      defaultStopLossPct: 0.05,      // 5% default stop-loss
+      defaultStopLossPct: 0.50,      // 50% stop-loss for ExecutionTest (volatile market)
     },
     // Take-profit configuration
     takeProfit: {
       enabled: true,                  // Enable/disable take-profit evaluation
-      defaultTakeProfitPct: 0.10,     // 10% default take-profit
+      defaultTakeProfitPct: 0.10,     // 10% default take-profit (fixed mode)
+      trailingEnabled: true,          // Use trailing stop mode for ExecutionTest
+      trailingActivationPct: 0.01,    // 1% profit to activate trailing (enter fast for testing)
+      trailingPullbackPct: 0.50,      // 50% pullback from HWM to trigger exit (volatile market)
+      minProfitFloorPct: 0.01,        // 1% minimum profit floor (allow quick exits)
     },
     // Window expiry configuration
     windowExpiry: {

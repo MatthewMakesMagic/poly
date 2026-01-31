@@ -260,43 +260,78 @@ export class ExecutionLoop {
                 adjustment_reason: sizingResult.adjustment_reason,
               });
 
-              // Future: Pass to order-manager for execution (Story 3.4+)
-              // When order manager integration is complete:
-              // 1. Place order and get timestamps (Story 5.2, AC1, AC7):
-              //    const orderResult = await this.modules['order-manager'].placeOrder({
-              //      tokenId: signal.token_id,
-              //      side: signal.direction,
-              //      size: sizingResult.actual_size,
-              //      price: signal.expected_price,
-              //      orderType: 'GTC',
-              //      windowId: signal.window_id,
-              //      marketId: signal.market_id,
-              //    });
-              //
-              // 2. Record entry event with timestamps and market context (Story 5.2, AC3, AC7):
-              //    await this.modules['trade-event'].recordEntry({
-              //      windowId: signal.window_id,
-              //      positionId: positionResult.position_id,
-              //      orderId: orderResult.orderId,
-              //      strategyId: signal.strategy_id,
-              //      timestamps: {
-              //        signalDetectedAt: signal.signalDetectedAt,   // Captured at signal time
-              //        orderSubmittedAt: orderResult.timestamps.orderSubmittedAt,
-              //        orderAckedAt: orderResult.timestamps.orderAckedAt,
-              //        orderFilledAt: orderResult.timestamps.orderFilledAt,
-              //      },
-              //      prices: {
-              //        priceAtSignal: signal.price,
-              //        priceAtSubmit: signal.expected_price,
-              //        priceAtFill: orderResult.fillPrice,
-              //        expectedPrice: signal.expected_price,
-              //      },
-              //      sizes: {
-              //        requestedSize: sizingResult.requested_size,
-              //        filledSize: orderResult.filledSize,
-              //      },
-              //      marketContext: signal.marketContext,  // Captured at signal time
-              //    });
+              // Place order via order-manager (Story 3.4+)
+              if (this.modules['order-manager'] && signal.token_id) {
+                try {
+                  const orderResult = await this.modules['order-manager'].placeOrder({
+                    tokenId: signal.token_id,
+                    side: signal.direction === 'long' ? 'buy' : 'sell',
+                    size: sizingResult.actual_size,
+                    price: signal.market_price || signal.expected_price,
+                    orderType: 'GTC',
+                    windowId: signal.window_id,
+                    marketId: signal.market_id,
+                  });
+
+                  this.log.info('order_placed', {
+                    window_id: signal.window_id,
+                    order_id: orderResult.orderId,
+                    status: orderResult.status,
+                    latency_ms: orderResult.latencyMs,
+                  });
+
+                  // Record position with position-manager
+                  if (this.modules['position-manager'] && orderResult.status !== 'rejected') {
+                    const position = this.modules['position-manager'].openPosition({
+                      window_id: signal.window_id,
+                      market_id: signal.market_id,
+                      token_id: signal.token_id,
+                      side: signal.direction,
+                      size: sizingResult.actual_size,
+                      entry_price: signal.market_price || signal.expected_price,
+                      order_id: orderResult.orderId,
+                    });
+
+                    this.log.info('position_opened', {
+                      position_id: position.id,
+                      window_id: signal.window_id,
+                      side: signal.direction,
+                      size: sizingResult.actual_size,
+                      entry_price: position.entry_price,
+                    });
+                  }
+
+                  // Record entry event for diagnostics (Story 5.2)
+                  if (this.modules['trade-event']) {
+                    await this.modules['trade-event'].recordEntry({
+                      windowId: signal.window_id,
+                      orderId: orderResult.orderId,
+                      strategyId: signal.strategy_id || 'execution-test',
+                      timestamps: {
+                        signalDetectedAt: signal.signalDetectedAt,
+                        orderSubmittedAt: orderResult.timestamps?.orderSubmittedAt,
+                        orderFilledAt: orderResult.timestamps?.orderFilledAt,
+                      },
+                      prices: {
+                        priceAtSignal: signal.spot_price,
+                        expectedPrice: signal.market_price,
+                        priceAtFill: orderResult.fillPrice,
+                      },
+                      sizes: {
+                        requestedSize: sizingResult.requested_size,
+                        filledSize: orderResult.filledSize || sizingResult.actual_size,
+                      },
+                      marketContext: signal.marketContext,
+                    });
+                  }
+                } catch (orderErr) {
+                  this.log.error('order_placement_failed', {
+                    window_id: signal.window_id,
+                    error: orderErr.message,
+                    code: orderErr.code,
+                  });
+                }
+              }
             } else {
               this.log.warn('position_sizing_rejected', {
                 window_id: signal.window_id,

@@ -40,8 +40,9 @@ export class TakeProfitError extends PolyError {
  * - Short: triggered when price DROPS below threshold (profit)
  */
 export const TriggerReason = {
-  PRICE_ABOVE_THRESHOLD: 'price_above_threshold',  // Long position take-profit
-  PRICE_BELOW_THRESHOLD: 'price_below_threshold',  // Short position take-profit
+  PRICE_ABOVE_THRESHOLD: 'price_above_threshold',  // Long position take-profit (fixed)
+  PRICE_BELOW_THRESHOLD: 'price_below_threshold',  // Short position take-profit (fixed)
+  TRAILING_STOP_HIT: 'trailing_stop_hit',          // Price dropped from high-water mark
   NOT_TRIGGERED: 'not_triggered',
 };
 
@@ -63,6 +64,9 @@ export const TriggerReason = {
  * @param {number} params.profit_amount - Realized profit if triggered
  * @param {number} params.profit_pct - Profit as percentage of entry
  * @param {string} params.evaluated_at - ISO timestamp
+ * @param {boolean} params.trailing_active - Whether trailing stop is active
+ * @param {number} params.high_water_mark - Highest price seen since entry
+ * @param {number} params.trailing_stop_price - Current trailing stop price level
  * @returns {Object} Take-profit result object
  */
 export function createTakeProfitResult({
@@ -80,6 +84,9 @@ export function createTakeProfitResult({
   profit_amount = 0,
   profit_pct = 0,
   evaluated_at = '',
+  trailing_active = false,
+  high_water_mark = null,
+  trailing_stop_price = null,
 } = {}) {
   return {
     triggered,
@@ -96,5 +103,8 @@ export function createTakeProfitResult({
     profit_amount,
     profit_pct,
     evaluated_at: evaluated_at || new Date().toISOString(),
+    trailing_active,
+    high_water_mark,
+    trailing_stop_price,
   };
 }

@@ -19,8 +19,13 @@
 
 import { child } from '../logger/index.js';
 import { TakeProfitError, TakeProfitErrorCodes } from './types.js';
-import { evaluate as evaluateLogic, evaluateAll as evaluateAllLogic, calculateTakeProfitThreshold } from './logic.js';
-import { getStats, resetState } from './state.js';
+import {
+  evaluate as evaluateLogic,
+  evaluateAll as evaluateAllLogic,
+  evaluateTrailing as evaluateTrailingLogic,
+  calculateTakeProfitThreshold,
+} from './logic.js';
+import { getStats, resetState, removeHighWaterMark } from './state.js';
 
 // Module state
 let log = null;
@@ -31,7 +36,11 @@ let initialized = false;
 // Default take-profit config if not specified
 const DEFAULT_TAKE_PROFIT_CONFIG = {
   enabled: true,
-  defaultTakeProfitPct: 0.10,  // 10% default take-profit
+  defaultTakeProfitPct: 0.10,           // 10% default take-profit (fixed mode)
+  trailingEnabled: false,               // Use trailing stop instead of fixed
+  trailingActivationPct: 0.15,          // 15% profit to activate trailing
+  trailingPullbackPct: 0.10,            // 10% pullback from HWM to trigger exit
+  minProfitFloorPct: 0.05,              // 5% minimum profit to lock in
 };
 
 /**
@@ -42,6 +51,10 @@ const DEFAULT_TAKE_PROFIT_CONFIG = {
  * @param {Object} [cfg.strategy.takeProfit] - Take-profit configuration
  * @param {boolean} [cfg.strategy.takeProfit.enabled=true] - Enable/disable take-profit evaluation
  * @param {number} [cfg.strategy.takeProfit.defaultTakeProfitPct=0.10] - Default take-profit percentage (0-1)
+ * @param {boolean} [cfg.strategy.takeProfit.trailingEnabled=false] - Use trailing stop mode
+ * @param {number} [cfg.strategy.takeProfit.trailingActivationPct=0.15] - Profit % to activate trailing
+ * @param {number} [cfg.strategy.takeProfit.trailingPullbackPct=0.10] - Pullback % from HWM to trigger
+ * @param {number} [cfg.strategy.takeProfit.minProfitFloorPct=0.05] - Minimum profit % to lock in
  * @returns {Promise<void>}
  * @throws {TakeProfitError} If configuration is invalid
  */
@@ -61,6 +74,10 @@ export async function init(cfg) {
   takeProfitConfig = {
     enabled: strategyTakeProfitConfig.enabled ?? DEFAULT_TAKE_PROFIT_CONFIG.enabled,
     defaultTakeProfitPct: strategyTakeProfitConfig.defaultTakeProfitPct ?? DEFAULT_TAKE_PROFIT_CONFIG.defaultTakeProfitPct,
+    trailingEnabled: strategyTakeProfitConfig.trailingEnabled ?? DEFAULT_TAKE_PROFIT_CONFIG.trailingEnabled,
+    trailingActivationPct: strategyTakeProfitConfig.trailingActivationPct ?? DEFAULT_TAKE_PROFIT_CONFIG.trailingActivationPct,
+    trailingPullbackPct: strategyTakeProfitConfig.trailingPullbackPct ?? DEFAULT_TAKE_PROFIT_CONFIG.trailingPullbackPct,
+    minProfitFloorPct: strategyTakeProfitConfig.minProfitFloorPct ?? DEFAULT_TAKE_PROFIT_CONFIG.minProfitFloorPct,
   };
 
   // Validate config values
@@ -71,6 +88,10 @@ export async function init(cfg) {
     take_profit: {
       enabled: takeProfitConfig.enabled,
       default_take_profit_pct: takeProfitConfig.defaultTakeProfitPct,
+      trailing_enabled: takeProfitConfig.trailingEnabled,
+      trailing_activation_pct: takeProfitConfig.trailingActivationPct,
+      trailing_pullback_pct: takeProfitConfig.trailingPullbackPct,
+      min_profit_floor_pct: takeProfitConfig.minProfitFloorPct,
     },
   });
 }
@@ -98,10 +119,44 @@ function validateConfig(cfg) {
       { defaultTakeProfitPct: cfg.defaultTakeProfitPct }
     );
   }
+
+  if (typeof cfg.trailingEnabled !== 'boolean') {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.CONFIG_INVALID,
+      'trailingEnabled must be a boolean',
+      { trailingEnabled: cfg.trailingEnabled }
+    );
+  }
+
+  if (typeof cfg.trailingActivationPct !== 'number' || cfg.trailingActivationPct < 0 || cfg.trailingActivationPct > 1) {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.CONFIG_INVALID,
+      'trailingActivationPct must be a number between 0 and 1',
+      { trailingActivationPct: cfg.trailingActivationPct }
+    );
+  }
+
+  if (typeof cfg.trailingPullbackPct !== 'number' || cfg.trailingPullbackPct < 0 || cfg.trailingPullbackPct > 1) {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.CONFIG_INVALID,
+      'trailingPullbackPct must be a number between 0 and 1',
+      { trailingPullbackPct: cfg.trailingPullbackPct }
+    );
+  }
+
+  if (typeof cfg.minProfitFloorPct !== 'number' || cfg.minProfitFloorPct < 0 || cfg.minProfitFloorPct > 1) {
+    throw new TakeProfitError(
+      TakeProfitErrorCodes.CONFIG_INVALID,
+      'minProfitFloorPct must be a number between 0 and 1',
+      { minProfitFloorPct: cfg.minProfitFloorPct }
+    );
+  }
 }
 
 /**
  * Evaluate take-profit condition for a single position
+ *
+ * Uses trailing mode if configured, otherwise fixed threshold mode.
  *
  * @param {Object} position - Position to evaluate
  * @param {number} position.id - Position ID
@@ -128,6 +183,18 @@ export function evaluate(position, currentPrice, options = {}) {
     };
   }
 
+  // Use trailing mode if enabled
+  if (takeProfitConfig.trailingEnabled) {
+    return evaluateTrailingLogic(position, currentPrice, {
+      trailingActivationPct: takeProfitConfig.trailingActivationPct,
+      trailingPullbackPct: takeProfitConfig.trailingPullbackPct,
+      minProfitFloorPct: takeProfitConfig.minProfitFloorPct,
+      log,
+      ...options,
+    });
+  }
+
+  // Fixed threshold mode
   return evaluateLogic(position, currentPrice, {
     takeProfitPct: takeProfitConfig.defaultTakeProfitPct,
     log,
@@ -137,6 +204,8 @@ export function evaluate(position, currentPrice, options = {}) {
 
 /**
  * Evaluate take-profit for all positions
+ *
+ * Uses trailing mode if configured, otherwise fixed threshold mode.
  *
  * @param {Object[]} positions - Array of open positions
  * @param {Function} getCurrentPrice - Function to get current price for a position
@@ -162,6 +231,10 @@ export function evaluateAll(positions, getCurrentPrice, options = {}) {
 
   return evaluateAllLogic(positions, getCurrentPrice, {
     takeProfitPct: takeProfitConfig.defaultTakeProfitPct,
+    trailingEnabled: takeProfitConfig.trailingEnabled,
+    trailingActivationPct: takeProfitConfig.trailingActivationPct,
+    trailingPullbackPct: takeProfitConfig.trailingPullbackPct,
+    minProfitFloorPct: takeProfitConfig.minProfitFloorPct,
     log,
     ...options,
   });
@@ -178,9 +251,24 @@ export function getState() {
     config: takeProfitConfig ? {
       enabled: takeProfitConfig.enabled,
       default_take_profit_pct: takeProfitConfig.defaultTakeProfitPct,
+      trailing_enabled: takeProfitConfig.trailingEnabled,
+      trailing_activation_pct: takeProfitConfig.trailingActivationPct,
+      trailing_pullback_pct: takeProfitConfig.trailingPullbackPct,
+      min_profit_floor_pct: takeProfitConfig.minProfitFloorPct,
     } : null,
     ...getStats(),
   };
+}
+
+/**
+ * Clean up high-water mark tracking for a closed position
+ *
+ * Call this after a position is closed to free up memory.
+ *
+ * @param {number|string} positionId - Position ID to clean up
+ */
+export function cleanupPosition(positionId) {
+  removeHighWaterMark(positionId);
 }
 
 /**

@@ -5,15 +5,23 @@
  */
 
 export default {
-  // Production logging - info level, no debug noise
+  // Production logging - warn level for silence
   logging: {
-    level: 'info',
+    level: 'warn',
   },
 
-  // Stricter risk limits in production
+  // Conservative risk limits in production
   risk: {
-    maxPositionSize: 100,
-    maxExposure: 500,
-    dailyDrawdownLimit: 0.05,  // 5% - strict in production
+    maxPositionSize: 5,          // Max $5 per position
+    maxExposure: 20,             // Max $20 total exposure
+    dailyDrawdownLimit: 0.10,    // 10% drawdown limit
+  },
+
+  // Production position sizing - $2 fixed
+  strategy: {
+    sizing: {
+      baseSizeDollars: 2,        // $2 per trade
+      confidenceMultiplier: 0,   // Disabled - fixed size
+    },
   },
 };

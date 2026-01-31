@@ -14,6 +14,7 @@ import {
   calculateTakeProfitThreshold,
   evaluate,
   evaluateAll,
+  evaluateTrailing,
 } from '../logic.js';
 import { TriggerReason, TakeProfitErrorCodes } from '../types.js';
 import * as state from '../state.js';
@@ -497,5 +498,341 @@ describe('evaluateAll', () => {
     expect(triggered.length).toBe(1);
     expect(triggered[0].position_id).toBe(1);
     expect(summary.safe).toBe(1);
+  });
+});
+
+describe('evaluateTrailing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.resetState();
+  });
+
+  describe('high-water mark tracking', () => {
+    it('tracks high-water mark for long positions (highest price)', () => {
+      const position = {
+        id: 1,
+        window_id: 'test',
+        side: 'long',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // First eval at 0.55 - sets HWM
+      const result1 = evaluateTrailing(position, 0.55, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result1.high_water_mark).toBe(0.55);
+
+      // Second eval at 0.60 - HWM updates
+      const result2 = evaluateTrailing(position, 0.60, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result2.high_water_mark).toBe(0.60);
+
+      // Third eval at 0.58 - HWM stays at 0.60
+      const result3 = evaluateTrailing(position, 0.58, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result3.high_water_mark).toBe(0.60);
+    });
+
+    it('tracks high-water mark for short positions (lowest price)', () => {
+      const position = {
+        id: 2,
+        window_id: 'test',
+        side: 'short',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // First eval at 0.45 - sets HWM (lowest)
+      const result1 = evaluateTrailing(position, 0.45, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result1.high_water_mark).toBe(0.45);
+
+      // Second eval at 0.40 - HWM updates (lower)
+      const result2 = evaluateTrailing(position, 0.40, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result2.high_water_mark).toBe(0.40);
+
+      // Third eval at 0.42 - HWM stays at 0.40
+      const result3 = evaluateTrailing(position, 0.42, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result3.high_water_mark).toBe(0.40);
+    });
+  });
+
+  describe('trailing activation', () => {
+    it('activates trailing when profit exceeds activation threshold for long', () => {
+      const position = {
+        id: 3,
+        window_id: 'test',
+        side: 'long',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // 10% gain - below 15% activation threshold
+      const result1 = evaluateTrailing(position, 0.55, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result1.trailing_active).toBe(false);
+
+      // 20% gain - above 15% activation threshold
+      const result2 = evaluateTrailing(position, 0.60, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result2.trailing_active).toBe(true);
+      expect(mockLog.info).toHaveBeenCalledWith('trailing_activated', expect.objectContaining({
+        position_id: 3,
+      }));
+    });
+
+    it('activates trailing when profit exceeds activation threshold for short', () => {
+      const position = {
+        id: 4,
+        window_id: 'test',
+        side: 'short',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // 10% drop - below 15% activation threshold
+      const result1 = evaluateTrailing(position, 0.45, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result1.trailing_active).toBe(false);
+
+      // 20% drop - above 15% activation threshold
+      const result2 = evaluateTrailing(position, 0.40, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+      expect(result2.trailing_active).toBe(true);
+    });
+  });
+
+  describe('trailing stop trigger', () => {
+    it('triggers when price drops from HWM by pullback % for long', () => {
+      const position = {
+        id: 5,
+        window_id: 'test',
+        side: 'long',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // First: reach 20% profit to activate (HWM = 0.60)
+      evaluateTrailing(position, 0.60, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      // Now price drops 10% from HWM: 0.60 * 0.90 = 0.54
+      const result = evaluateTrailing(position, 0.54, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.reason).toBe(TriggerReason.TRAILING_STOP_HIT);
+      expect(result.action).toBe('close');
+      expect(result.closeMethod).toBe('limit');
+      expect(result.trailing_stop_price).toBeCloseTo(0.54, 2); // HWM * (1 - pullback)
+    });
+
+    it('triggers when price rises from HWM by pullback % for short', () => {
+      const position = {
+        id: 6,
+        window_id: 'test',
+        side: 'short',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // First: reach 20% profit to activate (HWM = 0.40)
+      evaluateTrailing(position, 0.40, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      // Now price rises beyond 10% from HWM (0.45 > 0.40 * 1.10 = 0.44)
+      // Using 0.45 to avoid floating point precision issues
+      const result = evaluateTrailing(position, 0.45, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(result.reason).toBe(TriggerReason.TRAILING_STOP_HIT);
+    });
+
+    it('does not trigger if pullback not reached', () => {
+      const position = {
+        id: 7,
+        window_id: 'test',
+        side: 'long',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // Activate at 0.60
+      evaluateTrailing(position, 0.60, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+
+      // Price at 0.56 - only 6.7% drop, not 10%
+      const result = evaluateTrailing(position, 0.56, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        log: mockLog,
+      });
+
+      expect(result.triggered).toBe(false);
+      expect(result.trailing_active).toBe(true);
+    });
+  });
+
+  describe('minimum profit floor', () => {
+    it('enforces minimum profit floor for long positions', () => {
+      const position = {
+        id: 8,
+        window_id: 'test',
+        side: 'long',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // Activate at 0.58 (16% profit)
+      evaluateTrailing(position, 0.58, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.50, // 50% pullback would be 0.29, but floor is 0.525 (5%)
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      // Price at 0.52 - below calculated trailing stop but above profit floor
+      const result = evaluateTrailing(position, 0.52, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.50,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      // Trailing stop price should be max(0.29, 0.525) = 0.525
+      expect(result.trailing_stop_price).toBeCloseTo(0.525, 3);
+      expect(result.triggered).toBe(true); // 0.52 <= 0.525
+    });
+
+    it('enforces minimum profit floor for short positions', () => {
+      const position = {
+        id: 9,
+        window_id: 'test',
+        side: 'short',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      // Activate at 0.42 (16% drop profit)
+      evaluateTrailing(position, 0.42, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.50, // 50% pullback would be 0.63, but floor is 0.475 (5%)
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      // Price at 0.48 - above calculated trailing stop but below profit floor
+      const result = evaluateTrailing(position, 0.48, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.50,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      // Trailing stop price should be min(0.63, 0.475) = 0.475
+      expect(result.trailing_stop_price).toBeCloseTo(0.475, 3);
+      expect(result.triggered).toBe(true); // 0.48 >= 0.475
+    });
+  });
+
+  describe('error handling', () => {
+    it('throws on invalid current price', () => {
+      const position = { id: 1, side: 'long', size: 10, entry_price: 0.50 };
+
+      expect(() => evaluateTrailing(position, 0, {}))
+        .toThrow('Invalid current price');
+    });
+
+    it('throws on invalid entry_price', () => {
+      const position = { id: 1, side: 'long', size: 10, entry_price: 0 };
+
+      expect(() => evaluateTrailing(position, 0.55, {}))
+        .toThrow('Position has invalid entry_price');
+    });
+
+    it('throws on invalid side', () => {
+      const position = { id: 1, side: 'invalid', size: 10, entry_price: 0.50 };
+
+      expect(() => evaluateTrailing(position, 0.55, {}))
+        .toThrow('Position has invalid side');
+    });
+  });
+
+  describe('result fields', () => {
+    it('includes trailing-specific fields in result', () => {
+      const position = {
+        id: 10,
+        window_id: 'test',
+        side: 'long',
+        size: 10,
+        entry_price: 0.50,
+      };
+
+      const result = evaluateTrailing(position, 0.60, {
+        trailingActivationPct: 0.15,
+        trailingPullbackPct: 0.10,
+        minProfitFloorPct: 0.05,
+        log: mockLog,
+      });
+
+      expect(result).toMatchObject({
+        triggered: expect.any(Boolean),
+        position_id: 10,
+        trailing_active: expect.any(Boolean),
+        high_water_mark: expect.any(Number),
+      });
+    });
   });
 });
