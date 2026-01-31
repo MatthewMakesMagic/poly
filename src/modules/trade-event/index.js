@@ -30,6 +30,9 @@ import {
   getConfig,
   resetState,
   getStateSnapshot,
+  subscribe,
+  subscribeAll,
+  emitEvent,
 } from './state.js';
 import {
   calculateLatencies,
@@ -148,6 +151,18 @@ export async function recordSignal({
     price_at_signal: priceAtSignal,
     expected_price: expectedPrice,
     market_context: marketContext,
+  });
+
+  // Emit event for real-time subscribers (Scout)
+  emitEvent('signal', {
+    eventId,
+    windowId,
+    strategyId,
+    signalType,
+    priceAtSignal,
+    expectedPrice,
+    marketContext,
+    timestamp: signalDetectedAt,
   });
 
   return eventId;
@@ -328,6 +343,24 @@ export async function recordEntry({
 
     log.info('trade_entry', logData, { strategy_id: strategyId });
   }
+
+  // Emit event for real-time subscribers (Scout)
+  emitEvent('entry', {
+    eventId,
+    windowId,
+    positionId,
+    orderId,
+    strategyId,
+    timestamps,
+    prices,
+    sizes,
+    marketContext,
+    latencies,
+    slippage,
+    diagnosticFlags,
+    hasDivergence: divergenceResult.hasDivergence,
+    level: logLevel,
+  });
 
   return eventId;
 }
@@ -511,6 +544,25 @@ export async function recordExit({
     log.info('trade_exit', logData, { strategy_id: strategyId });
   }
 
+  // Emit event for real-time subscribers (Scout)
+  emitEvent('exit', {
+    eventId,
+    windowId,
+    positionId,
+    orderId,
+    strategyId,
+    exitReason,
+    timestamps,
+    prices,
+    sizes,
+    marketContext,
+    latencies,
+    slippage,
+    diagnosticFlags,
+    hasDivergence: divergenceResult.hasDivergence,
+    level: logLevel,
+  });
+
   return eventId;
 }
 
@@ -566,6 +618,19 @@ export async function recordAlert({
     alert_type: alertType,
     data,
     diagnostic_flags: diagnosticFlags,
+  });
+
+  // Emit event for real-time subscribers (Scout)
+  const eventType = alertType === 'divergence' ? 'divergence' : 'alert';
+  emitEvent(eventType, {
+    eventId,
+    windowId,
+    positionId,
+    alertType,
+    data,
+    level: validLevel,
+    diagnosticFlags,
+    timestamp: new Date().toISOString(),
   });
 
   return eventId;
@@ -958,3 +1023,6 @@ function ensureInitialized() {
 
 // Re-export types and constants
 export { TradeEventError, TradeEventErrorCodes, TradeEventType } from './types.js';
+
+// Re-export subscription functions for real-time monitoring (Scout)
+export { subscribe, subscribeAll };

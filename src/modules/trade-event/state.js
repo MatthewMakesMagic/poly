@@ -5,6 +5,11 @@
  * Maintains initialization state and configuration.
  */
 
+import { EventEmitter } from 'events';
+
+// Event emitter for real-time event subscriptions (Story E.1 - Scout)
+export const eventEmitter = new EventEmitter();
+
 // Module configuration
 let moduleConfig = null;
 
@@ -108,4 +113,55 @@ export function getStateSnapshot() {
     hasConfig: moduleConfig !== null,
     stats: getStats(),
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EVENT SUBSCRIPTION (Story E.1 - Scout Real-Time Monitoring)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Subscribe to trade events
+ *
+ * Available event types: 'signal', 'entry', 'exit', 'alert', 'divergence'
+ *
+ * @param {string} eventType - Event type to subscribe to
+ * @param {Function} callback - Callback function receiving event data
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribe(eventType, callback) {
+  eventEmitter.on(eventType, callback);
+  return () => eventEmitter.off(eventType, callback);
+}
+
+/**
+ * Subscribe to all trade events
+ *
+ * @param {Function} callback - Callback function receiving {type, data}
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeAll(callback) {
+  const handler = (type) => (data) => callback({ type, data });
+
+  const types = ['signal', 'entry', 'exit', 'alert', 'divergence'];
+  const handlers = types.map(type => {
+    const h = handler(type);
+    eventEmitter.on(type, h);
+    return { type, handler: h };
+  });
+
+  return () => {
+    handlers.forEach(({ type, handler: h }) => {
+      eventEmitter.off(type, h);
+    });
+  };
+}
+
+/**
+ * Emit a trade event
+ *
+ * @param {string} eventType - Event type
+ * @param {Object} data - Event data
+ */
+export function emitEvent(eventType, data) {
+  eventEmitter.emit(eventType, data);
 }
