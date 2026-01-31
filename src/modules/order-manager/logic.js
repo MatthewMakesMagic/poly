@@ -508,6 +508,15 @@ export function loadRecentOrders(log) {
  * @throws {OrderManagerError} If order not found, invalid state, or API error
  */
 export async function cancelOrder(orderId, log) {
+  // 0. Validate orderId parameter
+  if (!orderId || typeof orderId !== 'string') {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.VALIDATION_FAILED,
+      'orderId is required and must be a string',
+      { orderId }
+    );
+  }
+
   // 1. Get order and validate it exists
   const order = getOrder(orderId);
   if (!order) {
@@ -565,6 +574,9 @@ export async function cancelOrder(orderId, log) {
   } catch (err) {
     const latencyMs = Date.now() - startTime;
 
+    // Record latency even on failure for monitoring
+    recordCancelLatency(latencyMs);
+
     // ALWAYS mark failed on error
     writeAhead.markFailed(intentId, {
       code: err.code || 'CANCEL_FAILED',
@@ -600,6 +612,31 @@ export async function cancelOrder(orderId, log) {
  * @throws {OrderManagerError} If order not found or invalid state
  */
 export function handlePartialFill(orderId, fillSize, fillPrice, log) {
+  // 0. Validate input parameters
+  if (!orderId || typeof orderId !== 'string') {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.VALIDATION_FAILED,
+      'orderId is required and must be a string',
+      { orderId }
+    );
+  }
+
+  if (typeof fillSize !== 'number' || fillSize <= 0) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.VALIDATION_FAILED,
+      'fillSize must be a positive number',
+      { fillSize }
+    );
+  }
+
+  if (typeof fillPrice !== 'number' || fillPrice < 0.01 || fillPrice > 0.99) {
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.VALIDATION_FAILED,
+      'fillPrice must be a number between 0.01 and 0.99',
+      { fillPrice }
+    );
+  }
+
   // 1. Get order and validate it exists
   const order = getOrder(orderId);
   if (!order) {
@@ -627,10 +664,12 @@ export function handlePartialFill(orderId, fillSize, fillPrice, log) {
 
   // 4. Calculate weighted average price
   // (previousSize * previousPrice + newSize * newPrice) / totalSize
-  const newAvgPrice =
+  // Round to 8 decimal places to avoid floating-point precision issues
+  const rawAvgPrice =
     previousFilledSize > 0
       ? (previousFilledSize * previousAvgPrice + fillSize * fillPrice) / newFilledSize
       : fillPrice;
+  const newAvgPrice = Math.round(rawAvgPrice * 1e8) / 1e8;
 
   // 5. Determine new status
   const isFullyFilled = newFilledSize >= order.size;

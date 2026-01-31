@@ -451,6 +451,18 @@ describe('Order Manager Logic', () => {
       });
     });
 
+    it('throws for invalid orderId (null)', async () => {
+      await expect(logic.cancelOrder(null, mockLog)).rejects.toThrow(
+        'orderId is required and must be a string'
+      );
+    });
+
+    it('throws for invalid orderId (empty string)', async () => {
+      await expect(logic.cancelOrder('', mockLog)).rejects.toThrow(
+        'orderId is required and must be a string'
+      );
+    });
+
     it('throws for non-existent order', async () => {
       await expect(logic.cancelOrder('non-existent', mockLog)).rejects.toThrow(
         'Order not found'
@@ -616,6 +628,19 @@ describe('Order Manager Logic', () => {
         })
       );
     });
+
+    it('records latency even on API failure', async () => {
+      const statsBefore = state.getStats();
+      const cancelCountBefore = statsBefore.avgCancelLatencyMs !== undefined ? 1 : 0;
+
+      polymarketClient.cancelOrder.mockRejectedValueOnce(new Error('API Error'));
+
+      await expect(logic.cancelOrder('cancel-1', mockLog)).rejects.toThrow();
+
+      // Latency should still be recorded for monitoring failed operations
+      const statsAfter = state.getStats();
+      expect(statsAfter.avgCancelLatencyMs).toBeGreaterThanOrEqual(0);
+    });
   });
 
   describe('handlePartialFill()', () => {
@@ -630,6 +655,42 @@ describe('Order Manager Logic', () => {
         filled_size: 0,
         avg_fill_price: null,
       });
+    });
+
+    it('throws for invalid orderId (null)', () => {
+      expect(() =>
+        logic.handlePartialFill(null, 10, 0.5, mockLog)
+      ).toThrow('orderId is required and must be a string');
+    });
+
+    it('throws for invalid orderId (empty string)', () => {
+      expect(() =>
+        logic.handlePartialFill('', 10, 0.5, mockLog)
+      ).toThrow('orderId is required and must be a string');
+    });
+
+    it('throws for invalid fillSize (zero)', () => {
+      expect(() =>
+        logic.handlePartialFill('partial-order-1', 0, 0.5, mockLog)
+      ).toThrow('fillSize must be a positive number');
+    });
+
+    it('throws for invalid fillSize (negative)', () => {
+      expect(() =>
+        logic.handlePartialFill('partial-order-1', -10, 0.5, mockLog)
+      ).toThrow('fillSize must be a positive number');
+    });
+
+    it('throws for invalid fillPrice (too low)', () => {
+      expect(() =>
+        logic.handlePartialFill('partial-order-1', 10, 0.001, mockLog)
+      ).toThrow('fillPrice must be a number between 0.01 and 0.99');
+    });
+
+    it('throws for invalid fillPrice (too high)', () => {
+      expect(() =>
+        logic.handlePartialFill('partial-order-1', 10, 1.0, mockLog)
+      ).toThrow('fillPrice must be a number between 0.01 and 0.99');
     });
 
     it('throws for non-existent order', () => {
@@ -676,6 +737,16 @@ describe('Order Manager Logic', () => {
 
       // Weighted average: (25 * 0.5 + 75 * 0.6) / 100 = (12.5 + 45) / 100 = 0.575
       expect(result.avg_fill_price).toBeCloseTo(0.575);
+    });
+
+    it('handles floating-point precision correctly', () => {
+      // Use values that could cause floating-point issues
+      logic.handlePartialFill('partial-order-1', 33.33, 0.33, mockLog);
+      const result = logic.handlePartialFill('partial-order-1', 33.33, 0.66, mockLog);
+
+      // Result should have reasonable precision (8 decimal places max)
+      const decimalPlaces = (result.avg_fill_price.toString().split('.')[1] || '').length;
+      expect(decimalPlaces).toBeLessThanOrEqual(8);
     });
 
     it('transitions to partially_filled status', () => {
