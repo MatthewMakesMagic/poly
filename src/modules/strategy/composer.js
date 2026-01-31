@@ -16,9 +16,8 @@
  * @module modules/strategy/composer
  */
 
-import { StrategyError, StrategyErrorCodes, ComponentType } from './types.js';
+import { StrategyError, StrategyErrorCodes } from './types.js';
 import { getComponent, registerStrategy, getStrategy } from './logic.js';
-import { getCatalog } from './state.js';
 
 /**
  * Component execution order for strategy pipeline
@@ -380,4 +379,291 @@ export function validateStrategy(strategyId) {
       active: strategy.active,
     },
   };
+}
+
+/**
+ * Deep merge two config objects
+ * Second object values override first
+ *
+ * @param {Object} base - Base configuration
+ * @param {Object} override - Override configuration
+ * @returns {Object} Merged configuration
+ */
+export function deepMerge(base, override) {
+  if (!override || typeof override !== 'object') {
+    return { ...base };
+  }
+
+  if (!base || typeof base !== 'object') {
+    return { ...override };
+  }
+
+  const result = { ...base };
+
+  for (const key of Object.keys(override)) {
+    if (
+      typeof override[key] === 'object' &&
+      override[key] !== null &&
+      !Array.isArray(override[key]) &&
+      typeof result[key] === 'object' &&
+      result[key] !== null &&
+      !Array.isArray(result[key])
+    ) {
+      result[key] = deepMerge(result[key], override[key]);
+    } else {
+      result[key] = override[key];
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Fork an existing strategy with modifications
+ *
+ * Creates a new strategy instance based on an existing one,
+ * inheriting components and config unless overridden.
+ *
+ * @param {string} parentId - Strategy ID to fork from
+ * @param {string} name - Name for the new fork
+ * @param {Object} [modifications={}] - Optional modifications
+ * @param {Object} [modifications.components] - Component overrides
+ * @param {string} [modifications.components.probability] - Override probability component
+ * @param {string} [modifications.components.entry] - Override entry component
+ * @param {string} [modifications.components.exit] - Override exit component
+ * @param {string} [modifications.components.sizing] - Override sizing component
+ * @param {Object} [modifications.config] - Config overrides (deep merged)
+ * @returns {string} New strategy ID
+ * @throws {StrategyError} If parent not found, inactive, or modifications invalid
+ */
+export function forkStrategy(parentId, name, modifications = {}) {
+  // 1. Load parent strategy
+  const parent = getStrategy(parentId);
+  if (!parent) {
+    throw new StrategyError(
+      StrategyErrorCodes.FORK_PARENT_NOT_FOUND,
+      `Parent strategy ${parentId} not found`,
+      { parentId }
+    );
+  }
+
+  // 2. Validate parent is active
+  if (!parent.active) {
+    throw new StrategyError(
+      StrategyErrorCodes.FORK_PARENT_INACTIVE,
+      `Cannot fork inactive strategy ${parentId}`,
+      { parentId, active: parent.active }
+    );
+  }
+
+  // 3. Build component set: parent + modifications
+  const componentOverrides = modifications.components || {};
+  const newComponents = {
+    probability: componentOverrides.probability || parent.components.probability,
+    entry: componentOverrides.entry || parent.components.entry,
+    exit: componentOverrides.exit || parent.components.exit,
+    sizing: componentOverrides.sizing || parent.components.sizing,
+  };
+
+  // 4. Validate all modified component version IDs exist in catalog
+  const loadedComponents = {};
+  for (const type of COMPONENT_ORDER) {
+    const versionId = newComponents[type];
+    const component = getComponent(versionId);
+
+    if (!component) {
+      throw new StrategyError(
+        StrategyErrorCodes.COMPONENT_NOT_FOUND,
+        `Component ${versionId} not found in catalog`,
+        { versionId, type, parentId }
+      );
+    }
+
+    // 5. Validate modified component types match expected slots
+    if (component.type !== type) {
+      throw new StrategyError(
+        StrategyErrorCodes.INVALID_COMPONENT_TYPE,
+        `Component ${versionId} is type '${component.type}', expected '${type}'`,
+        { versionId, actualType: component.type, expectedType: type }
+      );
+    }
+
+    loadedComponents[type] = component;
+  }
+
+  // 6. Deep merge parent config with modification config
+  const newConfig = deepMerge(parent.config, modifications.config || {});
+
+  // Validate config against all components
+  for (const type of COMPONENT_ORDER) {
+    const component = loadedComponents[type];
+    if (component.module && typeof component.module.validateConfig === 'function') {
+      const validation = component.module.validateConfig(newConfig);
+      if (!validation.valid) {
+        throw new StrategyError(
+          StrategyErrorCodes.CONFIG_VALIDATION_FAILED,
+          `Config validation failed for ${type} component: ${(validation.errors || []).join(', ')}`,
+          { type, versionId: newComponents[type], errors: validation.errors }
+        );
+      }
+    }
+  }
+
+  // 7. Register with baseStrategyId = parentId
+  const forkId = registerStrategy({
+    name,
+    components: newComponents,
+    config: newConfig,
+    baseStrategyId: parentId,
+  });
+
+  return forkId;
+}
+
+/**
+ * Compare two strategy configurations and return differences
+ *
+ * @param {Object} configA - First configuration
+ * @param {Object} configB - Second configuration
+ * @returns {Object} Config differences { added, removed, changed }
+ */
+function diffConfigs(configA, configB) {
+  const added = {};
+  const removed = {};
+  const changed = {};
+
+  // Find added and changed keys
+  for (const key of Object.keys(configB)) {
+    if (!(key in configA)) {
+      added[key] = configB[key];
+    } else if (JSON.stringify(configA[key]) !== JSON.stringify(configB[key])) {
+      changed[key] = { from: configA[key], to: configB[key] };
+    }
+  }
+
+  // Find removed keys
+  for (const key of Object.keys(configA)) {
+    if (!(key in configB)) {
+      removed[key] = configA[key];
+    }
+  }
+
+  return { added, removed, changed };
+}
+
+/**
+ * Find root ancestor of a strategy (for sameBase check)
+ *
+ * @param {string} strategyId - Strategy ID
+ * @returns {string} Root strategy ID
+ */
+function findRootAncestor(strategyId) {
+  let currentId = strategyId;
+  const visited = new Set();
+
+  while (currentId) {
+    if (visited.has(currentId)) {
+      // Circular reference - return current
+      return currentId;
+    }
+    visited.add(currentId);
+
+    const strategy = getStrategy(currentId);
+    if (!strategy || !strategy.baseStrategyId) {
+      return currentId;
+    }
+    currentId = strategy.baseStrategyId;
+  }
+
+  return strategyId;
+}
+
+/**
+ * Compare two strategies and return differences
+ *
+ * @param {string} strategyIdA - First strategy ID
+ * @param {string} strategyIdB - Second strategy ID
+ * @returns {Object} Structured diff
+ * @throws {StrategyError} If either strategy not found
+ */
+export function diffStrategies(strategyIdA, strategyIdB) {
+  const strategyA = getStrategy(strategyIdA);
+  if (!strategyA) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${strategyIdA} not found`,
+      { strategyId: strategyIdA }
+    );
+  }
+
+  const strategyB = getStrategy(strategyIdB);
+  if (!strategyB) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${strategyIdB} not found`,
+      { strategyId: strategyIdB }
+    );
+  }
+
+  // Check if both have the same root ancestor
+  const rootA = findRootAncestor(strategyIdA);
+  const rootB = findRootAncestor(strategyIdB);
+  const sameBase = rootA === rootB;
+
+  // Compare components
+  const components = {};
+  for (const type of COMPONENT_ORDER) {
+    const versionIdA = strategyA.components[type];
+    const versionIdB = strategyB.components[type];
+    const match = versionIdA === versionIdB;
+
+    if (match) {
+      components[type] = { match: true };
+    } else {
+      components[type] = {
+        match: false,
+        a: versionIdA,
+        b: versionIdB,
+      };
+    }
+  }
+
+  // Compare configs
+  const config = diffConfigs(strategyA.config, strategyB.config);
+
+  return {
+    sameBase,
+    components,
+    config,
+  };
+}
+
+/**
+ * Compare a forked strategy with its parent
+ *
+ * Convenience wrapper around diffStrategies.
+ *
+ * @param {string} forkId - Fork strategy ID
+ * @returns {Object} Structured diff between fork and parent
+ * @throws {StrategyError} If fork not found or has no parent
+ */
+export function diffFromParent(forkId) {
+  const fork = getStrategy(forkId);
+  if (!fork) {
+    throw new StrategyError(
+      StrategyErrorCodes.STRATEGY_NOT_FOUND,
+      `Strategy ${forkId} not found`,
+      { strategyId: forkId }
+    );
+  }
+
+  if (!fork.baseStrategyId) {
+    throw new StrategyError(
+      StrategyErrorCodes.INVALID_FORK_MODIFICATION,
+      `Strategy ${forkId} has no parent (not a fork)`,
+      { strategyId: forkId }
+    );
+  }
+
+  return diffStrategies(fork.baseStrategyId, forkId);
 }

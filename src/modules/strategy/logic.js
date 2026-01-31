@@ -476,3 +476,106 @@ export function deactivateStrategy(strategyId) {
     );
   }
 }
+
+/**
+ * Get the lineage (ancestry chain) of a strategy
+ *
+ * Returns an array starting from the given strategy and going up
+ * to the root ancestor. Each element includes id, name, createdAt, and depth.
+ *
+ * @param {string} strategyId - Strategy instance ID
+ * @returns {Object[]} Ancestry array from current to root
+ * @throws {StrategyError} If database error occurs
+ */
+export function getStrategyLineage(strategyId) {
+  if (!strategyId) {
+    return [];
+  }
+
+  const lineage = [];
+  const visited = new Set();
+  let currentId = strategyId;
+  let depth = 0;
+
+  while (currentId) {
+    // Circular reference protection
+    if (visited.has(currentId)) {
+      break;
+    }
+    visited.add(currentId);
+
+    try {
+      const row = get(
+        'SELECT id, name, base_strategy_id, created_at FROM strategy_instances WHERE id = ?',
+        [currentId]
+      );
+
+      if (!row) {
+        // Strategy not found - if this is the first iteration, return empty
+        // Otherwise break the chain
+        if (depth === 0) {
+          return [];
+        }
+        break;
+      }
+
+      lineage.push({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        depth,
+      });
+
+      currentId = row.base_strategy_id;
+      depth++;
+    } catch (err) {
+      throw new StrategyError(
+        StrategyErrorCodes.DATABASE_ERROR,
+        `Failed to get strategy lineage: ${err.message}`,
+        { strategyId, error: err.message }
+      );
+    }
+  }
+
+  return lineage;
+}
+
+/**
+ * Get all strategies that are forks of a given parent strategy
+ *
+ * @param {string} strategyId - Parent strategy ID
+ * @param {Object} [options] - Query options
+ * @param {boolean} [options.activeOnly=false] - Only return active forks
+ * @returns {Object[]} Array of fork summaries with id, name, createdAt
+ * @throws {StrategyError} If database error occurs
+ */
+export function getStrategyForks(strategyId, { activeOnly = false } = {}) {
+  if (!strategyId) {
+    return [];
+  }
+
+  let sql = 'SELECT id, name, created_at, active FROM strategy_instances WHERE base_strategy_id = ?';
+  const params = [strategyId];
+
+  if (activeOnly) {
+    sql += ' AND active = 1';
+  }
+
+  sql += ' ORDER BY created_at DESC';
+
+  try {
+    const rows = all(sql, params);
+    return rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      createdAt: row.created_at,
+      active: row.active === 1,
+    }));
+  } catch (err) {
+    throw new StrategyError(
+      StrategyErrorCodes.DATABASE_ERROR,
+      `Failed to get strategy forks: ${err.message}`,
+      { strategyId, error: err.message }
+    );
+  }
+}

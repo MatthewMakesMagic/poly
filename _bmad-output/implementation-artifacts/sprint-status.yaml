@@ -90,7 +90,7 @@ development_status:
   epic-6: in-progress
   6-1-strategy-component-registry: done
   6-2-strategy-composition: done
-  6-3-strategy-forking: backlog
+  6-3-strategy-forking: done
   6-4-central-component-updates: backlog
   6-5-strategy-configuration: backlog
   epic-6-retrospective: optional

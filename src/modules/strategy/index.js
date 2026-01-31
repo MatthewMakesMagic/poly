@@ -39,11 +39,16 @@ import {
   getStrategyComponents,
   listStrategies,
   deactivateStrategy,
+  getStrategyLineage as getStrategyLineageLogic,
+  getStrategyForks as getStrategyForksLogic,
 } from './logic.js';
 import {
   createStrategy as createStrategyLogic,
   executeStrategy as executeStrategyLogic,
   validateStrategy as validateStrategyLogic,
+  forkStrategy as forkStrategyLogic,
+  diffStrategies as diffStrategiesLogic,
+  diffFromParent as diffFromParentLogic,
 } from './composer.js';
 
 // Module state
@@ -404,6 +409,126 @@ export function validateStrategy(strategyId) {
   });
 
   return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FORKING FUNCTIONS (Story 6.3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Fork an existing strategy with modifications
+ *
+ * Creates a new strategy based on an existing one, inheriting
+ * components and config unless overridden.
+ *
+ * @param {string} parentId - Strategy ID to fork from
+ * @param {string} name - Name for the new fork
+ * @param {Object} [modifications={}] - Optional modifications
+ * @param {Object} [modifications.components] - Component overrides
+ * @param {Object} [modifications.config] - Config overrides (deep merged)
+ * @returns {string} New strategy ID
+ */
+export function forkStrategy(parentId, name, modifications = {}) {
+  ensureInitialized();
+
+  const forkId = forkStrategyLogic(parentId, name, modifications);
+
+  log.info('strategy_forked', {
+    fork_id: forkId,
+    parent_id: parentId,
+    name,
+    has_component_overrides: !!(modifications.components && Object.keys(modifications.components).length > 0),
+    has_config_overrides: !!(modifications.config && Object.keys(modifications.config).length > 0),
+  });
+
+  return forkId;
+}
+
+/**
+ * Get the lineage (ancestry chain) of a strategy
+ *
+ * Returns an array starting from the given strategy and going up
+ * to the root ancestor.
+ *
+ * @param {string} strategyId - Strategy instance ID
+ * @returns {Object[]} Ancestry array [{ id, name, createdAt, depth }]
+ */
+export function getStrategyLineage(strategyId) {
+  ensureInitialized();
+
+  const lineage = getStrategyLineageLogic(strategyId);
+
+  log.info('strategy_lineage_retrieved', {
+    strategy_id: strategyId,
+    depth: lineage.length,
+    root_id: lineage.length > 0 ? lineage[lineage.length - 1].id : null,
+  });
+
+  return lineage;
+}
+
+/**
+ * Get all strategies that are forks of a given parent strategy
+ *
+ * @param {string} strategyId - Parent strategy ID
+ * @param {Object} [options] - Query options
+ * @param {boolean} [options.activeOnly=false] - Only return active forks
+ * @returns {Object[]} Array of fork summaries
+ */
+export function getStrategyForks(strategyId, options) {
+  ensureInitialized();
+
+  const forks = getStrategyForksLogic(strategyId, options);
+
+  log.info('strategy_forks_retrieved', {
+    strategy_id: strategyId,
+    fork_count: forks.length,
+  });
+
+  return forks;
+}
+
+/**
+ * Compare two strategies and return differences
+ *
+ * @param {string} strategyIdA - First strategy ID
+ * @param {string} strategyIdB - Second strategy ID
+ * @returns {Object} Structured diff { sameBase, components, config }
+ */
+export function diffStrategies(strategyIdA, strategyIdB) {
+  ensureInitialized();
+
+  const diff = diffStrategiesLogic(strategyIdA, strategyIdB);
+
+  log.info('strategies_diffed', {
+    strategy_a: strategyIdA,
+    strategy_b: strategyIdB,
+    same_base: diff.sameBase,
+    component_differences: Object.values(diff.components).filter(c => !c.match).length,
+  });
+
+  return diff;
+}
+
+/**
+ * Compare a forked strategy with its parent
+ *
+ * Convenience wrapper around diffStrategies.
+ *
+ * @param {string} forkId - Fork strategy ID
+ * @returns {Object} Structured diff between fork and parent
+ */
+export function diffFromParent(forkId) {
+  ensureInitialized();
+
+  const diff = diffFromParentLogic(forkId);
+
+  log.info('strategy_diffed_from_parent', {
+    fork_id: forkId,
+    component_differences: Object.values(diff.components).filter(c => !c.match).length,
+  });
+
+  return diff;
 }
 
 // Re-export types and constants
