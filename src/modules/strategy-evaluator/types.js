@@ -47,6 +47,8 @@ export const NoSignalReason = {
   INSUFFICIENT_LAG: 'insufficient_lag',
   INSUFFICIENT_TIME: 'insufficient_time',
   LOW_CONFIDENCE: 'low_confidence',
+  BELOW_THRESHOLD: 'below_threshold',
+  ALREADY_ENTERED_WINDOW: 'already_entered_window',
   CONDITIONS_MET: 'conditions_met',
 };
 

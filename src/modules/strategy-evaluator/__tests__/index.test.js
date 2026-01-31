@@ -2,6 +2,7 @@
  * Strategy Evaluator Module Integration Tests
  *
  * Tests the public interface of the strategy evaluator module.
+ * Tests the simple threshold strategy: enter when token price > 70%
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -12,6 +13,7 @@ vi.mock('../../logger/index.js', () => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    debug: vi.fn(),
   }),
 }));
 
@@ -19,12 +21,11 @@ vi.mock('../../logger/index.js', () => ({
 import * as strategyEvaluator from '../index.js';
 import { StrategyEvaluatorErrorCodes, Direction } from '../types.js';
 
-// Test configuration
+// Test configuration - simple threshold strategy
 const mockConfig = {
   strategy: {
     entry: {
-      spotLagThresholdPct: 0.02,
-      minConfidence: 0.6,
+      entryThresholdPct: 0.70, // 70% threshold
     },
   },
   trading: {
@@ -55,8 +56,7 @@ describe('StrategyEvaluator Module', () => {
 
       const state = strategyEvaluator.getState();
       expect(state.initialized).toBe(true);
-      expect(state.thresholds.spot_lag_threshold_pct).toBe(0.02);
-      expect(state.thresholds.min_confidence).toBe(0.6);
+      expect(state.thresholds.entry_threshold_pct).toBe(0.70);
       expect(state.thresholds.min_time_remaining_ms).toBe(60000);
     });
 
@@ -76,34 +76,22 @@ describe('StrategyEvaluator Module', () => {
       expect(strategyEvaluator.getState().initialized).toBe(true);
     });
 
-    it('throws on invalid spotLagThresholdPct (negative)', async () => {
+    it('throws on invalid entryThresholdPct (negative)', async () => {
       await expect(strategyEvaluator.init({
-        strategy: { entry: { spotLagThresholdPct: -0.01 } },
-      })).rejects.toThrow('spotLagThresholdPct must be a number between 0 and 1');
+        strategy: { entry: { entryThresholdPct: -0.01 } },
+      })).rejects.toThrow('entryThresholdPct must be a number between 0 and 1');
     });
 
-    it('throws on invalid spotLagThresholdPct (zero)', async () => {
+    it('throws on invalid entryThresholdPct (zero)', async () => {
       await expect(strategyEvaluator.init({
-        strategy: { entry: { spotLagThresholdPct: 0 } },
-      })).rejects.toThrow('spotLagThresholdPct must be a number between 0 and 1');
+        strategy: { entry: { entryThresholdPct: 0 } },
+      })).rejects.toThrow('entryThresholdPct must be a number between 0 and 1');
     });
 
-    it('throws on invalid spotLagThresholdPct (>= 1)', async () => {
+    it('throws on invalid entryThresholdPct (>= 1)', async () => {
       await expect(strategyEvaluator.init({
-        strategy: { entry: { spotLagThresholdPct: 1.0 } },
-      })).rejects.toThrow('spotLagThresholdPct must be a number between 0 and 1');
-    });
-
-    it('throws on invalid minConfidence (negative)', async () => {
-      await expect(strategyEvaluator.init({
-        strategy: { entry: { minConfidence: -0.1 } },
-      })).rejects.toThrow('minConfidence must be a number between 0 and 1');
-    });
-
-    it('throws on invalid minConfidence (> 1)', async () => {
-      await expect(strategyEvaluator.init({
-        strategy: { entry: { minConfidence: 1.5 } },
-      })).rejects.toThrow('minConfidence must be a number between 0 and 1');
+        strategy: { entry: { entryThresholdPct: 1.0 } },
+      })).rejects.toThrow('entryThresholdPct must be a number between 0 and 1');
     });
 
     it('throws on invalid minTimeRemainingMs (negative)', async () => {
@@ -136,13 +124,13 @@ describe('StrategyEvaluator Module', () => {
       expect(signals).toEqual([]);
     });
 
-    it('returns signal when conditions met', () => {
+    it('returns signal when price above 70%', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,        // 4% higher (high confidence)
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.75, // 75% - above threshold
           time_remaining_ms: 600000,
         }],
       });
@@ -150,16 +138,15 @@ describe('StrategyEvaluator Module', () => {
       expect(signals).toHaveLength(1);
       expect(signals[0].direction).toBe(Direction.LONG);
       expect(signals[0].window_id).toBe('test-window');
-      expect(signals[0].confidence).toBeGreaterThanOrEqual(0.6);
     });
 
-    it('returns empty array when lag below threshold', () => {
+    it('returns empty array when price below 70%', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 42100,        // ~0.2% lag, below threshold
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.65, // 65% - below threshold
           time_remaining_ms: 600000,
         }],
       });
@@ -169,11 +156,11 @@ describe('StrategyEvaluator Module', () => {
 
     it('returns empty array when time remaining below minimum', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,        // Good lag
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.75, // Good price
           time_remaining_ms: 30000, // 30 seconds - below minimum
         }],
       });
@@ -183,24 +170,24 @@ describe('StrategyEvaluator Module', () => {
 
     it('evaluates multiple windows independently', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,        // 4% higher
+        spot_price: 100000,
         windows: [
           {
             window_id: 'window-1',
-            market_id: 'btc',
-            market_price: 42000,
+            market_id: 'btc-up',
+            market_price: 0.80, // Above threshold
             time_remaining_ms: 600000,
           },
           {
             window_id: 'window-2',
-            market_id: 'eth',
-            market_price: 42000,
+            market_id: 'btc-down',
+            market_price: 0.75, // Above threshold
             time_remaining_ms: 600000,
           },
           {
             window_id: 'window-3',
-            market_id: 'sol',
-            market_price: 43680,  // Same as spot - no lag
+            market_id: 'eth-up',
+            market_price: 0.50, // Below threshold
             time_remaining_ms: 600000,
           },
         ],
@@ -212,13 +199,68 @@ describe('StrategyEvaluator Module', () => {
       expect(signals[1].window_id).toBe('window-2');
     });
 
+    it('only allows 1 entry per window', () => {
+      // First evaluation - should enter
+      const signals1 = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'same-window',
+          market_id: 'btc-up',
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      expect(signals1).toHaveLength(1);
+
+      // Second evaluation on same window - should NOT enter
+      const signals2 = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'same-window',
+          market_id: 'btc-up',
+          market_price: 0.85, // Even higher price
+          time_remaining_ms: 500000,
+        }],
+      });
+
+      expect(signals2).toHaveLength(0);
+    });
+
+    it('different windows can each generate signals', () => {
+      const signals1 = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'window-a',
+          market_id: 'btc-up',
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      const signals2 = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'window-b',
+          market_id: 'btc-up',
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      expect(signals1).toHaveLength(1);
+      expect(signals2).toHaveLength(1);
+      expect(signals1[0].window_id).toBe('window-a');
+      expect(signals2[0].window_id).toBe('window-b');
+    });
+
     it('includes window_id in all signals', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,
+        spot_price: 100000,
         windows: [{
           window_id: 'specific-window-id',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.80,
           time_remaining_ms: 600000,
         }],
       });
@@ -228,11 +270,11 @@ describe('StrategyEvaluator Module', () => {
 
     it('includes market_id in all signals', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
           market_id: 'specific-market-id',
-          market_price: 42000,
+          market_price: 0.80,
           time_remaining_ms: 600000,
         }],
       });
@@ -242,11 +284,11 @@ describe('StrategyEvaluator Module', () => {
 
     it('signal includes all required fields', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.80,
           time_remaining_ms: 600000,
         }],
       });
@@ -263,20 +305,47 @@ describe('StrategyEvaluator Module', () => {
       expect(signals[0]).toHaveProperty('signal_at');
     });
 
-    it('handles short direction when spot below market', () => {
+    it('always generates LONG direction (buying the high-conviction token)', () => {
       const signals = strategyEvaluator.evaluateEntryConditions({
-        spot_price: 40320,        // 4% lower
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-down', // Even for "down" token
+          market_price: 0.80,
           time_remaining_ms: 600000,
         }],
       });
 
       expect(signals).toHaveLength(1);
-      expect(signals[0].direction).toBe(Direction.SHORT);
-      expect(signals[0].spot_lag).toBeLessThan(0);
+      expect(signals[0].direction).toBe(Direction.LONG);
+    });
+
+    it('confidence equals market price (capped at 0.95)', () => {
+      const signals = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          market_price: 0.85,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      expect(signals[0].confidence).toBe(0.85);
+    });
+
+    it('caps confidence at 0.95 for very high prices', () => {
+      const signals = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          market_price: 0.98,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      expect(signals[0].confidence).toBe(0.95);
     });
   });
 
@@ -295,8 +364,7 @@ describe('StrategyEvaluator Module', () => {
 
       expect(state.initialized).toBe(true);
       expect(state.thresholds).toBeDefined();
-      expect(state.thresholds.spot_lag_threshold_pct).toBe(0.02);
-      expect(state.thresholds.min_confidence).toBe(0.6);
+      expect(state.thresholds.entry_threshold_pct).toBe(0.70);
       expect(state.thresholds.min_time_remaining_ms).toBe(60000);
     });
 
@@ -315,11 +383,11 @@ describe('StrategyEvaluator Module', () => {
       await strategyEvaluator.init(mockConfig);
 
       strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.80,
           time_remaining_ms: 600000,
         }],
       });
@@ -335,13 +403,13 @@ describe('StrategyEvaluator Module', () => {
     it('tracks evaluation count separately from signal count', async () => {
       await strategyEvaluator.init(mockConfig);
 
-      // Evaluate with no signal
+      // Evaluate with no signal (price below threshold)
       strategyEvaluator.evaluateEntryConditions({
-        spot_price: 42000,
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,  // No lag
+          market_id: 'btc-up',
+          market_price: 0.50, // Below 70% threshold
           time_remaining_ms: 600000,
         }],
       });
@@ -368,11 +436,11 @@ describe('StrategyEvaluator Module', () => {
       await strategyEvaluator.init(mockConfig);
 
       strategyEvaluator.evaluateEntryConditions({
-        spot_price: 43680,
+        spot_price: 100000,
         windows: [{
           window_id: 'test-window',
-          market_id: 'btc',
-          market_price: 42000,
+          market_id: 'btc-up',
+          market_price: 0.80,
           time_remaining_ms: 600000,
         }],
       });
@@ -382,6 +450,37 @@ describe('StrategyEvaluator Module', () => {
       const state = strategyEvaluator.getState();
       expect(state.evaluation_count).toBe(0);
       expect(state.signals_generated).toBe(0);
+    });
+
+    it('clears window entry tracking', async () => {
+      await strategyEvaluator.init(mockConfig);
+
+      // Enter a window
+      strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      await strategyEvaluator.shutdown();
+      await strategyEvaluator.init(mockConfig);
+
+      // Should be able to enter the same window again after restart
+      const signals = strategyEvaluator.evaluateEntryConditions({
+        spot_price: 100000,
+        windows: [{
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+        }],
+      });
+
+      expect(signals).toHaveLength(1);
     });
 
     it('is idempotent - can be called multiple times', async () => {

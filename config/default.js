@@ -111,8 +111,7 @@ export default {
   // Strategy configuration
   strategy: {
     entry: {
-      spotLagThresholdPct: 0.001,  // 0.1% lag to enter (low threshold for ExecutionTest)
-      minConfidence: 0.6,          // Minimum confidence to enter
+      entryThresholdPct: 0.70,     // 70% token price to enter (simple threshold strategy)
       // minTimeRemainingMs comes from trading.minTimeRemainingMs
     },
     // Position sizing configuration

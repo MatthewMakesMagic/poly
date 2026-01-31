@@ -1,30 +1,38 @@
 /**
  * Entry Logic Unit Tests
  *
- * Tests the core entry evaluation logic for the spot-lag strategy.
+ * Tests the core entry evaluation logic for the simple threshold strategy.
+ * Entry triggers when token price > 70%, limited to 1 entry per window.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { evaluateEntry, calculateConfidence } from '../entry-logic.js';
+import { resetState } from '../state.js';
 import { Direction, NoSignalReason } from '../types.js';
 
-// Default test thresholds
+// Default test thresholds for simple threshold strategy
 const defaultThresholds = {
-  spotLagThresholdPct: 0.02,   // 2% lag required
-  minConfidence: 0.6,          // Minimum confidence
-  minTimeRemainingMs: 60000,   // 1 minute minimum
+  entryThresholdPct: 0.70,       // 70% price threshold
+  minTimeRemainingMs: 60000,     // 1 minute minimum
 };
 
 describe('entry-logic', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    resetState();
+  });
+
   describe('evaluateEntry()', () => {
     describe('signal generation when conditions met', () => {
-      it('returns signal when lag exceeds threshold (long position)', () => {
-        // 3% lag = 1.5x threshold = confidence 0.75 (above 0.6 min)
+      it('returns signal when price above 70%', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 43260,        // 3% higher than market
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.75,        // 75% - above threshold
           time_remaining_ms: 600000, // 10 minutes
           thresholds: defaultThresholds,
         });
@@ -32,84 +40,93 @@ describe('entry-logic', () => {
         expect(result.signal).not.toBeNull();
         expect(result.signal.direction).toBe(Direction.LONG);
         expect(result.signal.window_id).toBe('test-window');
-        expect(result.signal.market_id).toBe('test-market');
-        expect(result.signal.spot_price).toBe(43260);
-        expect(result.signal.market_price).toBe(42000);
-        expect(result.signal.spot_lag).toBe(1260);
-        expect(result.signal.confidence).toBeGreaterThanOrEqual(0.6);
+        expect(result.signal.market_id).toBe('btc-up');
+        expect(result.signal.market_price).toBe(0.75);
+        expect(result.signal.confidence).toBe(0.75);
         expect(result.signal.time_remaining_ms).toBe(600000);
         expect(result.signal.signal_at).toBeDefined();
       });
 
-      it('returns signal when lag exceeds threshold (short position)', () => {
-        // 3% lag = 1.5x threshold = confidence 0.75 (above 0.6 min)
+      it('always generates LONG direction', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 40740,        // 3% lower than market
-          market_price: 42000,
+          market_id: 'btc-down', // Even for "down" market
+          spot_price: 100000,
+          market_price: 0.80,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
 
         expect(result.signal).not.toBeNull();
-        expect(result.signal.direction).toBe(Direction.SHORT);
-        expect(result.signal.spot_lag).toBe(-1260);
+        expect(result.signal.direction).toBe(Direction.LONG);
       });
 
-      it('includes correct spot_lag_pct in signal', () => {
-        // 3% lag
+      it('sets spot_lag to 0 (not used in simple strategy)', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 43260,
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
 
-        expect(result.signal.spot_lag_pct).toBeCloseTo(0.03, 3);
+        expect(result.signal.spot_lag).toBe(0);
+        expect(result.signal.spot_lag_pct).toBe(0);
       });
 
-      it('calculates higher confidence for larger lag', () => {
-        // 4% lag (2x threshold)
+      it('calculates confidence equal to market price', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 43680,        // 4% higher
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.85,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
 
         expect(result.signal).not.toBeNull();
-        expect(result.signal.confidence).toBeCloseTo(1.0, 2);
+        expect(result.signal.confidence).toBe(0.85);
+      });
+
+      it('caps confidence at 0.95 for very high prices', () => {
+        const result = evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.98,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        expect(result.signal).not.toBeNull();
+        expect(result.signal.confidence).toBe(0.95);
       });
     });
 
     describe('no signal when conditions not met', () => {
-      it('returns null when lag below threshold', () => {
+      it('returns null when price below threshold', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42100,        // ~0.2% lag, below threshold
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.65,        // 65% - below threshold
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
 
         expect(result.signal).toBeNull();
         expect(result.result.signal_generated).toBe(false);
-        expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_LAG);
+        expect(result.result.reason).toBe(NoSignalReason.BELOW_THRESHOLD);
       });
 
       it('returns null when time remaining below minimum', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42840,        // Good lag
-          market_price: 42000,
-          time_remaining_ms: 30000, // 30 seconds - below 1 minute minimum
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,        // Good price
+          time_remaining_ms: 30000,  // 30 seconds - below 1 minute minimum
           thresholds: defaultThresholds,
         });
 
@@ -118,106 +135,170 @@ describe('entry-logic', () => {
         expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_TIME);
       });
 
-      it('returns null when confidence below minimum', () => {
-        // Configure high confidence threshold
-        const highConfidenceThresholds = {
-          ...defaultThresholds,
-          minConfidence: 0.9,
-        };
-
-        const result = evaluateEntry({
+      it('returns null when window already entered', () => {
+        // First entry - should succeed
+        const result1 = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42840,        // 2% lag, exactly at threshold
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
           time_remaining_ms: 600000,
-          thresholds: highConfidenceThresholds,
+          thresholds: defaultThresholds,
         });
 
-        expect(result.signal).toBeNull();
-        expect(result.result.signal_generated).toBe(false);
-        expect(result.result.reason).toBe(NoSignalReason.LOW_CONFIDENCE);
+        expect(result1.signal).not.toBeNull();
+
+        // Second entry on same window - should fail
+        const result2 = evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.85,        // Even higher price
+          time_remaining_ms: 500000,
+          thresholds: defaultThresholds,
+        });
+
+        expect(result2.signal).toBeNull();
+        expect(result2.result.signal_generated).toBe(false);
+        expect(result2.result.reason).toBe(NoSignalReason.ALREADY_ENTERED_WINDOW);
+      });
+    });
+
+    describe('one entry per window', () => {
+      it('different windows can each generate signals', () => {
+        const result1 = evaluateEntry({
+          window_id: 'window-a',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        const result2 = evaluateEntry({
+          window_id: 'window-b',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        expect(result1.signal).not.toBeNull();
+        expect(result2.signal).not.toBeNull();
+        expect(result1.signal.window_id).toBe('window-a');
+        expect(result2.signal.window_id).toBe('window-b');
+      });
+
+      it('blocks re-entry even with different market_id', () => {
+        // Enter with btc-up
+        const result1 = evaluateEntry({
+          window_id: 'same-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        expect(result1.signal).not.toBeNull();
+
+        // Try to enter same window with btc-down
+        const result2 = evaluateEntry({
+          window_id: 'same-window',
+          market_id: 'btc-down',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        expect(result2.signal).toBeNull();
+        expect(result2.result.reason).toBe(NoSignalReason.ALREADY_ENTERED_WINDOW);
       });
     });
 
     describe('edge cases', () => {
-      it('handles zero market price gracefully', () => {
+      it('handles exactly-at-threshold price', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42000,
-          market_price: 0,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.70,        // Exactly at threshold
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
 
+        // 0.70 is NOT > 0.70, so no signal
         expect(result.signal).toBeNull();
-        expect(result.result.signal_generated).toBe(false);
-        expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_LAG);
+        expect(result.result.reason).toBe(NoSignalReason.BELOW_THRESHOLD);
       });
 
-      it('handles equal spot and market prices', () => {
+      it('handles barely-above-threshold price', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42000,
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.701,       // Just above threshold
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
-        });
-
-        expect(result.signal).toBeNull();
-        expect(result.result.signal_generated).toBe(false);
-        expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_LAG);
-      });
-
-      it('evaluates time constraint before lag constraint', () => {
-        const result = evaluateEntry({
-          window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42840,        // Good lag
-          market_price: 42000,
-          time_remaining_ms: 10000, // 10 seconds - below minimum
-          thresholds: defaultThresholds,
-        });
-
-        // Should fail on time first
-        expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_TIME);
-      });
-
-      it('handles exactly-at-threshold lag', () => {
-        const result = evaluateEntry({
-          window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42840,        // Exactly 2% lag
-          market_price: 42000,
-          time_remaining_ms: 600000,
-          thresholds: defaultThresholds,
-        });
-
-        // At exactly threshold, confidence = 0.5, which is below minConfidence 0.6
-        expect(result.signal).toBeNull();
-        expect(result.result.reason).toBe(NoSignalReason.LOW_CONFIDENCE);
-      });
-
-      it('handles barely-above-threshold lag for signal', () => {
-        // Use lower confidence threshold to allow signal at threshold
-        const lowConfidenceThresholds = {
-          ...defaultThresholds,
-          minConfidence: 0.5,
-        };
-
-        const result = evaluateEntry({
-          window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42840,        // Exactly 2% lag
-          market_price: 42000,
-          time_remaining_ms: 600000,
-          thresholds: lowConfidenceThresholds,
         });
 
         expect(result.signal).not.toBeNull();
-        expect(result.signal.confidence).toBeCloseTo(0.5, 2);
+        expect(result.signal.confidence).toBeCloseTo(0.701, 3);
+      });
+
+      it('evaluates time constraint first (before window check)', () => {
+        const result = evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 10000,  // 10 seconds - below minimum
+          thresholds: defaultThresholds,
+        });
+
+        // Should fail on time before checking window
+        expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_TIME);
+      });
+
+      it('evaluates window check before price check', () => {
+        // First enter the window
+        evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        // Now try again with low price
+        const result = evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.50,        // Below threshold
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        // Should fail on already entered before checking price
+        expect(result.result.reason).toBe(NoSignalReason.ALREADY_ENTERED_WINDOW);
+      });
+
+      it('handles very low price', () => {
+        const result = evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.10,        // 10%
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+        });
+
+        expect(result.signal).toBeNull();
+        expect(result.result.reason).toBe(NoSignalReason.BELOW_THRESHOLD);
       });
     });
 
@@ -225,9 +306,9 @@ describe('entry-logic', () => {
       it('always includes evaluation result with correct fields', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42100,
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.50,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
@@ -235,9 +316,9 @@ describe('entry-logic', () => {
         expect(result.result).toBeDefined();
         expect(result.result.window_id).toBe('test-window');
         expect(result.result.evaluated_at).toBeDefined();
-        expect(result.result.spot_price).toBe(42100);
-        expect(result.result.market_price).toBe(42000);
-        expect(result.result.threshold_pct).toBe(0.02);
+        expect(result.result.spot_price).toBe(100000);
+        expect(result.result.market_price).toBe(0.50);
+        expect(result.result.threshold_pct).toBe(0.70);
         expect(result.result.time_remaining_ms).toBe(600000);
         expect(typeof result.result.signal_generated).toBe('boolean');
         expect(result.result.reason).toBeDefined();
@@ -246,9 +327,9 @@ describe('entry-logic', () => {
       it('includes conditions_met reason when signal generated', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 43680,        // 4% lag - high confidence
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
         });
@@ -259,50 +340,68 @@ describe('entry-logic', () => {
     });
 
     describe('logging', () => {
-      it('calls logger when provided', () => {
-        const mockLog = { info: vi.fn() };
+      it('calls debug logger for non-signal evaluations', () => {
+        const mockLog = { debug: vi.fn(), info: vi.fn() };
 
         evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42100,
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.50,        // Below threshold
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
           log: mockLog,
         });
 
-        expect(mockLog.info).toHaveBeenCalledWith('entry_evaluated', expect.any(Object));
+        expect(mockLog.debug).toHaveBeenCalledWith('entry_evaluated', expect.any(Object));
+        expect(mockLog.info).not.toHaveBeenCalled();
+      });
+
+      it('calls info logger when signal generated', () => {
+        const mockLog = { debug: vi.fn(), info: vi.fn() };
+
+        evaluateEntry({
+          window_id: 'test-window',
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
+          time_remaining_ms: 600000,
+          thresholds: defaultThresholds,
+          log: mockLog,
+        });
+
+        expect(mockLog.info).toHaveBeenCalledWith('entry_signal_generated', expect.any(Object));
+        expect(mockLog.debug).not.toHaveBeenCalled();
       });
 
       it('logs expected vs actual format', () => {
-        const mockLog = { info: vi.fn() };
+        const mockLog = { debug: vi.fn(), info: vi.fn() };
 
         evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 42100,
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.50,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
           log: mockLog,
         });
 
-        const logCall = mockLog.info.mock.calls[0][1];
+        const logCall = mockLog.debug.mock.calls[0][1];
         expect(logCall.expected).toBeDefined();
         expect(logCall.actual).toBeDefined();
-        expect(logCall.expected.spot_lag_threshold_pct).toBe(0.02);
-        expect(logCall.actual.spot_price).toBe(42100);
+        expect(logCall.expected.entry_threshold_pct).toBe(0.70);
+        expect(logCall.actual.market_price).toBe(0.50);
       });
 
       it('includes signal info when signal generated', () => {
-        const mockLog = { info: vi.fn() };
+        const mockLog = { debug: vi.fn(), info: vi.fn() };
 
         evaluateEntry({
           window_id: 'test-window',
-          market_id: 'test-market',
-          spot_price: 43680,        // 4% lag
-          market_price: 42000,
+          market_id: 'btc-up',
+          spot_price: 100000,
+          market_price: 0.80,
           time_remaining_ms: 600000,
           thresholds: defaultThresholds,
           log: mockLog,
@@ -311,15 +410,16 @@ describe('entry-logic', () => {
         const logCall = mockLog.info.mock.calls[0][1];
         expect(logCall.signal).toBeDefined();
         expect(logCall.signal.direction).toBeDefined();
+        expect(logCall.signal.market_price).toBe(0.80);
       });
 
       it('does not throw when logger is null', () => {
         expect(() => {
           evaluateEntry({
             window_id: 'test-window',
-            market_id: 'test-market',
-            spot_price: 42100,
-            market_price: 42000,
+            market_id: 'btc-up',
+            spot_price: 100000,
+            market_price: 0.50,
             time_remaining_ms: 600000,
             thresholds: defaultThresholds,
             log: null,
@@ -330,29 +430,17 @@ describe('entry-logic', () => {
   });
 
   describe('calculateConfidence()', () => {
-    it('returns 0.5 at exactly threshold', () => {
-      const confidence = calculateConfidence(0.02, 0.02);
-      expect(confidence).toBeCloseTo(0.5, 2);
+    it('returns market price for prices below 0.95', () => {
+      expect(calculateConfidence(0.70, 0.70)).toBe(0.70);
+      expect(calculateConfidence(0.75, 0.70)).toBe(0.75);
+      expect(calculateConfidence(0.85, 0.70)).toBe(0.85);
+      expect(calculateConfidence(0.90, 0.70)).toBe(0.90);
     });
 
-    it('returns 1.0 at 2x threshold', () => {
-      const confidence = calculateConfidence(0.04, 0.02);
-      expect(confidence).toBeCloseTo(1.0, 2);
-    });
-
-    it('returns 0.75 at 1.5x threshold', () => {
-      const confidence = calculateConfidence(0.03, 0.02);
-      expect(confidence).toBeCloseTo(0.75, 2);
-    });
-
-    it('caps confidence at 1.0 for very high lag', () => {
-      const confidence = calculateConfidence(0.10, 0.02); // 5x threshold
-      expect(confidence).toBe(1.0);
-    });
-
-    it('returns less than 0.5 for lag below threshold', () => {
-      const confidence = calculateConfidence(0.01, 0.02);
-      expect(confidence).toBeLessThan(0.5);
+    it('caps at 0.95 for very high prices', () => {
+      expect(calculateConfidence(0.95, 0.70)).toBe(0.95);
+      expect(calculateConfidence(0.98, 0.70)).toBe(0.95);
+      expect(calculateConfidence(0.99, 0.70)).toBe(0.95);
     });
   });
 });

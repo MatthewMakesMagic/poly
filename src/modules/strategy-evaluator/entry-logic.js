@@ -1,11 +1,8 @@
 /**
  * Entry Logic
  *
- * Core entry condition evaluation for the spot-lag strategy.
- * The strategy enters when:
- * 1. Spot price diverges from market price by more than threshold
- * 2. Sufficient time remains in the window (min 1 minute)
- * 3. Confidence threshold met based on lag magnitude
+ * Simple entry strategy: enter when token price > 70%.
+ * One entry per window maximum.
  */
 
 import {
@@ -14,19 +11,26 @@ import {
   createEntrySignal,
   createEvaluationResult,
 } from './types.js';
+import { hasEnteredWindow, markWindowEntered } from './state.js';
+
+// Entry threshold: 70%
+const ENTRY_THRESHOLD = 0.70;
 
 /**
  * Evaluate entry conditions for a single window
  *
+ * Simple strategy:
+ * - Enter when market_price > 70%
+ * - Only 1 entry per window
+ *
  * @param {Object} params - Evaluation parameters
  * @param {string} params.window_id - Window identifier
  * @param {string} params.market_id - Market identifier
- * @param {number} params.spot_price - Current spot price
- * @param {number} params.market_price - Current market price
+ * @param {number} params.spot_price - Current spot price (not used in simple strategy)
+ * @param {number} params.market_price - Current market/token price (0-1)
  * @param {number} params.time_remaining_ms - Time until window expiry
  * @param {Object} params.thresholds - Entry thresholds from config
- * @param {number} params.thresholds.spotLagThresholdPct - Minimum lag percentage
- * @param {number} params.thresholds.minConfidence - Minimum confidence to enter
+ * @param {number} params.thresholds.entryThresholdPct - Price threshold (default 0.70)
  * @param {number} params.thresholds.minTimeRemainingMs - Minimum time remaining
  * @param {Object} [log] - Logger instance for debug output
  * @returns {Object} { signal: EntrySignal|null, result: EvaluationResult }
@@ -40,20 +44,30 @@ export function evaluateEntry({
   thresholds,
   log = null,
 }) {
-  const { spotLagThresholdPct, minConfidence, minTimeRemainingMs } = thresholds;
-
-  // Calculate spot lag
-  const spot_lag = spot_price - market_price;
-  const spot_lag_pct = market_price > 0 ? Math.abs(spot_lag / market_price) : 0;
+  const { minTimeRemainingMs } = thresholds;
+  const entryThreshold = thresholds.entryThresholdPct ?? ENTRY_THRESHOLD;
 
   // Build base result for logging
   const baseResult = {
     window_id,
     spot_price,
     market_price,
-    threshold_pct: spotLagThresholdPct,
+    threshold_pct: entryThreshold,
     time_remaining_ms,
   };
+
+  // Check if we've already entered this window
+  if (hasEnteredWindow(window_id)) {
+    const result = createEvaluationResult({
+      ...baseResult,
+      signal_generated: false,
+      reason: NoSignalReason.ALREADY_ENTERED_WINDOW,
+    });
+
+    logEvaluation(log, result, thresholds);
+
+    return { signal: null, result };
+  }
 
   // Check time remaining
   if (time_remaining_ms < minTimeRemainingMs) {
@@ -63,40 +77,28 @@ export function evaluateEntry({
       reason: NoSignalReason.INSUFFICIENT_TIME,
     });
 
-    logEvaluation(log, result, thresholds, spot_lag_pct);
+    logEvaluation(log, result, thresholds);
 
     return { signal: null, result };
   }
 
-  // Check if lag exceeds threshold
-  if (spot_lag_pct < spotLagThresholdPct) {
+  // Check if price exceeds threshold (>70%, not >=)
+  if (market_price <= entryThreshold) {
     const result = createEvaluationResult({
       ...baseResult,
       signal_generated: false,
-      reason: NoSignalReason.INSUFFICIENT_LAG,
+      reason: NoSignalReason.BELOW_THRESHOLD,
     });
 
-    logEvaluation(log, result, thresholds, spot_lag_pct);
+    logEvaluation(log, result, thresholds);
 
     return { signal: null, result };
   }
 
-  // Calculate confidence based on lag magnitude
-  const confidence = calculateConfidence(spot_lag_pct, spotLagThresholdPct);
-  if (confidence < minConfidence) {
-    const result = createEvaluationResult({
-      ...baseResult,
-      signal_generated: false,
-      reason: NoSignalReason.LOW_CONFIDENCE,
-    });
-
-    logEvaluation(log, result, thresholds, spot_lag_pct, confidence);
-
-    return { signal: null, result };
-  }
-
-  // Determine direction based on spot vs market
-  const direction = spot_lag > 0 ? Direction.LONG : Direction.SHORT;
+  // Price > 70% - generate entry signal!
+  // Direction: LONG on this token (we're buying the token showing conviction)
+  const direction = Direction.LONG;
+  const confidence = calculateConfidence(market_price, entryThreshold);
 
   // Create entry signal
   const signal = createEntrySignal({
@@ -106,10 +108,13 @@ export function evaluateEntry({
     confidence,
     spot_price,
     market_price,
-    spot_lag,
-    spot_lag_pct,
+    spot_lag: 0, // Not used in simple strategy
+    spot_lag_pct: 0,
     time_remaining_ms,
   });
+
+  // Mark this window as entered
+  markWindowEntered(window_id);
 
   const result = createEvaluationResult({
     ...baseResult,
@@ -117,25 +122,24 @@ export function evaluateEntry({
     reason: NoSignalReason.CONDITIONS_MET,
   });
 
-  logEvaluation(log, result, thresholds, spot_lag_pct, confidence, signal);
+  logEvaluation(log, result, thresholds, confidence, signal);
 
   return { signal, result };
 }
 
 /**
- * Calculate confidence based on lag magnitude
- * Higher lag = higher confidence (up to 1.0)
+ * Calculate confidence based on how far above threshold the price is
+ * Higher price = higher confidence (up to 1.0)
  *
- * @param {number} lagPct - Actual lag percentage
- * @param {number} thresholdPct - Threshold percentage
+ * @param {number} price - Token price
+ * @param {number} threshold - Entry threshold
  * @returns {number} Confidence value between 0 and 1
  */
-export function calculateConfidence(lagPct, thresholdPct) {
-  // Confidence scales from threshold to 2x threshold
-  // At threshold: confidence = 0.5
-  // At 2x threshold: confidence = 1.0
-  const ratio = lagPct / thresholdPct;
-  return Math.min(1.0, 0.5 + (ratio - 1) * 0.5);
+export function calculateConfidence(price, threshold) {
+  // At threshold (70%): confidence = 0.7
+  // At 85%: confidence = 0.85
+  // At 95%+: confidence = 0.95 (cap)
+  return Math.min(0.95, price);
 }
 
 /**
@@ -144,12 +148,11 @@ export function calculateConfidence(lagPct, thresholdPct) {
  * @param {Object|null} log - Logger instance
  * @param {Object} result - Evaluation result
  * @param {Object} thresholds - Threshold configuration
- * @param {number} spot_lag_pct - Calculated spot lag percentage
  * @param {number} [confidence] - Calculated confidence
  * @param {Object} [signal] - Generated signal (if any)
  * @private
  */
-function logEvaluation(log, result, thresholds, spot_lag_pct, confidence = null, signal = null) {
+function logEvaluation(log, result, thresholds, confidence = null, signal = null) {
   if (!log) {
     return;
   }
@@ -157,14 +160,11 @@ function logEvaluation(log, result, thresholds, spot_lag_pct, confidence = null,
   const logData = {
     window_id: result.window_id,
     expected: {
-      spot_lag_threshold_pct: thresholds.spotLagThresholdPct,
+      entry_threshold_pct: thresholds.entryThresholdPct ?? ENTRY_THRESHOLD,
       min_time_remaining_ms: thresholds.minTimeRemainingMs,
-      min_confidence: thresholds.minConfidence,
     },
     actual: {
-      spot_price: result.spot_price,
       market_price: result.market_price,
-      spot_lag_pct,
       time_remaining_ms: result.time_remaining_ms,
     },
     signal_generated: result.signal_generated,
@@ -179,10 +179,14 @@ function logEvaluation(log, result, thresholds, spot_lag_pct, confidence = null,
     logData.signal = {
       direction: signal.direction,
       confidence: signal.confidence,
-      spot_lag: signal.spot_lag,
+      market_price: signal.market_price,
     };
   }
 
-  // Use info level since logger doesn't support debug
-  log.info('entry_evaluated', logData);
+  // Use debug for non-signal evaluations, info for signals
+  if (signal) {
+    log.info('entry_signal_generated', logData);
+  } else {
+    log.debug('entry_evaluated', logData);
+  }
 }

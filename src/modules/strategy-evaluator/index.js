@@ -26,8 +26,7 @@ let initialized = false;
 
 // Default thresholds if not specified in config
 const DEFAULT_THRESHOLDS = {
-  spotLagThresholdPct: 0.02,   // 2% lag required to enter
-  minConfidence: 0.6,          // Minimum confidence to enter
+  entryThresholdPct: 0.70,     // 70% token price to enter
   minTimeRemainingMs: 60000,   // 1 minute minimum
 };
 
@@ -59,8 +58,7 @@ export async function init(cfg) {
   const tradingConfig = cfg?.trading || {};
 
   thresholds = {
-    spotLagThresholdPct: entryConfig.spotLagThresholdPct ?? DEFAULT_THRESHOLDS.spotLagThresholdPct,
-    minConfidence: entryConfig.minConfidence ?? DEFAULT_THRESHOLDS.minConfidence,
+    entryThresholdPct: entryConfig.entryThresholdPct ?? DEFAULT_THRESHOLDS.entryThresholdPct,
     minTimeRemainingMs: tradingConfig.minTimeRemainingMs ?? DEFAULT_THRESHOLDS.minTimeRemainingMs,
   };
 
@@ -70,8 +68,7 @@ export async function init(cfg) {
   initialized = true;
   log.info('module_initialized', {
     thresholds: {
-      spot_lag_threshold_pct: thresholds.spotLagThresholdPct,
-      min_confidence: thresholds.minConfidence,
+      entry_threshold_pct: thresholds.entryThresholdPct,
       min_time_remaining_ms: thresholds.minTimeRemainingMs,
     },
   });
@@ -85,21 +82,13 @@ export async function init(cfg) {
  * @private
  */
 function validateThresholds(thresholds) {
-  const { spotLagThresholdPct, minConfidence, minTimeRemainingMs } = thresholds;
+  const { entryThresholdPct, minTimeRemainingMs } = thresholds;
 
-  if (typeof spotLagThresholdPct !== 'number' || spotLagThresholdPct <= 0 || spotLagThresholdPct >= 1) {
+  if (typeof entryThresholdPct !== 'number' || entryThresholdPct <= 0 || entryThresholdPct >= 1) {
     throw new StrategyEvaluatorError(
       StrategyEvaluatorErrorCodes.INVALID_CONFIG,
-      'spotLagThresholdPct must be a number between 0 and 1 (exclusive)',
-      { spotLagThresholdPct }
-    );
-  }
-
-  if (typeof minConfidence !== 'number' || minConfidence < 0 || minConfidence > 1) {
-    throw new StrategyEvaluatorError(
-      StrategyEvaluatorErrorCodes.INVALID_CONFIG,
-      'minConfidence must be a number between 0 and 1',
-      { minConfidence }
+      'entryThresholdPct must be a number between 0 and 1 (exclusive)',
+      { entryThresholdPct }
     );
   }
 
@@ -167,8 +156,7 @@ export function getState() {
   return {
     initialized,
     thresholds: thresholds ? {
-      spot_lag_threshold_pct: thresholds.spotLagThresholdPct,
-      min_confidence: thresholds.minConfidence,
+      entry_threshold_pct: thresholds.entryThresholdPct,
       min_time_remaining_ms: thresholds.minTimeRemainingMs,
     } : null,
     ...getStats(),
