@@ -43,6 +43,7 @@ let log = null;
  */
 export async function init(config) {
   if (state.initialized) {
+    // Already initialized - silently return (idempotent behavior)
     return;
   }
 
@@ -118,9 +119,9 @@ export async function checkStartupState() {
 /**
  * Get list of incomplete intents
  *
- * @returns {Array<Object>} List of incomplete intents
+ * @returns {Promise<Array<Object>>} List of incomplete intents
  */
-export function getIncompleteIntents() {
+export async function getIncompleteIntents() {
   return getIncompleteIntentsFromDb();
 }
 
@@ -196,9 +197,9 @@ export async function markIntentReconciled(intentId, resolution) {
  *
  * @param {Array<Object>} memoryPositions - Positions from memory state
  * @param {Array<Object>} dbPositions - Positions from database
- * @returns {Array<Object>} List of divergences found
+ * @returns {Promise<Array<Object>>} List of divergences found
  */
-export function detectDivergence(memoryPositions, dbPositions) {
+export async function detectDivergence(memoryPositions, dbPositions) {
   const divergences = detectDivergenceLogic(memoryPositions, dbPositions);
 
   // AC5: Log divergences with error level

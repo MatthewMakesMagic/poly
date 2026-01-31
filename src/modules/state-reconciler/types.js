@@ -44,5 +44,37 @@
  * @property {boolean} initialized - Whether module is initialized
  */
 
-// Export empty object to make this a proper ES module
-export default {};
+/**
+ * Divergence type constants
+ * @type {Object}
+ */
+export const DIVERGENCE_TYPES = {
+  MEMORY_ONLY: 'MEMORY_ONLY',
+  DB_ONLY: 'DB_ONLY',
+  STATE_MISMATCH: 'STATE_MISMATCH',
+};
+
+/**
+ * Log event names used by the state reconciler
+ * @type {Object}
+ */
+export const LOG_EVENTS = {
+  RECONCILIATION_COMPLETE: 'reconciliation_complete',
+  INCOMPLETE_INTENT_DETECTED: 'incomplete_intent_detected',
+  RECONCILIATION_REQUIRES_MANUAL_ACTION: 'reconciliation_requires_manual_action',
+  STATE_DIVERGENCE_DETECTED: 'state_divergence_detected',
+  INTENT_MANUALLY_RECONCILED: 'intent_manually_reconciled',
+};
+
+/**
+ * NFR3 performance requirement: reconciliation must complete within this time
+ * @type {number}
+ */
+export const MAX_RECONCILIATION_TIME_MS = 10000;
+
+// Default export for backward compatibility
+export default {
+  DIVERGENCE_TYPES,
+  LOG_EVENTS,
+  MAX_RECONCILIATION_TIME_MS,
+};

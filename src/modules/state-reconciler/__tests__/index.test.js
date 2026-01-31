@@ -162,14 +162,17 @@ describe('State Reconciler Module', () => {
 
   describe('Logging (AC2, AC4)', () => {
     it('logs info message when clean (AC4)', async () => {
-      // Spy on the logger
-      const infoSpy = vi.spyOn(logger.child({ module: 'state-reconciler' }), 'info');
+      const result = await stateReconciler.checkStartupState();
 
-      await stateReconciler.checkStartupState();
+      // Verify result indicates clean state
+      expect(result.clean).toBe(true);
+      expect(result.incompleteCount).toBe(0);
 
-      // Check that logger was called (indirectly via the module's log)
+      // Verify module state reflects the reconciliation
       const state = stateReconciler.getState();
+      expect(state.lastReconciliation).toBeDefined();
       expect(state.lastReconciliation.clean).toBe(true);
+      expect(state.stats.totalChecks).toBe(1);
     });
 
     it('logs warn for each incomplete intent (AC2)', async () => {
@@ -181,10 +184,26 @@ describe('State Reconciler Module', () => {
 
       const result = await stateReconciler.checkStartupState();
 
-      // Verify the result contains the intent details
+      // Verify the result contains the intent details with required log fields
       expect(result.incompleteIntents[0].intent_type).toBe(INTENT_TYPES.CLOSE_POSITION);
       expect(result.incompleteIntents[0].window_id).toBe('window-abc');
       expect(result.incompleteIntents[0].payload.position_id).toBe(42);
+      expect(result.incompleteIntents[0].created_at).toBeDefined();
+      // Verify all AC2 required fields are present
+      expect(result.incompleteIntents[0]).toHaveProperty('id');
+      expect(result.incompleteIntents[0]).toHaveProperty('intent_type');
+      expect(result.incompleteIntents[0]).toHaveProperty('window_id');
+      expect(result.incompleteIntents[0]).toHaveProperty('created_at');
+      expect(result.incompleteIntents[0]).toHaveProperty('payload');
+    });
+
+    it('includes duration_ms in clean startup log (AC4)', async () => {
+      const result = await stateReconciler.checkStartupState();
+
+      // Verify duration is tracked for monitoring
+      expect(result.duration_ms).toBeDefined();
+      expect(typeof result.duration_ms).toBe('number');
+      expect(result.duration_ms).toBeGreaterThanOrEqual(0);
     });
   });
 
@@ -198,7 +217,7 @@ describe('State Reconciler Module', () => {
       await stateReconciler.checkStartupState();
 
       // Verify intent is still in 'executing' status (not retried)
-      const intents = stateReconciler.getIncompleteIntents();
+      const intents = await stateReconciler.getIncompleteIntents();
       expect(intents).toHaveLength(1);
       expect(intents[0].id).toBe(intentId);
     });
@@ -278,48 +297,48 @@ describe('State Reconciler Module', () => {
   });
 
   describe('detectDivergence (AC5)', () => {
-    it('returns empty array when states match', () => {
+    it('returns empty array when states match', async () => {
       const memoryPositions = [{ id: 1, size: 100, status: 'open' }];
       const dbPositions = [{ id: 1, size: 100, status: 'open' }];
 
-      const result = stateReconciler.detectDivergence(memoryPositions, dbPositions);
+      const result = await stateReconciler.detectDivergence(memoryPositions, dbPositions);
 
       expect(result).toEqual([]);
     });
 
-    it('detects position in memory but not DB', () => {
+    it('detects position in memory but not DB', async () => {
       const memoryPositions = [
         { id: 1, size: 100, status: 'open' },
         { id: 2, size: 200, status: 'open' },
       ];
       const dbPositions = [{ id: 1, size: 100, status: 'open' }];
 
-      const result = stateReconciler.detectDivergence(memoryPositions, dbPositions);
+      const result = await stateReconciler.detectDivergence(memoryPositions, dbPositions);
 
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('MEMORY_ONLY');
       expect(result[0].position_id).toBe(2);
     });
 
-    it('detects position in DB but not memory', () => {
+    it('detects position in DB but not memory', async () => {
       const memoryPositions = [{ id: 1, size: 100, status: 'open' }];
       const dbPositions = [
         { id: 1, size: 100, status: 'open' },
         { id: 3, size: 300, status: 'open' },
       ];
 
-      const result = stateReconciler.detectDivergence(memoryPositions, dbPositions);
+      const result = await stateReconciler.detectDivergence(memoryPositions, dbPositions);
 
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('DB_ONLY');
       expect(result[0].position_id).toBe(3);
     });
 
-    it('detects field value mismatches', () => {
+    it('detects field value mismatches', async () => {
       const memoryPositions = [{ id: 1, size: 100, status: 'open' }];
       const dbPositions = [{ id: 1, size: 150, status: 'open' }];
 
-      const result = stateReconciler.detectDivergence(memoryPositions, dbPositions);
+      const result = await stateReconciler.detectDivergence(memoryPositions, dbPositions);
 
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('STATE_MISMATCH');
@@ -328,11 +347,11 @@ describe('State Reconciler Module', () => {
       expect(result[0].db_value).toBe(150);
     });
 
-    it('updates stats.divergencesDetected', () => {
+    it('updates stats.divergencesDetected', async () => {
       const initialState = stateReconciler.getState();
       const initialCount = initialState.stats.divergencesDetected;
 
-      stateReconciler.detectDivergence(
+      await stateReconciler.detectDivergence(
         [{ id: 1, size: 100, status: 'open' }],
         []
       );
