@@ -533,6 +533,125 @@ function formatResults(results) {
 }
 
 /**
+ * Check Railway deployment configuration
+ * Verifies volume, database path, and required env vars for Railway
+ * @returns {Promise<CheckResult>}
+ */
+async function checkRailwayConfig() {
+  // Check if we're running ON Railway (deployed)
+  const isOnRailway = !!(
+    process.env.RAILWAY_ENVIRONMENT ||
+    process.env.RAILWAY_SERVICE_ID
+  );
+
+  if (isOnRailway) {
+    // Running on Railway - verify volume is accessible
+    const dbPath = process.env.DATABASE_PATH || '/app/data/poly.db';
+    const dataDir = dbPath.substring(0, dbPath.lastIndexOf('/'));
+
+    try {
+      const { existsSync, accessSync, constants } = await import('fs');
+
+      // Check if data directory exists and is writable
+      if (!existsSync(dataDir)) {
+        return {
+          name: 'Railway Config',
+          pass: false,
+          details: '',
+          error: `Volume not mounted: ${dataDir} does not exist`,
+        };
+      }
+
+      // Check write access
+      try {
+        accessSync(dataDir, constants.W_OK);
+      } catch {
+        return {
+          name: 'Railway Config',
+          pass: false,
+          details: '',
+          error: `Volume not writable: ${dataDir}`,
+        };
+      }
+
+      return {
+        name: 'Railway Config',
+        pass: true,
+        details: `volume OK (${dataDir})`,
+        error: null,
+      };
+    } catch (err) {
+      return {
+        name: 'Railway Config',
+        pass: false,
+        details: '',
+        error: `Volume check failed: ${err.message}`,
+      };
+    }
+  }
+
+  // Running locally - check Railway CLI can query the project config
+  try {
+    const envOutput = execSync('railway variables --json 2>/dev/null || echo "{}"', {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 15000,
+    });
+
+    let railwayVars = {};
+    try {
+      railwayVars = JSON.parse(envOutput);
+    } catch {
+      // Could not parse - maybe not authenticated
+      return {
+        name: 'Railway Config',
+        pass: true,
+        details: 'skipped (CLI not linked to project)',
+        error: null,
+      };
+    }
+
+    // Check for required Railway env vars
+    const requiredVars = ['DATABASE_PATH'];
+    const missing = requiredVars.filter(v => !railwayVars[v]);
+
+    // Check for recommended vars
+    const recommendedVars = ['RAILWAY_API_TOKEN', 'RAILWAY_SERVICE_ID'];
+    const missingRecommended = recommendedVars.filter(v => !railwayVars[v] && !process.env[v]);
+
+    if (missing.length > 0) {
+      return {
+        name: 'Railway Config',
+        pass: false,
+        details: '',
+        error: `Missing Railway env vars: ${missing.join(', ')}`,
+      };
+    }
+
+    const warnings = [];
+    if (missingRecommended.length > 0) {
+      warnings.push(`(missing: ${missingRecommended.join(', ')})`);
+    }
+
+    const dbPath = railwayVars.DATABASE_PATH || '/app/data/poly.db';
+    return {
+      name: 'Railway Config',
+      pass: true,
+      details: `DB=${dbPath} ${warnings.join(' ')}`.trim(),
+      error: null,
+    };
+  } catch (err) {
+    // Railway CLI not working or not linked
+    return {
+      name: 'Railway Config',
+      pass: true,
+      details: 'skipped (CLI unavailable)',
+      error: null,
+    };
+  }
+}
+
+/**
  * Main entry point
  */
 async function main() {
@@ -544,6 +663,7 @@ async function main() {
   results.push(checkDatabaseConnection());
   results.push(checkMigrations());
   results.push(checkRailwayCli());
+  results.push(await checkRailwayConfig());
   results.push(await checkLaunchManifest());
 
   // Display results
@@ -561,6 +681,7 @@ export {
   checkDatabaseConnection,
   checkMigrations,
   checkRailwayCli,
+  checkRailwayConfig,
   checkLaunchManifest,
   formatResults,
   sanitizeErrorMessage,

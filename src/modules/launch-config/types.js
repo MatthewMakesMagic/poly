@@ -139,6 +139,18 @@ export const MANIFEST_SCHEMA = {
       type: 'boolean',
       description: 'Whether kill switch watchdog is enabled',
     },
+    safeguards: {
+      type: 'object',
+      description: 'Position entry safeguards configuration',
+    },
+    edge: {
+      type: 'object',
+      description: 'Edge threshold configuration',
+    },
+    window_timing: {
+      type: 'object',
+      description: 'Window timing filter configuration',
+    },
   },
   additionalProperties: false,
 };
