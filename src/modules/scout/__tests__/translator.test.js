@@ -289,4 +289,74 @@ describe('Scout Translator', () => {
       expect(getTimeAgo(twoHoursAgo)).toBe('2h ago');
     });
   });
+
+  // Story E.3: Mode prefix tests
+  describe('formatModePrefix (Story E.3)', () => {
+    it('should format PAPER mode prefix', () => {
+      const { formatModePrefix } = require('../translator.js');
+      const result = formatModePrefix('PAPER');
+
+      expect(result).toBe('[PAPER] ');
+    });
+
+    it('should format LIVE mode prefix', () => {
+      const { formatModePrefix } = require('../translator.js');
+      const result = formatModePrefix('LIVE');
+
+      expect(result).toBe('[LIVE] ');
+    });
+
+    it('should return empty string for null mode', () => {
+      const { formatModePrefix } = require('../translator.js');
+      const result = formatModePrefix(null);
+
+      expect(result).toBe('');
+    });
+
+    it('should return empty string for undefined mode', () => {
+      const { formatModePrefix } = require('../translator.js');
+      const result = formatModePrefix(undefined);
+
+      expect(result).toBe('');
+    });
+  });
+
+  describe('translate with trading mode (Story E.3)', () => {
+    it('should prefix signal translation with PAPER mode', () => {
+      const result = translate('signal', {
+        signalType: 'entry',
+        strategyId: 'spot-lag-v1',
+        priceAtSignal: 0.42,
+        tradingMode: 'PAPER',
+      });
+
+      expect(result.summary).toContain('[PAPER]');
+      expect(result.summary).toContain('Signal fired');
+    });
+
+    it('should prefix entry translation with LIVE mode', () => {
+      const result = translate('entry', {
+        prices: {
+          priceAtFill: 0.421,
+          expectedPrice: 0.420,
+        },
+        hasDivergence: false,
+        tradingMode: 'LIVE',
+      });
+
+      expect(result.summary).toContain('[LIVE]');
+      expect(result.summary).toContain('Filled');
+    });
+
+    it('should not add prefix when tradingMode is not present', () => {
+      const result = translate('signal', {
+        signalType: 'entry',
+        strategyId: 'spot-lag-v1',
+        priceAtSignal: 0.42,
+      });
+
+      expect(result.summary).not.toContain('[PAPER]');
+      expect(result.summary).not.toContain('[LIVE]');
+    });
+  });
 });

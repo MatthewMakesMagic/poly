@@ -20,6 +20,7 @@ const LOG_PATTERNS = {
   entry_executed: TradeEventType.ENTRY,
   position_opened: TradeEventType.ENTRY,
   order_filled: TradeEventType.ENTRY,
+  order_placed: TradeEventType.ENTRY, // Story E.3: Live order placement
 
   // Exit events
   exit_executed: TradeEventType.EXIT,
@@ -31,6 +32,8 @@ const LOG_PATTERNS = {
   signal_generated: TradeEventType.SIGNAL,
   entry_signal: TradeEventType.SIGNAL,
   composed_strategy_signals: TradeEventType.SIGNAL,
+  paper_mode_signal: TradeEventType.SIGNAL, // Story E.3: Paper mode signal
+  entry_signals_generated: TradeEventType.SIGNAL, // Story E.3: Entry signals
 
   // Alert/divergence events
   divergence_detected: TradeEventType.DIVERGENCE,
@@ -39,6 +42,23 @@ const LOG_PATTERNS = {
   kill_switch_triggered: TradeEventType.ALERT,
   error: TradeEventType.ALERT,
 };
+
+/**
+ * Events that imply PAPER mode when present
+ */
+const PAPER_MODE_EVENTS = new Set([
+  'paper_mode_signal',
+]);
+
+/**
+ * Events that imply LIVE mode when present (without explicit paper marker)
+ */
+const LIVE_MODE_EVENTS = new Set([
+  'order_placed',
+  'entry_executed',
+  'order_filled',
+  'position_opened',
+]);
 
 /**
  * RailwayLogParser class
@@ -170,7 +190,7 @@ export class RailwayLogParser {
       if (message.includes(pattern) || logEntry.event === pattern) {
         return {
           type: eventType,
-          data: this.extractEventData(logEntry, eventType),
+          data: this.extractEventData(logEntry, eventType, pattern),
         };
       }
     }
@@ -207,9 +227,10 @@ export class RailwayLogParser {
    *
    * @param {Object} logEntry - Parsed JSON log entry
    * @param {string} eventType - Detected event type
+   * @param {string} eventName - The matched event name pattern
    * @returns {Object} Event data
    */
-  extractEventData(logEntry, eventType) {
+  extractEventData(logEntry, eventType, eventName = null) {
     const data = {
       timestamp: logEntry.time || logEntry.timestamp || new Date().toISOString(),
       raw: logEntry,
@@ -224,6 +245,9 @@ export class RailwayLogParser {
     if (logEntry.strategyId) data.strategyId = logEntry.strategyId;
     if (logEntry.symbol) data.symbol = logEntry.symbol;
     if (logEntry.crypto) data.symbol = logEntry.crypto;
+
+    // Story E.3: Extract trading mode
+    data.tradingMode = this.detectTradingMode(logEntry, eventName);
 
     // Extract type-specific fields
     switch (eventType) {
@@ -255,6 +279,50 @@ export class RailwayLogParser {
     }
 
     return data;
+  }
+
+  /**
+   * Detect trading mode from log entry
+   *
+   * Story E.3: Determines if event is PAPER or LIVE mode
+   *
+   * Priority:
+   * 1. Explicit trading_mode field (primary)
+   * 2. paper_mode_signal event type → PAPER
+   * 3. order_placed/entry_executed events → LIVE (implies real trading)
+   *
+   * @param {Object} logEntry - Parsed JSON log entry
+   * @param {string} eventName - The matched event pattern name
+   * @returns {string|null} 'PAPER', 'LIVE', or null if unknown
+   */
+  detectTradingMode(logEntry, eventName) {
+    // 1. Check explicit trading_mode field first (primary source)
+    if (logEntry.trading_mode) {
+      return logEntry.trading_mode;
+    }
+
+    // 2. Check for paper mode event types
+    if (eventName && PAPER_MODE_EVENTS.has(eventName)) {
+      return 'PAPER';
+    }
+
+    // Also check the event field directly
+    if (logEntry.event && PAPER_MODE_EVENTS.has(logEntry.event)) {
+      return 'PAPER';
+    }
+
+    // 3. Check for live mode event types (implies real order)
+    if (eventName && LIVE_MODE_EVENTS.has(eventName)) {
+      return 'LIVE';
+    }
+
+    // Also check the event field directly
+    if (logEntry.event && LIVE_MODE_EVENTS.has(logEntry.event)) {
+      return 'LIVE';
+    }
+
+    // Unknown - mode not determinable
+    return null;
   }
 
   /**

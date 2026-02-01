@@ -115,13 +115,24 @@ async function shutdown(signal) {
  * Main entry point
  */
 async function main() {
+  // CRITICAL: TRADING MODE CHECK
+  const tradingMode = config.tradingMode || 'PAPER';
+  const isPaperMode = tradingMode !== 'LIVE';
+
   console.log('═'.repeat(70));
-  console.log('     POLY LIVE TRADING - MODULAR SYSTEM');
+  if (isPaperMode) {
+    console.log('     POLY TRADING - ⚠️  PAPER MODE (SIGNALS ONLY)');
+    console.log('     No orders will be executed. Set TRADING_MODE=LIVE to enable.');
+  } else {
+    console.log('     POLY TRADING - 🔴 LIVE MODE (REAL ORDERS)');
+    console.log('     WARNING: Real money is at risk!');
+  }
   console.log('═'.repeat(70));
+  console.log(`   Trading Mode: ${tradingMode}`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`   Position Size: $${config.strategy?.sizing?.baseSizeDollars || 10}`);
   console.log(`   Max Exposure: $${config.risk?.maxExposure || 500}`);
-  console.log(`   Drawdown Limit: ${(config.risk?.dailyDrawdownLimit || 0.05) * 100}%`);
+  console.log(`   Drawdown Limit: ${config.risk?.dailyDrawdownLimit ? (config.risk.dailyDrawdownLimit * 100) + '%' : 'DISABLED'}`);
   console.log(`   Time: ${new Date().toISOString()}`);
   console.log(`   PID: ${process.pid}`);
   console.log('═'.repeat(70));

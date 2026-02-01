@@ -122,19 +122,20 @@ function renderStatusBar(state) {
     ? `${Colors.YELLOW}${Icons.ARROW_UP} ${queueCount} need review${Colors.RESET}`
     : `${Colors.GREEN}${Icons.CHECK} all clear${Colors.RESET}`;
 
-  // Header line
-  const header = `${Colors.BOLD}${Colors.CYAN} SCOUT${Colors.RESET}`;
+  // Story E.3: Add mode badge to header
+  const modeBadge = formatModeBadge(state.tradingMode);
+  const header = `${Colors.BOLD}${Colors.CYAN} SCOUT${Colors.RESET} ${modeBadge}`;
   const headerRight = queueText;
   const headerPadding = termWidth - stripAnsi(header).length - stripAnsi(headerRight).length - 2;
 
   lines.push(header + ' '.repeat(Math.max(1, headerPadding)) + headerRight);
 
-  // Status line
-  const strategyCount = state.activeStrategies || 0;
-  const positionCount = state.openPositions || 0;
+  // Story E.3: Status line with paper/live counts
+  const paperCount = state.paperSignalCount || 0;
+  const liveCount = state.liveOrderCount || 0;
   const lastUpdate = state.lastEventTime ? getTimeAgo(state.lastEventTime) : 'waiting';
 
-  const statusLine = `${Colors.DIM} Watching ${strategyCount} strateg${strategyCount === 1 ? 'y' : 'ies'} ${Icons.DOT} ${positionCount} open position${positionCount === 1 ? '' : 's'} ${Icons.DOT} Last check: ${lastUpdate}${Colors.RESET}`;
+  const statusLine = `${Colors.DIM} Paper signals: ${paperCount} | Live orders: ${liveCount} ${Icons.DOT} Last check: ${lastUpdate}${Colors.RESET}`;
 
   lines.push(statusLine);
 
@@ -227,6 +228,29 @@ export function getIcon(icon, level) {
 }
 
 /**
+ * Story E.3: Format trading mode badge for status bar
+ *
+ * @param {string|null} mode - 'PAPER', 'LIVE', or null
+ * @returns {string} Formatted badge string
+ */
+export function formatModeBadge(mode) {
+  if (!mode) {
+    return `${Colors.DIM}[Mode unknown]${Colors.RESET}`;
+  }
+
+  if (mode === 'PAPER') {
+    return `${Colors.YELLOW}[PAPER]${Colors.RESET}`;
+  }
+
+  if (mode === 'LIVE') {
+    // Use red with warning indicator for LIVE
+    return `${Colors.RED}[\u{1F534} LIVE]${Colors.RESET}`;
+  }
+
+  return `${Colors.DIM}[${mode}]${Colors.RESET}`;
+}
+
+/**
  * Strip ANSI codes for length calculation
  */
 export function stripAnsi(str) {
@@ -259,6 +283,10 @@ export function renderShutdown(stats) {
   console.log('');
   console.log(`${Colors.DIM}  Events received: ${stats.eventsReceived}${Colors.RESET}`);
   console.log(`${Colors.DIM}  Signals: ${stats.signalCount} | Entries: ${stats.entryCount} | Exits: ${stats.exitCount}${Colors.RESET}`);
+  // Story E.3: Add paper/live counts to shutdown summary
+  const paperCount = stats.paperSignalCount || 0;
+  const liveCount = stats.liveOrderCount || 0;
+  console.log(`${Colors.DIM}  Paper signals: ${paperCount} | Live orders: ${liveCount}${Colors.RESET}`);
   console.log(`${Colors.DIM}  Alerts: ${stats.alertCount}${Colors.RESET}`);
   console.log('');
 }

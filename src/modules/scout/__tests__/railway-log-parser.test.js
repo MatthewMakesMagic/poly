@@ -207,4 +207,103 @@ describe('RailwayLogParser', () => {
       expect(parser).toBeInstanceOf(RailwayLogParser);
     });
   });
+
+  // Story E.3: Trading mode detection tests
+  describe('trading mode detection', () => {
+    it('should extract trading_mode PAPER from paper_mode_signal event', () => {
+      const line = JSON.stringify({
+        level: 'info',
+        event: 'paper_mode_signal',
+        window_id: 'btc-15m-1769949000',
+        direction: 'UP',
+        confidence: 0.85,
+        size: 2,
+        would_have_traded: true,
+        trading_mode: 'PAPER',
+        message: 'Order blocked - PAPER mode active',
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.type).toBe(TradeEventType.SIGNAL);
+      expect(result.data.tradingMode).toBe('PAPER');
+      expect(result.data.windowId).toBe('btc-15m-1769949000');
+    });
+
+    it('should extract trading_mode LIVE from order_placed event', () => {
+      const line = JSON.stringify({
+        level: 'info',
+        event: 'order_placed',
+        window_id: 'btc-15m-1769949000',
+        direction: 'UP',
+        size: 2,
+        price: 0.421,
+        trading_mode: 'LIVE',
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.type).toBe(TradeEventType.ENTRY);
+      expect(result.data.tradingMode).toBe('LIVE');
+    });
+
+    it('should detect PAPER mode from paper_mode_signal event type even without trading_mode field', () => {
+      const line = JSON.stringify({
+        level: 'info',
+        event: 'paper_mode_signal',
+        window_id: 'eth-15m-123',
+        direction: 'DOWN',
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.data.tradingMode).toBe('PAPER');
+    });
+
+    it('should detect LIVE mode from order_placed event without explicit trading_mode field', () => {
+      const line = JSON.stringify({
+        level: 'info',
+        event: 'order_placed',
+        window_id: 'btc-15m-123',
+        price: 0.5,
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.data.tradingMode).toBe('LIVE');
+    });
+
+    it('should detect LIVE mode from entry_executed event without explicit trading_mode field', () => {
+      const line = JSON.stringify({
+        time: '2026-02-01T12:00:00Z',
+        msg: 'entry_executed',
+        window_id: 'btc-15m-123',
+        price: 0.55,
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.type).toBe(TradeEventType.ENTRY);
+      expect(result.data.tradingMode).toBe('LIVE');
+    });
+
+    it('should preserve explicit trading_mode field when present', () => {
+      const line = JSON.stringify({
+        event: 'entry_signals_generated',
+        trading_mode: 'PAPER',
+        signal_count: 2,
+      });
+
+      const result = parser.parseLine(line);
+
+      // entry_signals_generated should match as a signal event
+      expect(result).not.toBeNull();
+      expect(result.data.tradingMode).toBe('PAPER');
+    });
+  });
 });

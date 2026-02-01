@@ -26,8 +26,13 @@ let stats = {
   entryCount: 0,
   exitCount: 0,
   alertCount: 0,
+  paperSignalCount: 0, // Story E.3: Paper mode signals
+  liveOrderCount: 0,   // Story E.3: Live orders
   startTime: null,
 };
+
+// Story E.3: Current trading mode (null until detected, then 'PAPER' or 'LIVE')
+let tradingMode = null;
 
 // Active strategies and positions (for status bar)
 let activeStrategies = new Set();
@@ -132,6 +137,34 @@ export function incrementEventCount(eventType) {
 }
 
 /**
+ * Story E.3: Increment paper signal count
+ */
+export function incrementPaperSignal() {
+  stats.paperSignalCount++;
+}
+
+/**
+ * Story E.3: Increment live order count
+ */
+export function incrementLiveOrder() {
+  stats.liveOrderCount++;
+}
+
+/**
+ * Story E.3: Set trading mode
+ */
+export function setTradingMode(newMode) {
+  tradingMode = newMode;
+}
+
+/**
+ * Story E.3: Get trading mode
+ */
+export function getTradingMode() {
+  return tradingMode;
+}
+
+/**
  * Track active strategy
  */
 export function trackStrategy(strategyId) {
@@ -199,25 +232,33 @@ export function resetState() {
     entryCount: 0,
     exitCount: 0,
     alertCount: 0,
+    paperSignalCount: 0,
+    liveOrderCount: 0,
     startTime: null,
   };
   activeStrategies.clear();
   openPositions.clear();
   lastEventTime = null;
+  tradingMode = null; // Story E.3: Reset trading mode
 }
 
 /**
  * Get module state snapshot
  */
 export function getStateSnapshot() {
+  const currentStats = getStats();
   return {
     initialized,
     running,
     mode,
     hasConfig: moduleConfig !== null,
-    stats: getStats(),
+    stats: currentStats,
     activeStrategies: activeStrategies.size,
     openPositions: openPositions.size,
     lastEventTime,
+    // Story E.3: Paper/Live counts at top level for convenience
+    paperSignalCount: currentStats.paperSignalCount,
+    liveOrderCount: currentStats.liveOrderCount,
+    tradingMode,
   };
 }

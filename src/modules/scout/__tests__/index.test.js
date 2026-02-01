@@ -224,4 +224,34 @@ describe('Scout Module', () => {
       await scout.shutdown(); // Should not throw
     });
   });
+
+  // Story E.3: Integration tests for paper/live mode tracking
+  describe('paper/live mode integration (Story E.3)', () => {
+    it('should include paper/live counts in state snapshot', async () => {
+      await scout.init();
+
+      const state = scout.getState();
+      expect(state.paperSignalCount).toBe(0);
+      expect(state.liveOrderCount).toBe(0);
+      expect(state.tradingMode).toBeNull();
+    });
+
+    it('should include paper/live counts in stats', async () => {
+      await scout.init();
+
+      const state = scout.getState();
+      expect(state.stats.paperSignalCount).toBe(0);
+      expect(state.stats.liveOrderCount).toBe(0);
+    });
+
+    it('should reset paper/live counts on shutdown', async () => {
+      await scout.init();
+      await scout.shutdown();
+
+      const state = scout.getState();
+      expect(state.paperSignalCount).toBe(0);
+      expect(state.liveOrderCount).toBe(0);
+      expect(state.tradingMode).toBeNull();
+    });
+  });
 });

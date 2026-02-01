@@ -250,4 +250,75 @@ describe('Scout Renderer', () => {
       consoleSpy.mockRestore();
     });
   });
+
+  // Story E.3: Mode badge tests
+  describe('formatModeBadge (Story E.3)', () => {
+    it('should return yellow PAPER badge', () => {
+      const result = renderer.formatModeBadge('PAPER');
+
+      expect(result).toContain(Colors.YELLOW);
+      expect(result).toContain('[PAPER]');
+      expect(result).toContain(Colors.RESET);
+    });
+
+    it('should return red LIVE badge with warning indicator', () => {
+      const result = renderer.formatModeBadge('LIVE');
+
+      expect(result).toContain(Colors.RED);
+      expect(result).toContain('LIVE');
+      expect(result).toContain(Colors.RESET);
+    });
+
+    it('should return "Mode unknown" when trading mode is null', () => {
+      const result = renderer.formatModeBadge(null);
+
+      expect(result).toContain('Mode unknown');
+      expect(result).toContain(Colors.DIM);
+    });
+  });
+
+  // Story E.3: Shutdown summary with paper/live counts
+  describe('renderShutdown with paper/live counts (Story E.3)', () => {
+    it('should display paper signals and live orders counts', () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      renderer.init();
+      renderer.renderShutdown({
+        eventsReceived: 42,
+        signalCount: 10,
+        entryCount: 8,
+        exitCount: 7,
+        alertCount: 2,
+        paperSignalCount: 15,
+        liveOrderCount: 3,
+      });
+
+      const calls = consoleSpy.mock.calls.flat().join(' ');
+      expect(calls).toContain('Paper signals: 15');
+      expect(calls).toContain('Live orders: 3');
+
+      consoleSpy.mockRestore();
+    });
+
+    it('should show zero counts when no paper/live activity', () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      renderer.init();
+      renderer.renderShutdown({
+        eventsReceived: 5,
+        signalCount: 2,
+        entryCount: 1,
+        exitCount: 1,
+        alertCount: 0,
+        paperSignalCount: 0,
+        liveOrderCount: 0,
+      });
+
+      const calls = consoleSpy.mock.calls.flat().join(' ');
+      expect(calls).toContain('Paper signals: 0');
+      expect(calls).toContain('Live orders: 0');
+
+      consoleSpy.mockRestore();
+    });
+  });
 });

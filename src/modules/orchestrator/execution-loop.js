@@ -176,38 +176,64 @@ export class ExecutionLoop {
         }
       }
 
-      // 2. Fetch current spot prices
-      let spotData = null;
-      if (this.modules.spot && typeof this.modules.spot.getCurrentPrice === 'function') {
-        // Get BTC price as the primary reference
-        spotData = this.modules.spot.getCurrentPrice('btc');
+      // 2. Fetch active windows first (Story 7-20: need windows to know which cryptos to fetch)
+      let windows = [];
+      if (this.modules['window-manager'] && typeof this.modules['window-manager'].getActiveWindows === 'function') {
+        try {
+          windows = await this.modules['window-manager'].getActiveWindows();
+          if (windows.length > 0) {
+            this.log.debug('windows_loaded', {
+              count: windows.length,
+              cryptos: [...new Set(windows.map(w => w.crypto))],
+            });
+          }
+        } catch (windowErr) {
+          this.log.warn('window_manager_error', { error: windowErr.message });
+          windows = [];
+        }
       }
 
-      // 3. Evaluate strategy entry conditions (Story 3.2) - skip if auto-stopped
-      // Story 7-12: Support for composed strategies via strategy composition framework
-      let entrySignals = [];
-      let windows = [];
-      if (!entriesSkipped && spotData) {
-        // TEMP SOLUTION: Fetch active windows from window-manager module
-        // Production should use WebSocket subscriptions for real-time updates
-        if (this.modules['window-manager'] && typeof this.modules['window-manager'].getActiveWindows === 'function') {
+      // 3. Fetch current spot prices for all active cryptos (Story 7-20)
+      let spotPrices = {};
+      if (this.modules.spot && typeof this.modules.spot.getCurrentPrice === 'function') {
+        // Get unique cryptos from windows to fetch appropriate prices
+        const cryptos = [...new Set(windows.map(w => w.crypto).filter(Boolean))];
+
+        for (const crypto of cryptos) {
           try {
-            windows = await this.modules['window-manager'].getActiveWindows();
-            if (windows.length > 0) {
-              this.log.debug('windows_loaded', {
-                count: windows.length,
-                cryptos: [...new Set(windows.map(w => w.crypto))],
-              });
+            const priceData = this.modules.spot.getCurrentPrice(crypto);
+            if (priceData) {
+              spotPrices[crypto] = priceData;
             }
-          } catch (windowErr) {
-            this.log.warn('window_manager_error', { error: windowErr.message });
-            windows = [];
+          } catch (err) {
+            this.log.warn('spot_price_fetch_failed', {
+              crypto,
+              error: err.message,
+            });
           }
         }
 
+        if (Object.keys(spotPrices).length > 0) {
+          this.log.debug('spot_prices_loaded', {
+            cryptos: Object.keys(spotPrices),
+            prices: Object.fromEntries(
+              Object.entries(spotPrices).map(([k, v]) => [k, v?.price])
+            ),
+          });
+        }
+      }
+
+      // Backward compatibility: spotData for existing code that expects single price
+      const spotData = spotPrices.btc || Object.values(spotPrices)[0] || null;
+
+      // 4. Evaluate strategy entry conditions (Story 3.2) - skip if auto-stopped
+      // Story 7-12: Support for composed strategies via strategy composition framework
+      let entrySignals = [];
+      if (!entriesSkipped && (spotData || Object.keys(spotPrices).length > 0)) {
         const marketState = {
-          spot_price: spotData.price,
-          windows, // Now populated from window-manager module
+          spot_price: spotData?.price,
+          spotPrices, // Story 7-20: Per-crypto prices for accurate signal calculation
+          windows,
         };
 
         // Story 7-12: Use composed strategy if available, otherwise fall back to strategy-evaluator
@@ -246,6 +272,7 @@ export class ExecutionLoop {
           this.log.info('entry_signals_generated', {
             count: entrySignals.length,
             strategy: this.composedStrategyName || 'default',
+            trading_mode: this.config.tradingMode || 'PAPER',
             signals: entrySignals.map(s => ({
               window_id: s.window_id,
               direction: s.direction,
@@ -319,7 +346,10 @@ export class ExecutionLoop {
         const positionSizer = this.modules['position-sizer'];
 
         for (const signal of entrySignals) {
-          // Story 8-7: Check safeguards before processing entry
+          // Story 8-9: Get strategy_id from signal for strategy-aware tracking
+          const strategyId = signal.strategy_id || this.composedStrategyName || 'default';
+
+          // Story 8-7/8-9: Check safeguards before processing entry
           if (this.modules.safeguards) {
             const openPositions = this.modules['position-manager']?.getPositions?.() || [];
             const safeguardCheck = this.modules.safeguards.canEnterPosition(signal, openPositions);
@@ -327,9 +357,11 @@ export class ExecutionLoop {
             if (!safeguardCheck.allowed) {
               this.log.info('entry_blocked_by_safeguards', {
                 window_id: signal.window_id,
+                strategy_id: strategyId,
                 symbol: signal.symbol,
                 reason: safeguardCheck.reason,
                 details: safeguardCheck.details,
+                trading_mode: this.config.tradingMode || 'PAPER',
               });
               safeguardsBlocked++;
               continue; // Skip this signal
@@ -347,13 +379,67 @@ export class ExecutionLoop {
             if (sizingResult.success) {
               this.log.info('position_sized', {
                 window_id: sizingResult.window_id,
+                strategy_id: strategyId,
                 requested_size: sizingResult.requested_size,
                 actual_size: sizingResult.actual_size,
                 adjustment_reason: sizingResult.adjustment_reason,
+                trading_mode: this.config.tradingMode || 'PAPER',
               });
+
+              // TRADING MODE GATE - CRITICAL SAFETY CHECK
+              // Blocks order execution in PAPER mode (default)
+              const tradingMode = this.config.tradingMode || 'PAPER';
+              if (tradingMode !== 'LIVE') {
+                // Story 8-9: PAPER mode uses reserve/confirm flow to prevent duplicate paper signals
+                let reserved = false;
+                if (this.modules.safeguards) {
+                  reserved = this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
+                  if (!reserved) {
+                    this.log.info('paper_mode_reservation_blocked', {
+                      window_id: signal.window_id,
+                      strategy_id: strategyId,
+                      trading_mode: tradingMode,
+                      message: 'Another signal already reserved this entry',
+                    });
+                    continue;
+                  }
+                }
+
+                this.log.info('paper_mode_signal', {
+                  window_id: signal.window_id,
+                  strategy_id: strategyId,
+                  direction: signal.direction,
+                  confidence: signal.confidence,
+                  size: sizingResult.actual_size,
+                  would_have_traded: true,
+                  trading_mode: tradingMode,
+                  message: 'Order blocked - PAPER mode active',
+                });
+
+                // Story 8-9: Confirm the entry in paper mode
+                if (this.modules.safeguards && reserved) {
+                  this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                }
+                continue; // Skip to next signal - NO ORDER EXECUTION
+              }
 
               // Place order via order-manager (Story 3.4+)
               if (this.modules['order-manager'] && signal.token_id) {
+                // Story 8-9: Reserve entry BEFORE order placement
+                let reserved = false;
+                if (this.modules.safeguards) {
+                  reserved = this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
+                  if (!reserved) {
+                    this.log.info('entry_reservation_blocked', {
+                      window_id: signal.window_id,
+                      strategy_id: strategyId,
+                      trading_mode: tradingMode,
+                      message: 'Another signal already reserved this entry',
+                    });
+                    continue;
+                  }
+                }
+
                 try {
                   const orderResult = await this.modules['order-manager'].placeOrder({
                     tokenId: signal.token_id,
@@ -367,9 +453,11 @@ export class ExecutionLoop {
 
                   this.log.info('order_placed', {
                     window_id: signal.window_id,
+                    strategy_id: strategyId,
                     order_id: orderResult.orderId,
                     status: orderResult.status,
                     latency_ms: orderResult.latencyMs,
+                    trading_mode: tradingMode,
                   });
 
                   // Record position with position-manager
@@ -387,15 +475,26 @@ export class ExecutionLoop {
                     this.log.info('position_opened', {
                       position_id: position.id,
                       window_id: signal.window_id,
+                      strategy_id: strategyId,
                       side: signal.direction,
                       size: sizingResult.actual_size,
                       entry_price: position.entry_price,
+                      trading_mode: tradingMode,
                     });
 
-                    // Story 8-7: Record entry with safeguards for rate limiting / duplicate prevention
-                    if (this.modules.safeguards) {
-                      this.modules.safeguards.recordEntry(signal.window_id, signal.symbol);
+                    // Story 8-9: Confirm entry after successful order
+                    if (this.modules.safeguards && reserved) {
+                      this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
                     }
+                  } else if (this.modules.safeguards && reserved) {
+                    // Order rejected - release the reservation
+                    this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                    this.log.info('entry_released_order_rejected', {
+                      window_id: signal.window_id,
+                      strategy_id: strategyId,
+                      order_status: orderResult.status,
+                      trading_mode: tradingMode,
+                    });
                   }
 
                   // Record entry event for diagnostics (Story 5.2)
@@ -403,7 +502,7 @@ export class ExecutionLoop {
                     await this.modules['trade-event'].recordEntry({
                       windowId: signal.window_id,
                       orderId: orderResult.orderId,
-                      strategyId: signal.strategy_id || this.composedStrategyName || 'execution-test',
+                      strategyId: strategyId,
                       timestamps: {
                         signalDetectedAt: signal.signalDetectedAt,
                         orderSubmittedAt: orderResult.timestamps?.orderSubmittedAt,
@@ -422,8 +521,19 @@ export class ExecutionLoop {
                     });
                   }
                 } catch (orderErr) {
+                  // Story 8-9: Release entry on order failure
+                  if (this.modules.safeguards && reserved) {
+                    this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                    this.log.info('entry_released_order_failed', {
+                      window_id: signal.window_id,
+                      strategy_id: strategyId,
+                      error: orderErr.message,
+                      trading_mode: tradingMode,
+                    });
+                  }
                   this.log.error('order_placement_failed', {
                     window_id: signal.window_id,
+                    strategy_id: strategyId,
                     error: orderErr.message,
                     code: orderErr.code,
                   });
@@ -432,6 +542,7 @@ export class ExecutionLoop {
             } else {
               this.log.warn('position_sizing_rejected', {
                 window_id: signal.window_id,
+                strategy_id: strategyId,
                 reason: sizingResult.adjustment_reason,
                 rejection_code: sizingResult.rejection_code,
               });
@@ -439,6 +550,7 @@ export class ExecutionLoop {
           } catch (sizingErr) {
             this.log.error('position_sizing_error', {
               window_id: signal.window_id,
+              strategy_id: strategyId,
               error: sizingErr.message,
               code: sizingErr.code,
             });
@@ -695,7 +807,12 @@ export class ExecutionLoop {
       this.log.info('tick_complete', {
         tickCount: this.tickCount,
         durationMs: tickDurationMs,
+        trading_mode: this.config.tradingMode || 'PAPER',
         spotPrice: spotData?.price || null,
+        // Story 7-20: Per-crypto spot prices for multi-asset tracking
+        spotPrices: Object.fromEntries(
+          Object.entries(spotPrices).map(([k, v]) => [k, v?.price])
+        ),
         windowsCount: windows.length,
         autoStopped: drawdownCheck.autoStopped,
         drawdownPct: drawdownCheck.current,

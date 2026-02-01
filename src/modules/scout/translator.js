@@ -36,10 +36,12 @@ export function translate(type, data) {
  * Translate signal event
  */
 function translateSignal(data) {
-  const { signalType, strategyId, priceAtSignal, expectedPrice } = data;
+  const { signalType, strategyId, priceAtSignal, expectedPrice, tradingMode } = data;
   const direction = signalType === 'entry' ? 'entry' : 'exit';
 
-  const summary = `Signal fired (${direction})`;
+  // Story E.3: Add mode prefix to summary
+  const modePrefix = formatModePrefix(tradingMode);
+  const summary = `${modePrefix}Signal fired (${direction})`;
 
   let explanation;
   if (direction === 'entry') {
@@ -70,6 +72,7 @@ function translateEntry(data) {
     slippage,
     hasDivergence,
     diagnosticFlags,
+    tradingMode,
   } = data;
 
   const fillPrice = prices?.priceAtFill;
@@ -85,7 +88,9 @@ function translateEntry(data) {
     slippagePct = Math.abs((slippageVsExpected / expectedPrice) * 100);
   }
 
-  let summary = `Filled @ ${formatPrice(fillPrice)}`;
+  // Story E.3: Add mode prefix to summary
+  const modePrefix = formatModePrefix(tradingMode);
+  let summary = `${modePrefix}Filled @ ${formatPrice(fillPrice)}`;
   if (expectedPrice) {
     summary += ` (expected ${formatPrice(expectedPrice)}`;
     if (slippagePct !== null) {
@@ -275,4 +280,17 @@ export function getTimeAgo(isoTimestamp) {
   if (diffMs < 60000) return `${Math.floor(diffMs / 1000)}s ago`;
   if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
   return `${Math.floor(diffMs / 3600000)}h ago`;
+}
+
+/**
+ * Story E.3: Format trading mode prefix for translations
+ *
+ * @param {string|null} mode - 'PAPER', 'LIVE', or null
+ * @returns {string} Formatted prefix string
+ */
+export function formatModePrefix(mode) {
+  if (!mode) {
+    return '';
+  }
+  return `[${mode}] `;
 }

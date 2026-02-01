@@ -96,8 +96,11 @@ development_status:
   epic-6-retrospective: optional
 
   # Epic Extra: Scout Real-Time Monitor
-  epic-extra-scout: done
+  epic-extra-scout: in-progress  # Reopened for E.3
   E-1-scout-core-module: done
+  E-2-scout-railway-mode: done
+  # NEW story from Sprint Change Proposal 2026-02-01 (Production Safeguards)
+  E-3-scout-paper-mode-clarity: review  # MEDIUM - paper/live distinction
 
   # Epic 7: Oracle Edge Infrastructure (NEW - from correct-course 2026-01-31)
   epic-7: in-progress
@@ -118,6 +121,9 @@ development_status:
   7-14-correct-probability-model-inputs: backlog
   7-15-market-reference-price-parsing: backlog
   7-16-edge-based-signal-generation: backlog
+  # NEW stories from Sprint Change Proposal 2026-02-01 (Production Safeguards)
+  7-19-cross-module-integration-tests: review  # HIGH - prevent recurrence
+  7-20-per-crypto-oracle-price-fix: review  # HIGH - root cause fix
   epic-7-retrospective: optional
 
   # Epic 8: Launch Control & Deployment Pipeline (NEW - from correct-course 2026-02-01)
@@ -130,4 +136,7 @@ development_status:
   8-5-post-deploy-verification: done
   8-6-railway-api-kill-switch: backlog
   8-7-position-entry-safeguards: backlog
+  # NEW stories from Sprint Change Proposal 2026-02-01 (Production Safeguards)
+  8-8-live-trading-gate: done  # CRITICAL - completed 2026-02-01
+  8-9-one-trade-per-window-safeguard: review  # CRITICAL - must complete before any deploy
   epic-8-retrospective: optional

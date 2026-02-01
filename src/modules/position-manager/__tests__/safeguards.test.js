@@ -1,11 +1,17 @@
 /**
- * Position Entry Safeguards Tests (Story 8-7)
+ * Position Entry Safeguards Tests (Story 8-7, Enhanced Story 8-9)
  *
  * Tests for entry safeguard enforcement:
- * - Duplicate window prevention
+ * - Duplicate window prevention (now per-strategy)
  * - Rate limiting
  * - Concurrent position cap
  * - Per-tick entry limit
+ *
+ * Story 8-9 Additions:
+ * - Strategy-aware tracking (window_id + strategy_id)
+ * - Reserve/Confirm flow for race conditions
+ * - Initialization from positions
+ * - Position close removes entry
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -25,6 +31,11 @@ import {
   init,
   canEnterPosition,
   recordEntry,
+  reserveEntry,
+  confirmEntry,
+  releaseEntry,
+  removeEntry,
+  initializeFromPositions,
   resetTickEntries,
   getState,
   shutdown,
@@ -511,7 +522,7 @@ describe('Position Entry Safeguards', () => {
 
       expect(state.initialized).toBe(true);
       expect(state.config).toBeDefined();
-      expect(state.stats.windows_entered).toBe(2);
+      expect(state.stats.entries_confirmed).toBe(2);
       expect(state.stats.tick_entry_count).toBe(2);
       expect(state.stats.symbols_tracked).toBe(2);
     });
@@ -530,17 +541,28 @@ describe('Position Entry Safeguards', () => {
       expect(state.config.max_concurrent_positions).toBe(5);
       expect(state.config.min_entry_interval_ms).toBe(3000);
     });
+
+    it('tracks reservations separately from confirmed entries', () => {
+      reserveEntry('window-1', 'strategy-a');
+      confirmEntry('window-2', 'strategy-b');
+
+      const state = getState();
+      expect(state.stats.entries_reserved).toBe(1);
+      expect(state.stats.entries_confirmed).toBe(1);
+    });
   });
 
   describe('shutdown()', () => {
     it('clears all state', () => {
       recordEntry('window-1', 'BTC');
+      reserveEntry('window-2', 'strategy-a');
 
       shutdown();
 
       const state = getState();
       expect(state.initialized).toBe(false);
-      expect(state.stats.windows_entered).toBe(0);
+      expect(state.stats.entries_confirmed).toBe(0);
+      expect(state.stats.entries_reserved).toBe(0);
     });
 
     it('can be reinitialized after shutdown', () => {
@@ -661,6 +683,396 @@ describe('Position Entry Safeguards', () => {
 
       expect(result.allowed).toBe(false);
       expect(result.reason).toBe('duplicate_window_entry');
+    });
+  });
+
+  // ==========================================
+  // Story 8-9: Strategy-Aware Tracking Tests
+  // ==========================================
+
+  describe('Story 8-9: Strategy-Aware Duplicate Prevention', () => {
+    it('same window_id, different strategy_id = allowed (AC: 7.2)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Strategy A enters window-1
+      recordEntry('window-1', 'BTC', 'oracle-edge');
+
+      // Strategy B should be able to enter the same window
+      const signal = { window_id: 'window-1', symbol: 'BTC', strategy_id: 'simple-threshold' };
+      const result = canEnterPosition(signal, []);
+
+      expect(result.allowed).toBe(true);
+    });
+
+    it('same window_id, same strategy_id = blocked (AC: 7.3)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Oracle-edge enters window-1
+      recordEntry('window-1', 'BTC', 'oracle-edge');
+
+      // Oracle-edge tries to enter window-1 again
+      const signal = { window_id: 'window-1', symbol: 'BTC', strategy_id: 'oracle-edge' };
+      const result = canEnterPosition(signal, []);
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toBe('duplicate_window_entry');
+      expect(result.details.strategy_id).toBe('oracle-edge');
+    });
+
+    it('uses default strategy_id when not provided (backward compatibility)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Entry without strategy_id
+      recordEntry('window-1', 'BTC');
+
+      // Try again without strategy_id - should be blocked
+      const signal = { window_id: 'window-1', symbol: 'BTC' };
+      const result = canEnterPosition(signal, []);
+
+      expect(result.allowed).toBe(false);
+    });
+
+    it('hasEnteredWindow is strategy-aware (AC: 2.4)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      recordEntry('window-1', 'BTC', 'oracle-edge');
+
+      // Same window, different strategy = not entered
+      expect(hasEnteredWindow('window-1', 'simple-threshold')).toBe(false);
+      // Same window, same strategy = entered
+      expect(hasEnteredWindow('window-1', 'oracle-edge')).toBe(true);
+      // Default strategy not entered
+      expect(hasEnteredWindow('window-1', 'default')).toBe(false);
+    });
+  });
+
+  describe('Story 8-9: Reserve/Confirm Flow (AC: 4)', () => {
+    it('reserveEntry blocks concurrent signals (AC: 4.4)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      // First signal reserves the slot
+      const reserved1 = reserveEntry('window-1', 'oracle-edge');
+      expect(reserved1).toBe(true);
+
+      // Second signal to same window/strategy is blocked
+      const reserved2 = reserveEntry('window-1', 'oracle-edge');
+      expect(reserved2).toBe(false);
+
+      // Different strategy can still reserve
+      const reserved3 = reserveEntry('window-1', 'simple-threshold');
+      expect(reserved3).toBe(true);
+    });
+
+    it('canEnterPosition checks both reserved and confirmed entries (AC: 4.5)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Reserve but don't confirm
+      reserveEntry('window-1', 'oracle-edge');
+
+      // canEnterPosition should still block
+      const signal = { window_id: 'window-1', symbol: 'BTC', strategy_id: 'oracle-edge' };
+      const result = canEnterPosition(signal, []);
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toBe('duplicate_window_entry');
+      expect(result.details.is_reserved).toBe(true);
+      expect(result.details.is_confirmed).toBe(false);
+    });
+
+    it('confirmEntry moves reservation to confirmed (AC: 4.2)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      reserveEntry('window-1', 'oracle-edge');
+
+      const state1 = getState();
+      expect(state1.stats.entries_reserved).toBe(1);
+      expect(state1.stats.entries_confirmed).toBe(0);
+
+      confirmEntry('window-1', 'oracle-edge', 'BTC');
+
+      const state2 = getState();
+      expect(state2.stats.entries_reserved).toBe(0);
+      expect(state2.stats.entries_confirmed).toBe(1);
+    });
+
+    it('releaseEntry allows retry on failure (AC: 4.3, 7.5)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Reserve the slot
+      reserveEntry('window-1', 'oracle-edge');
+
+      // Simulate order failure - release the reservation
+      const released = releaseEntry('window-1', 'oracle-edge');
+      expect(released).toBe(true);
+
+      // Now canEnterPosition should allow entry
+      const signal = { window_id: 'window-1', symbol: 'BTC', strategy_id: 'oracle-edge' };
+      const result = canEnterPosition(signal, []);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('reservation timeout auto-releases stale reservations (AC: 4.6, 7.9)', async () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+          reservation_timeout_ms: 50, // Short timeout for testing
+        },
+      });
+
+      // Reserve entry
+      reserveEntry('window-1', 'oracle-edge');
+
+      // Should be blocked immediately
+      const signal = { window_id: 'window-1', symbol: 'BTC', strategy_id: 'oracle-edge' };
+      expect(canEnterPosition(signal, []).allowed).toBe(false);
+
+      // Wait for timeout
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      // Now should be allowed (stale reservation cleaned up)
+      const result = canEnterPosition(signal, []);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('confirmEntry updates rate limiting (AC: 4)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          min_entry_interval_ms: 5000,
+        },
+      });
+
+      expect(getTimeSinceLastEntry('BTC')).toBe(null);
+
+      confirmEntry('window-1', 'oracle-edge', 'BTC');
+
+      expect(getTimeSinceLastEntry('BTC')).not.toBe(null);
+      expect(getTimeSinceLastEntry('BTC')).toBeLessThan(100);
+    });
+
+    it('confirmEntry increments tick count', () => {
+      shutdown();
+      init({
+        safeguards: {
+          max_entries_per_tick: 2,
+        },
+      });
+
+      expect(getTickEntryCount()).toBe(0);
+      confirmEntry('window-1', 'oracle-edge');
+      expect(getTickEntryCount()).toBe(1);
+    });
+  });
+
+  describe('Story 8-9: Startup Initialization from Positions (AC: 2)', () => {
+    it('populates entries from open positions (AC: 4.1, 4.3)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      const positions = [
+        { window_id: 'window-1', strategy_id: 'oracle-edge' },
+        { window_id: 'window-2', strategy_id: 'simple-threshold' },
+        { window_id: 'window-3' }, // No strategy_id - uses default
+      ];
+
+      const count = initializeFromPositions(positions);
+      expect(count).toBe(3);
+
+      // Should block re-entry
+      expect(canEnterPosition({ window_id: 'window-1', strategy_id: 'oracle-edge' }, []).allowed).toBe(false);
+      expect(canEnterPosition({ window_id: 'window-2', strategy_id: 'simple-threshold' }, []).allowed).toBe(false);
+      expect(canEnterPosition({ window_id: 'window-3', strategy_id: 'default' }, []).allowed).toBe(false);
+
+      // Different strategies should be allowed
+      expect(canEnterPosition({ window_id: 'window-1', strategy_id: 'simple-threshold' }, []).allowed).toBe(true);
+    });
+
+    it('handles empty positions gracefully (AC: 4.5)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      const count = initializeFromPositions([]);
+      expect(count).toBe(0);
+
+      const state = getState();
+      expect(state.stats.entries_confirmed).toBe(0);
+    });
+
+    it('logs initialization count (AC: 4.4)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      const positions = [
+        { window_id: 'window-1', strategy_id: 'oracle-edge' },
+        { window_id: 'window-2', strategy_id: 'simple-threshold' },
+      ];
+
+      const count = initializeFromPositions(positions);
+      expect(count).toBe(2);
+
+      const state = getState();
+      expect(state.stats.entries_confirmed).toBe(2);
+    });
+
+    it('skips positions without window_id', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      const positions = [
+        { window_id: 'window-1', strategy_id: 'oracle-edge' },
+        { strategy_id: 'simple-threshold' }, // Missing window_id
+        { window_id: null, strategy_id: 'test' }, // null window_id
+      ];
+
+      const count = initializeFromPositions(positions);
+      expect(count).toBe(1);
+    });
+
+    it('returns 0 when not initialized', () => {
+      shutdown();
+
+      const count = initializeFromPositions([{ window_id: 'window-1' }]);
+      expect(count).toBe(0);
+    });
+  });
+
+  describe('Story 8-9: Position Close Removes Entry (AC: 6)', () => {
+    it('removeEntry allows future re-entry (AC: 5.3, 7.7)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Entry made
+      recordEntry('window-1', 'BTC', 'oracle-edge');
+
+      // Blocked
+      expect(canEnterPosition({ window_id: 'window-1', strategy_id: 'oracle-edge' }, []).allowed).toBe(false);
+
+      // Position closed - entry removed
+      const removed = removeEntry('window-1', 'oracle-edge');
+      expect(removed).toBe(true);
+
+      // Now allowed
+      expect(canEnterPosition({ window_id: 'window-1', strategy_id: 'oracle-edge' }, []).allowed).toBe(true);
+    });
+
+    it('removeEntry returns false if entry not found', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      const removed = removeEntry('nonexistent-window', 'oracle-edge');
+      expect(removed).toBe(false);
+    });
+
+    it('removeEntry cleans up any reservations too', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+        },
+      });
+
+      reserveEntry('window-1', 'oracle-edge');
+      removeEntry('window-1', 'oracle-edge');
+
+      const state = getState();
+      expect(state.stats.entries_reserved).toBe(0);
+    });
+  });
+
+  describe('Story 8-9: PAPER Mode Parity (AC: 5)', () => {
+    it('tracking works identically for PAPER mode (using reserve/confirm flow)', () => {
+      shutdown();
+      init({
+        safeguards: {
+          duplicate_window_prevention: true,
+          min_entry_interval_ms: 0,
+        },
+      });
+
+      // Simulate PAPER mode flow: reserve -> confirm (same as LIVE)
+      const reserved = reserveEntry('window-1', 'paper-strategy');
+      expect(reserved).toBe(true);
+
+      confirmEntry('window-1', 'paper-strategy', 'BTC');
+
+      // Duplicate blocked
+      const signal = { window_id: 'window-1', strategy_id: 'paper-strategy', symbol: 'BTC' };
+      const result = canEnterPosition(signal, []);
+
+      expect(result.allowed).toBe(false);
     });
   });
 });

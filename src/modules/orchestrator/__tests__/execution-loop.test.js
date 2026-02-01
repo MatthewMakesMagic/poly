@@ -21,6 +21,12 @@ const createMockModules = () => ({
   spot: {
     getCurrentPrice: vi.fn().mockReturnValue({ price: 50000, timestamp: Date.now() }),
   },
+  // Story 7-20: Default window manager that returns a BTC window for basic tests
+  'window-manager': {
+    getActiveWindows: vi.fn().mockResolvedValue([
+      { id: 'btc-15m-1', crypto: 'btc', market_id: 'm1', token_id: 't1' },
+    ]),
+  },
 });
 
 // Default test config
@@ -309,7 +315,7 @@ describe('ExecutionLoop', () => {
   });
 
   describe('error handling', () => {
-    it('logs errors and calls onError callback', async () => {
+    it('logs warning when spot price fetch fails (Story 7-20 graceful handling)', async () => {
       const testError = new Error('Spot price fetch failed');
       testError.code = 'SPOT_ERROR';
       mockModules.spot.getCurrentPrice.mockImplementation(() => {
@@ -319,14 +325,19 @@ describe('ExecutionLoop', () => {
       loop.start();
       await vi.advanceTimersByTimeAsync(10);
 
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        'tick_error',
+      // Story 7-20: Per-crypto errors are now handled gracefully with warnings
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'spot_price_fetch_failed',
         expect.objectContaining({
+          crypto: 'btc',
           error: 'Spot price fetch failed',
-          code: 'SPOT_ERROR',
         })
       );
-      expect(mockOnError).toHaveBeenCalledWith(testError);
+      // Tick completes successfully even when price fetch fails
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'tick_complete',
+        expect.objectContaining({ tickCount: expect.any(Number) })
+      );
     });
 
     it('continues processing after recoverable error', async () => {
@@ -390,6 +401,194 @@ describe('ExecutionLoop', () => {
         (call) => call[0] === 'tick_skipped_overlap'
       );
       expect(overlapWarnings.length).toBeGreaterThanOrEqual(0); // May or may not happen depending on timing
+    });
+  });
+
+  describe('per-crypto spot price fetching (Story 7-20)', () => {
+    let loopWithWindows;
+    let mockWindowManager;
+    let mockSpot;
+    let mockStrategyEvaluator;
+
+    beforeEach(() => {
+      mockSpot = {
+        getCurrentPrice: vi.fn((crypto) => {
+          const prices = {
+            btc: { price: 78438, timestamp: Date.now(), source: 'pyth' },
+            eth: { price: 2400, timestamp: Date.now(), source: 'pyth' },
+            sol: { price: 100, timestamp: Date.now(), source: 'pyth' },
+            xrp: { price: 1.60, timestamp: Date.now(), source: 'pyth' },
+          };
+          return prices[crypto.toLowerCase()] || null;
+        }),
+      };
+
+      mockWindowManager = {
+        getActiveWindows: vi.fn().mockResolvedValue([
+          { id: 'btc-15m-1', crypto: 'btc', market_id: 'm1', token_id: 't1' },
+          { id: 'eth-15m-1', crypto: 'eth', market_id: 'm2', token_id: 't2' },
+          { id: 'sol-15m-1', crypto: 'sol', market_id: 'm3', token_id: 't3' },
+        ]),
+      };
+
+      mockStrategyEvaluator = {
+        evaluateEntryConditions: vi.fn().mockReturnValue([]),
+      };
+
+      loopWithWindows = new ExecutionLoop({
+        config: { tickIntervalMs: 100 },
+        modules: {
+          spot: mockSpot,
+          'window-manager': mockWindowManager,
+          'strategy-evaluator': mockStrategyEvaluator,
+        },
+        log: createMockLogger(),
+        onError: vi.fn(),
+      });
+    });
+
+    afterEach(() => {
+      loopWithWindows.stop();
+    });
+
+    it('fetches spot prices for each unique crypto in active windows', async () => {
+      loopWithWindows.start();
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Should have fetched prices for btc, eth, sol (the cryptos in windows)
+      expect(mockSpot.getCurrentPrice).toHaveBeenCalledWith('btc');
+      expect(mockSpot.getCurrentPrice).toHaveBeenCalledWith('eth');
+      expect(mockSpot.getCurrentPrice).toHaveBeenCalledWith('sol');
+    });
+
+    it('passes correct spotPrices map to strategy evaluator', async () => {
+      loopWithWindows.start();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(mockStrategyEvaluator.evaluateEntryConditions).toHaveBeenCalled();
+
+      const marketState = mockStrategyEvaluator.evaluateEntryConditions.mock.calls[0][0];
+      expect(marketState.spotPrices).toBeDefined();
+      expect(marketState.spotPrices.btc.price).toBe(78438);
+      expect(marketState.spotPrices.eth.price).toBe(2400);
+      expect(marketState.spotPrices.sol.price).toBe(100);
+    });
+
+    it('logs spot_prices_loaded with all cryptos', async () => {
+      const logger = createMockLogger();
+      const loopWithLogger = new ExecutionLoop({
+        config: { tickIntervalMs: 100 },
+        modules: {
+          spot: mockSpot,
+          'window-manager': mockWindowManager,
+          'strategy-evaluator': mockStrategyEvaluator,
+        },
+        log: logger,
+        onError: vi.fn(),
+      });
+
+      loopWithLogger.start();
+      await vi.advanceTimersByTimeAsync(10);
+      loopWithLogger.stop();
+
+      const spotPricesLog = logger.debug.mock.calls.find(
+        (call) => call[0] === 'spot_prices_loaded'
+      );
+      expect(spotPricesLog).toBeDefined();
+      expect(spotPricesLog[1].cryptos).toContain('btc');
+      expect(spotPricesLog[1].cryptos).toContain('eth');
+      expect(spotPricesLog[1].cryptos).toContain('sol');
+    });
+
+    it('handles error when one crypto price fetch fails', async () => {
+      mockSpot.getCurrentPrice.mockImplementation((crypto) => {
+        if (crypto === 'eth') {
+          throw new Error('ETH feed unavailable');
+        }
+        return { price: 78438, timestamp: Date.now() };
+      });
+
+      const logger = createMockLogger();
+      const loopWithError = new ExecutionLoop({
+        config: { tickIntervalMs: 100 },
+        modules: {
+          spot: mockSpot,
+          'window-manager': mockWindowManager,
+          'strategy-evaluator': mockStrategyEvaluator,
+        },
+        log: logger,
+        onError: vi.fn(),
+      });
+
+      loopWithError.start();
+      await vi.advanceTimersByTimeAsync(10);
+      loopWithError.stop();
+
+      // Should log warning for ETH but continue with other prices
+      const warningLog = logger.warn.mock.calls.find(
+        (call) => call[0] === 'spot_price_fetch_failed'
+      );
+      expect(warningLog).toBeDefined();
+      expect(warningLog[1].crypto).toBe('eth');
+
+      // Strategy should still be evaluated with available prices
+      expect(mockStrategyEvaluator.evaluateEntryConditions).toHaveBeenCalled();
+    });
+
+    it('deduplicates crypto symbols from multiple windows', async () => {
+      mockWindowManager.getActiveWindows.mockResolvedValue([
+        { id: 'btc-15m-1', crypto: 'btc', market_id: 'm1', token_id: 't1' },
+        { id: 'btc-15m-2', crypto: 'btc', market_id: 'm4', token_id: 't4' },
+        { id: 'btc-30m-1', crypto: 'btc', market_id: 'm5', token_id: 't5' },
+        { id: 'eth-15m-1', crypto: 'eth', market_id: 'm2', token_id: 't2' },
+      ]);
+
+      loopWithWindows.start();
+      await vi.advanceTimersByTimeAsync(10);
+
+      // BTC should only be fetched once despite 3 BTC windows
+      const btcCalls = mockSpot.getCurrentPrice.mock.calls.filter(
+        (call) => call[0] === 'btc'
+      );
+      expect(btcCalls).toHaveLength(1);
+
+      // ETH should be fetched once
+      const ethCalls = mockSpot.getCurrentPrice.mock.calls.filter(
+        (call) => call[0] === 'eth'
+      );
+      expect(ethCalls).toHaveLength(1);
+    });
+
+    it('skips strategy evaluation when all price fetches fail', async () => {
+      mockSpot.getCurrentPrice.mockImplementation(() => {
+        throw new Error('All feeds unavailable');
+      });
+
+      const logger = createMockLogger();
+      const loopWithFailingPrices = new ExecutionLoop({
+        config: { tickIntervalMs: 100 },
+        modules: {
+          spot: mockSpot,
+          'window-manager': mockWindowManager,
+          'strategy-evaluator': mockStrategyEvaluator,
+        },
+        log: logger,
+        onError: vi.fn(),
+      });
+
+      loopWithFailingPrices.start();
+      await vi.advanceTimersByTimeAsync(10);
+      loopWithFailingPrices.stop();
+
+      // Strategy evaluator should NOT be called when no prices available
+      // This is correct behavior - can't generate signals without price data
+      expect(mockStrategyEvaluator.evaluateEntryConditions).not.toHaveBeenCalled();
+
+      // Should have logged warnings for each failed crypto
+      const warningLogs = logger.warn.mock.calls.filter(
+        (call) => call[0] === 'spot_price_fetch_failed'
+      );
+      expect(warningLogs.length).toBeGreaterThan(0);
     });
   });
 });

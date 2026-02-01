@@ -35,6 +35,9 @@ import {
   trackStrategy,
   trackPosition,
   removePosition,
+  incrementPaperSignal,
+  incrementLiveOrder,
+  setTradingMode,
 } from './state.js';
 import { translate } from './translator.js';
 import * as renderer from './renderer.js';
@@ -198,6 +201,20 @@ export async function stop() {
 function handleEvent({ type, data }) {
   // Increment stats
   incrementEventCount(type);
+
+  // Story E.3: Track trading mode and paper/live counts
+  if (data.tradingMode) {
+    setTradingMode(data.tradingMode);
+
+    if (data.tradingMode === 'PAPER') {
+      incrementPaperSignal();
+    } else if (data.tradingMode === 'LIVE' && (type === 'entry' || type === 'signal')) {
+      // Only count as live order for entry/signal events
+      if (type === 'entry') {
+        incrementLiveOrder();
+      }
+    }
+  }
 
   // Track strategy and position
   if (data.strategyId) {

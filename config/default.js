@@ -7,6 +7,11 @@
  */
 
 export default {
+  // TRADING MODE - CRITICAL SAFETY GATE
+  // PAPER: Signal generation only, NO order execution (DEFAULT - ENFORCED)
+  // LIVE: Actual order execution (requires explicit env override)
+  tradingMode: process.env.TRADING_MODE || 'PAPER',
+
   // Polymarket API configuration
   polymarket: {
     apiUrl: process.env.POLYMARKET_API_URL || 'https://clob.polymarket.com',
