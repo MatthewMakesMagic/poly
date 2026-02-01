@@ -104,14 +104,16 @@ async function checkPolymarketAuth() {
 
     // Get balance to verify auth works (with timeout - ISSUE 15 fix)
     const timeoutMs = 10000; // 10 second timeout
-    const balancePromise = client.getBalanceAllowance();
+    // Must specify asset_type: 'COLLATERAL' to get USDC balance
+    const balancePromise = client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('API request timed out')), timeoutMs)
     );
     const balance = await Promise.race([balancePromise, timeoutPromise]);
 
     // Validate balance is a valid number (ISSUE 9 fix)
-    const rawAmount = parseFloat(balance?.amount || 0);
+    // Response has 'balance' field (not 'amount') as string in micro-USDC
+    const rawAmount = parseFloat(balance?.balance || balance?.amount || 0);
     if (isNaN(rawAmount)) {
       return {
         name: 'Polymarket API',
