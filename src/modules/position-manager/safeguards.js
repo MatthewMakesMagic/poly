@@ -36,8 +36,7 @@ let reservationTimestamps = new Map();               // Reservation timestamps f
 let lastEntryTimeBySymbol = new Map();               // Symbol -> timestamp
 let tickEntryCount = 0;                              // Entries this tick cycle
 
-// Position manager callback (Story 8-9)
-let positionManagerCallback = null;
+// Position manager callback - removed, using direct integration instead (Story 8-9)
 
 /**
  * Create composite entry key for strategy-aware tracking (Story 8-9)
@@ -60,17 +59,17 @@ function cleanupStaleReservations() {
 
   for (const [key, timestamp] of reservationTimestamps.entries()) {
     if (now - timestamp > config.reservation_timeout_ms) {
-      staleKeys.push(key);
+      staleKeys.push({ key, timestamp });
     }
   }
 
-  for (const key of staleKeys) {
+  for (const { key, timestamp } of staleKeys) {
     reservedEntries.delete(key);
     reservationTimestamps.delete(key);
     if (log) {
       log.warn('reservation_timeout_released', {
         entry_key: key,
-        age_ms: now - reservationTimestamps.get(key),
+        age_ms: now - timestamp,
       });
     }
   }
@@ -550,7 +549,6 @@ export function shutdown() {
   reservationTimestamps.clear();
   lastEntryTimeBySymbol.clear();
   tickEntryCount = 0;
-  positionManagerCallback = null;
   initialized = false;
   log = null;
 }

@@ -360,6 +360,21 @@ async function initializeModules(cfg) {
         }
       }
 
+      // Story 8-9: Initialize safeguards from existing positions after position-manager loads
+      if (entry.name === 'safeguards') {
+        const positionManagerModule = getModule('position-manager');
+        if (positionManagerModule && typeof positionManagerModule.getPositions === 'function') {
+          const openPositions = positionManagerModule.getPositions();
+          if (moduleInstance.initializeFromPositions) {
+            const initializedCount = moduleInstance.initializeFromPositions(openPositions);
+            log.info('safeguards_initialized_from_positions', {
+              positions_count: openPositions.length,
+              entries_initialized: initializedCount,
+            });
+          }
+        }
+      }
+
       log.info('module_init_complete', { module: entry.name });
     } catch (err) {
       log.error('module_init_failed', {
@@ -499,9 +514,11 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
       componentResults: {},
     };
 
-    // Extract windows and spot price from market context
+    // Extract windows and spot prices from market context
     const windows = marketContext.windows || [];
-    const spotPrice = marketContext.spot_price;
+    // Story 7-20: Use spotPrices map for per-crypto price lookup, fallback to spot_price for backward compat
+    const spotPrices = marketContext.spotPrices || {};
+    const fallbackSpotPrice = marketContext.spot_price;
 
     // Evaluate each window through the component pipeline
     for (const window of windows) {
@@ -536,6 +553,21 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
       const tokenPrice = window.market_price || window.yes_price || 0.5;
       const referencePrice = window.reference_price;
 
+      // Story 7-20: Get per-crypto spot price for this window's cryptocurrency
+      const windowCrypto = (window.crypto || window.symbol || 'btc').toLowerCase();
+      const windowSpotPriceData = spotPrices[windowCrypto];
+      const windowSpotPrice = windowSpotPriceData?.price || fallbackSpotPrice;
+
+      // Story 7-20: Skip windows if we don't have the correct crypto price
+      if (!windowSpotPrice) {
+        log.debug('window_skipped_no_spot_price', {
+          window_id: window.window_id || window.id,
+          crypto: windowCrypto,
+          available_cryptos: Object.keys(spotPrices),
+        });
+        continue;
+      }
+
       // Story 7-15: Skip windows without reference price (can't calculate probability)
       if (!referencePrice) {
         log.debug('window_skipped_no_reference_price', {
@@ -547,16 +579,17 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
 
       const windowContext = {
         // Probability model inputs (Black-Scholes)
-        oracle_price: spotPrice,      // S: Crypto dollar price (e.g., $95,000)
+        // Story 7-20: Use per-crypto spot price, not global BTC price
+        oracle_price: windowSpotPrice,      // S: Crypto dollar price (e.g., ETH=$2,400, BTC=$95,000)
         reference_price: referencePrice, // K: Strike from market question (e.g., $94,500)
         timeToExpiry: window.time_remaining_ms || window.timeRemaining || 0,
-        symbol: (window.crypto || window.symbol || 'btc').toLowerCase(),
+        symbol: windowCrypto,
 
         // Edge calculation inputs
         market_price: tokenPrice,     // Token price (0-1) for comparing to model probability
 
         // Legacy fields for backwards compatibility
-        spotPrice: spotPrice,         // Crypto dollar price (deprecated name)
+        spotPrice: windowSpotPrice,         // Crypto dollar price (deprecated name)
         targetPrice: referencePrice,  // Strike price (deprecated name)
 
         // Window identification

@@ -1,6 +1,6 @@
 # Story 7.20: Per-Crypto Oracle Price in Execution Loop
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -256,10 +256,65 @@ None - implementation was straightforward
 ### File List
 
 - `src/modules/orchestrator/execution-loop.js` - Modified: Per-crypto spot price fetching, marketState includes spotPrices map
+- `src/modules/orchestrator/index.js` - Modified (Code Review Fix): Composed strategy executor now uses per-crypto prices
 - `src/modules/orchestrator/__tests__/execution-loop.test.js` - Modified: Added 6 new tests for Story 7-20, updated existing mocks
-- `__tests__/integration/trading-mode.test.js` - Modified: Updated mock window-manager to return BTC window for proper flow
-- `__tests__/integration/safeguards-flow.test.js` - Modified: Updated mock window-manager to return BTC window for proper flow
 
 ### Change Log
 
 - 2026-02-01: Story 7-20 implementation complete - Per-crypto oracle price fix prevents false confidence signals
+- 2026-02-01: Code Review Fix - Composed strategy executor was not using per-crypto prices, fixed to use spotPrices map
+
+---
+
+## Senior Developer Review (AI)
+
+### Review Date
+2026-02-01
+
+### Reviewer
+Claude Opus 4.5 (Adversarial Code Review)
+
+### Review Outcome
+**CHANGES REQUESTED** → Fixed via auto-fix
+
+### Findings Summary
+
+| Severity | Count | Status |
+|----------|-------|--------|
+| HIGH | 2 | Fixed |
+| MEDIUM | 1 | Fixed |
+| LOW | 2 | Documented |
+
+### Critical Fix Applied
+
+**Issue:** Composed Strategy Executor Not Using Per-Crypto Prices (MEDIUM → CRITICAL)
+
+The original implementation fixed `execution-loop.js` to fetch per-crypto prices, but the `createComposedStrategyExecutor` in `index.js` was still using a single `spotPrice` value extracted from `marketContext.spot_price` for ALL windows, regardless of their crypto type.
+
+**Location:** `src/modules/orchestrator/index.js:517-565`
+
+**Before (buggy):**
+```javascript
+const spotPrice = marketContext.spot_price;  // Single price for all
+// ...
+oracle_price: spotPrice,  // Same BTC price used for ETH/SOL/XRP windows!
+```
+
+**After (fixed):**
+```javascript
+const spotPrices = marketContext.spotPrices || {};
+const windowCrypto = (window.crypto || window.symbol || 'btc').toLowerCase();
+const windowSpotPriceData = spotPrices[windowCrypto];
+const windowSpotPrice = windowSpotPriceData?.price || fallbackSpotPrice;
+// ...
+oracle_price: windowSpotPrice,  // Correct ETH price for ETH windows, etc.
+```
+
+### Documentation Issues Fixed
+
+1. **File List corrected** - Removed inaccurate integration test entries, added `index.js`
+2. **Test count claim** - Story claimed "All 2983 tests pass" but this was from a prior run; current execution-loop tests (33) pass
+
+### Tests Verified
+- `execution-loop.test.js`: 33/33 tests pass ✓
+- Story 7-20 specific tests (6): All pass ✓

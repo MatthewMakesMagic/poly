@@ -602,6 +602,17 @@ export class ExecutionLoop {
                 loss_pct: result.loss_pct,
               });
 
+              // Story 8-9: Remove entry from safeguards to allow future re-entry
+              if (this.modules.safeguards && result.window_id) {
+                const strategyId = result.strategy_id || 'default';
+                this.modules.safeguards.removeEntry(result.window_id, strategyId);
+                this.log.debug('entry_removed_on_position_close', {
+                  window_id: result.window_id,
+                  strategy_id: strategyId,
+                  close_reason: 'stop_loss',
+                });
+              }
+
               // Record exit event via trade-event module (Story 5.1)
               if (this.modules['trade-event']) {
                 try {
@@ -682,6 +693,17 @@ export class ExecutionLoop {
                 profit_amount: result.profit_amount,
                 profit_pct: result.profit_pct,
               });
+
+              // Story 8-9: Remove entry from safeguards to allow future re-entry
+              if (this.modules.safeguards && result.window_id) {
+                const strategyId = result.strategy_id || 'default';
+                this.modules.safeguards.removeEntry(result.window_id, strategyId);
+                this.log.debug('entry_removed_on_position_close', {
+                  window_id: result.window_id,
+                  strategy_id: strategyId,
+                  close_reason: 'take_profit',
+                });
+              }
 
               // Record exit event via trade-event module (Story 5.1)
               if (this.modules['trade-event']) {
