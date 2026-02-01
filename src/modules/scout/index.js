@@ -17,6 +17,7 @@
 import { child } from '../logger/index.js';
 import { subscribeAll } from '../trade-event/index.js';
 import { ScoutError, ScoutErrorCodes, ScoutMode } from './types.js';
+import { createParser } from './railway-log-parser.js';
 import {
   isInitialized,
   setInitialized,
@@ -41,6 +42,7 @@ import * as reviewQueue from './review-queue.js';
 
 // Module state
 let log = null;
+let railwayParser = null;
 
 /**
  * Initialize the Scout module
@@ -110,10 +112,39 @@ export async function start() {
     const unsubscribe = subscribeAll(handleEvent);
     setUnsubscribe(unsubscribe);
   } else if (mode === ScoutMode.RAILWAY) {
-    // Railway mode: log stream parsing (Story E.2)
-    log.warn('railway_mode_not_implemented', {
-      message: 'Railway mode will be implemented in Story E.2',
+    // Railway mode: stream and parse Railway logs (Story E.2)
+    log.info('railway_mode_starting', {
+      message: 'Connecting to Railway log stream...',
     });
+
+    railwayParser = createParser(
+      // onEvent: handle parsed trade events
+      (event) => {
+        handleEvent(event);
+      },
+      // onError: log parsing errors
+      (error) => {
+        log.warn('railway_log_parse_error', { error: error.message });
+      },
+      // onClose: handle stream close
+      (code) => {
+        log.info('railway_log_stream_closed', { exitCode: code });
+      }
+    );
+
+    try {
+      await railwayParser.start();
+      log.info('railway_mode_connected', {
+        message: 'Connected to Railway log stream',
+      });
+    } catch (err) {
+      log.error('railway_mode_failed', { error: err.message });
+      throw new ScoutError(
+        ScoutErrorCodes.INVALID_MODE,
+        `Failed to start Railway mode: ${err.message}`,
+        { error: err.message }
+      );
+    }
   }
 
   setRunning(true);
@@ -138,11 +169,17 @@ export async function stop() {
 
   log.info('scout_stopping');
 
-  // Unsubscribe from events
+  // Unsubscribe from events (local mode)
   const unsubscribe = getUnsubscribe();
   if (unsubscribe) {
     unsubscribe();
     setUnsubscribe(null);
+  }
+
+  // Stop Railway parser (railway mode)
+  if (railwayParser) {
+    railwayParser.stop();
+    railwayParser = null;
   }
 
   // Render shutdown message
@@ -251,6 +288,12 @@ export async function shutdown() {
     const unsubscribe = getUnsubscribe();
     if (unsubscribe) {
       unsubscribe();
+    }
+
+    // Stop Railway parser
+    if (railwayParser) {
+      railwayParser.stop();
+      railwayParser = null;
     }
   }
 
