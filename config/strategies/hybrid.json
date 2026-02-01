@@ -1,0 +1,26 @@
+{
+  "name": "hybrid",
+  "description": "Weighted combination of all signal sources",
+  "version": 1,
+  "components": {
+    "priceSource": "src-rtds-client-v1",
+    "probability": "prob-window-timing-model-v1",
+    "analysis": ["anal-oracle-tracker-v1", "anal-lag-tracker-v1"],
+    "signalGenerator": "sig-oracle-edge-signal-v1"
+  },
+  "config": {
+    "weights": {
+      "probability": 0.3,
+      "oracleEdge": 0.4,
+      "lagSignal": 0.3
+    },
+    "aggregation": "weighted_average",
+    "minCombinedScore": 0.6
+  },
+  "pipeline": {
+    "order": ["priceSource", "probability", "analysis", "signalGenerator"],
+    "signalAggregation": "weighted_average"
+  },
+  "author": "BMAD",
+  "createdAt": "2026-02-01"
+}

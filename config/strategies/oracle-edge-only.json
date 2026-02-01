@@ -1,0 +1,22 @@
+{
+  "name": "oracle-edge",
+  "description": "Trade based on oracle staleness and UI/oracle divergence",
+  "version": 1,
+  "components": {
+    "priceSource": "src-rtds-client-v1",
+    "analysis": ["anal-oracle-tracker-v1"],
+    "signalGenerator": "sig-oracle-edge-signal-v1"
+  },
+  "config": {
+    "stalenessThresholdMs": 15000,
+    "minDivergencePct": 0.1,
+    "maxTimeToExpiryMs": 30000,
+    "confidenceThreshold": 0.65
+  },
+  "pipeline": {
+    "order": ["priceSource", "analysis", "signalGenerator"],
+    "signalAggregation": "first_signal"
+  },
+  "author": "BMAD",
+  "createdAt": "2026-02-01"
+}

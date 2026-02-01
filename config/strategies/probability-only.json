@@ -1,0 +1,22 @@
+{
+  "name": "probability-model",
+  "description": "Black-Scholes N(d2) based entry using oracle price",
+  "version": 1,
+  "components": {
+    "priceSource": "src-rtds-client-v1",
+    "probability": "prob-window-timing-model-v1"
+  },
+  "config": {
+    "entryThreshold": 0.70,
+    "exitThreshold": 0.30,
+    "volatility": {
+      "fallbackVol": 0.5
+    }
+  },
+  "pipeline": {
+    "order": ["priceSource", "probability"],
+    "signalAggregation": "probability_threshold"
+  },
+  "author": "BMAD",
+  "createdAt": "2026-02-01"
+}

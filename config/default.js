@@ -25,10 +25,10 @@ export default {
 
   // Risk management limits
   risk: {
-    maxPositionSize: 5,          // Maximum size per position ($5 cap)
-    maxExposure: 20,             // Maximum total exposure ($20 cap)
-    dailyDrawdownLimit: 0.10,    // 10% daily drawdown limit
-    positionLimitPerMarket: 1,   // Max positions per market
+    maxPositionSize: 100,         // Maximum size per position (high limit - controlled by strategy)
+    maxExposure: 1000,            // Maximum total exposure (high limit - controlled by strategy)
+    dailyDrawdownLimit: null,     // DISABLED - no drawdown limit
+    positionLimitPerMarket: null, // DISABLED - each strategy can trade same market per window
   },
 
   // Logging configuration
@@ -60,7 +60,7 @@ export default {
   safety: {
     startingCapital: parseFloat(process.env.STARTING_CAPITAL) || 1000,
     unrealizedUpdateIntervalMs: 5000,  // Update unrealized P&L every 5 seconds
-    drawdownWarningPct: 0.03,          // Warn at 3% (60% of default 5% limit)
+    drawdownWarningPct: null,          // DISABLED - no drawdown warning
     autoStopStateFile: './data/auto-stop-state.json',  // Persist auto-stop state
   },
 
@@ -108,6 +108,27 @@ export default {
     },
   },
 
+  // Data retention policies (cleanup old data to manage storage)
+  retention: {
+    rtdsTicks: {
+      enabled: true,
+      maxAgeDays: 7,           // 7-day rolling window for tick data
+    },
+    oracleUpdates: {
+      enabled: true,
+      maxAgeDays: 30,          // 30-day rolling window
+    },
+    lagSignals: {
+      enabled: true,
+      maxAgeDays: 30,          // 30-day rolling window
+    },
+    tradeEvents: {
+      enabled: true,
+      maxAgeDays: 90,          // 90-day rolling window (archive older if needed)
+    },
+    cleanupIntervalMs: 6 * 60 * 60 * 1000,  // Run cleanup every 6 hours
+  },
+
   // Strategy configuration
   strategy: {
     entry: {
@@ -124,21 +145,58 @@ export default {
     // Stop-loss configuration
     stopLoss: {
       enabled: true,                 // Enable/disable stop-loss evaluation
-      defaultStopLossPct: 0.50,      // 50% stop-loss for ExecutionTest (volatile market)
+      defaultStopLossPct: 0.50,      // 50% stop-loss for all strategies
     },
-    // Take-profit configuration
+    // Take-profit configuration - TRAILING MODE
+    // Strategy: Hold to expiry, but exit aggressively on 30% pullback from peak
     takeProfit: {
       enabled: true,                  // Enable/disable take-profit evaluation
-      defaultTakeProfitPct: 0.10,     // 10% default take-profit (fixed mode)
-      trailingEnabled: true,          // Use trailing stop mode for ExecutionTest
-      trailingActivationPct: 0.01,    // 1% profit to activate trailing (enter fast for testing)
-      trailingPullbackPct: 0.50,      // 50% pullback from HWM to trigger exit (volatile market)
-      minProfitFloorPct: 0.01,        // 1% minimum profit floor (allow quick exits)
+      defaultTakeProfitPct: null,     // DISABLED - hold to expiry (no fixed take profit)
+      trailingEnabled: true,          // Trailing stop mode active
+      trailingActivationPct: 0.01,    // 1% profit to start tracking peak
+      trailingPullbackPct: 0.30,      // 30% pullback from peak = aggressive exit
+      minProfitFloorPct: 0.00,        // No minimum - can exit at breakeven on pullback
     },
     // Window expiry configuration
     windowExpiry: {
       enabled: true,                        // Enable/disable window expiry evaluation
       expiryWarningThresholdMs: 30 * 1000,  // 30 seconds - warn when this close to expiry
     },
+  },
+
+  // Signal outcome logger configuration (Story 7-8)
+  signalOutcomeLogger: {
+    autoSubscribeToSignals: true,       // Auto-subscribe to oracle-edge-signal
+    autoSubscribeToSettlements: true,   // Auto-subscribe to settlement events
+    defaultPositionSize: 1,             // Default position size for PnL calc
+    retentionDays: 30,                  // Keep signals for 30 days
+  },
+
+  // Quality gate configuration (Story 7-9)
+  qualityGate: {
+    enabled: true,                        // Enable/disable quality gate
+    evaluationIntervalMs: 60000,          // Evaluate every 1 minute
+    rollingWindowSize: 20,                // Last N signals for rolling accuracy
+    minAccuracyThreshold: 0.40,           // 40% minimum accuracy
+    feedUnavailableThresholdMs: 10000,    // 10 seconds feed unavailable
+    patternChangeThreshold: 2.0,          // 2x change in update frequency
+    spreadBehaviorStdDev: 2.0,            // 2 std dev for spread behavior change
+    patternCheckFrequency: 5,             // Check patterns every 5th evaluation
+    minSignalsForEvaluation: 10,          // Min signals before evaluating accuracy
+  },
+
+  // Strategy composition configuration (Story 7-12)
+  strategies: {
+    default: 'Oracle Edge Only',          // Default active strategy name
+    configDir: './config/strategies/',    // Strategy definition directory
+    autoDiscover: true,                   // Auto-register strategies from dir
+    autoLoadOnInit: true,                 // Load all strategies on module init
+  },
+
+  // Backtest configuration (Story 7-12)
+  backtest: {
+    tickBatchSize: 10000,                 // Ticks per batch in replay
+    parallelEval: false,                  // Single-threaded by default
+    outputDir: './logs/backtest/',        // Backtest result storage
   },
 };

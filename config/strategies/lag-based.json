@@ -1,0 +1,23 @@
+{
+  "name": "lag-based",
+  "description": "Trade based on cross-correlation lag between feeds, with probability model",
+  "version": 2,
+  "components": {
+    "priceSource": "src-rtds-client-v1",
+    "probability": "prob-window-timing-model-v1",
+    "analysis": ["anal-lag-tracker-v1"]
+  },
+  "config": {
+    "minCorrelation": 0.5,
+    "significanceThreshold": 0.05,
+    "entryThreshold": 0.70,
+    "exitThreshold": 0.30
+  },
+  "pipeline": {
+    "order": ["priceSource", "probability", "analysis"],
+    "signalAggregation": "lag_signal"
+  },
+  "author": "BMAD",
+  "createdAt": "2026-02-01",
+  "updatedAt": "2026-02-01"
+}
