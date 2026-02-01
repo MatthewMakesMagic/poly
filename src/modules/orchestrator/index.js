@@ -508,7 +508,7 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
         spotPrice: spotPrice,
         targetPrice: 0.5, // Binary market midpoint (strike)
         timeToExpiry: window.time_remaining_ms || window.timeRemaining || 0,
-        symbol: window.crypto?.toUpperCase() || window.symbol || 'BTC',
+        symbol: (window.crypto || window.symbol || 'btc').toLowerCase(),
         window_id: window.window_id || window.id,
         market_price: window.market_price || window.yes_price,
         token_id: window.token_id,
