@@ -358,5 +358,34 @@ describe('Scout Translator', () => {
       expect(result.summary).not.toContain('[PAPER]');
       expect(result.summary).not.toContain('[LIVE]');
     });
+
+    // Story E.3 code review fix: Test exit translation with mode prefix
+    it('should prefix exit translation with LIVE mode', () => {
+      const result = translate('exit', {
+        exitReason: 'take_profit',
+        prices: {
+          priceAtFill: 0.55,
+        },
+        hasDivergence: false,
+        tradingMode: 'LIVE',
+      });
+
+      expect(result.summary).toContain('[LIVE]');
+      expect(result.summary).toContain('Take-profit');
+    });
+
+    it('should prefix exit translation with PAPER mode', () => {
+      const result = translate('exit', {
+        exitReason: 'stop_loss',
+        prices: {
+          priceAtFill: 0.35,
+        },
+        hasDivergence: false,
+        tradingMode: 'PAPER',
+      });
+
+      expect(result.summary).toContain('[PAPER]');
+      expect(result.summary).toContain('Stop-loss');
+    });
   });
 });

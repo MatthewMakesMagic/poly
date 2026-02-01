@@ -145,6 +145,7 @@ function translateExit(data) {
     hasDivergence,
     diagnosticFlags,
     latencies,
+    tradingMode,
   } = data;
 
   const fillPrice = prices?.priceAtFill;
@@ -154,7 +155,9 @@ function translateExit(data) {
   // Format exit reason
   const reasonText = formatExitReason(exitReason);
 
-  let summary = `${reasonText} @ ${formatPrice(fillPrice)}`;
+  // Story E.3: Add mode prefix to summary
+  const modePrefix = formatModePrefix(tradingMode);
+  let summary = `${modePrefix}${reasonText} @ ${formatPrice(fillPrice)}`;
 
   let explanation;
   if (!hasDivergence) {

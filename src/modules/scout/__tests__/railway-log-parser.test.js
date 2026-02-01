@@ -305,5 +305,38 @@ describe('RailwayLogParser', () => {
       expect(result).not.toBeNull();
       expect(result.data.tradingMode).toBe('PAPER');
     });
+
+    // Story E.3 code review fix: Additional LIVE_MODE_EVENTS tests (AC6)
+    it('should detect LIVE mode from order_filled event without explicit trading_mode field', () => {
+      const line = JSON.stringify({
+        level: 'info',
+        event: 'order_filled',
+        window_id: 'btc-15m-123',
+        price: 0.55,
+        size: 10,
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.type).toBe(TradeEventType.ENTRY);
+      expect(result.data.tradingMode).toBe('LIVE');
+    });
+
+    it('should detect LIVE mode from position_opened event without explicit trading_mode field', () => {
+      const line = JSON.stringify({
+        level: 'info',
+        event: 'position_opened',
+        window_id: 'eth-15m-456',
+        price: 0.42,
+        size: 5,
+      });
+
+      const result = parser.parseLine(line);
+
+      expect(result).not.toBeNull();
+      expect(result.type).toBe(TradeEventType.ENTRY);
+      expect(result.data.tradingMode).toBe('LIVE');
+    });
   });
 });

@@ -208,11 +208,9 @@ function handleEvent({ type, data }) {
 
     if (data.tradingMode === 'PAPER') {
       incrementPaperSignal();
-    } else if (data.tradingMode === 'LIVE' && (type === 'entry' || type === 'signal')) {
-      // Only count as live order for entry/signal events
-      if (type === 'entry') {
-        incrementLiveOrder();
-      }
+    } else if (data.tradingMode === 'LIVE' && type === 'entry') {
+      // Count live orders for entry events (order_placed, entry_executed map to 'entry')
+      incrementLiveOrder();
     }
   }
 

@@ -1,6 +1,6 @@
 # Story E.3: Scout Paper Mode Signal Clarity
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -281,8 +281,47 @@ Claude Opus 4.5 (claude-opus-4-5-20251101)
 - src/modules/scout/__tests__/translator.test.js - 7 new tests for mode prefix
 - src/modules/scout/__tests__/index.test.js - 3 new tests for integration
 
+## Senior Developer Review (AI)
+
+### Review Date: 2026-02-02
+
+### Reviewer: Claude Opus 4.5 (Adversarial Code Review)
+
+### Review Outcome: ✅ APPROVED (with auto-fixes applied)
+
+### Issues Found and Fixed
+
+| Severity | Issue | File | Fix Applied |
+|----------|-------|------|-------------|
+| HIGH | **H1**: Live order counting logic had dead code - outer conditional checked for `type === 'entry' \|\| type === 'signal'` but inner only acted on `entry` | `index.js:211-215` | ✅ Simplified conditional logic |
+| HIGH | **H2**: `translateExit()` missing mode prefix - AC5 violation | `translator.js:141-157` | ✅ Added `tradingMode` extraction and `formatModePrefix()` call |
+| HIGH | **H3**: Missing test coverage for `order_filled` and `position_opened` in LIVE_MODE_EVENTS (AC6) | `railway-log-parser.test.js` | ✅ Added 2 new tests |
+| MEDIUM | **M1**: Added exit translation tests for mode prefix | `translator.test.js` | ✅ Added 2 new tests |
+
+### Test Results After Fixes
+- **Before review**: 125 tests passing
+- **After review**: 129 tests passing (+4 new tests)
+- All ACs validated against implementation ✅
+
+### AC Verification Summary
+
+| AC | Status | Verification |
+|----|--------|--------------|
+| AC1 | ✅ | `detectTradingMode()` extracts PAPER from `trading_mode` field and `paper_mode_signal` event type |
+| AC2 | ✅ | `detectTradingMode()` extracts LIVE from `trading_mode` field and live event types |
+| AC3 | ✅ | `formatModeBadge()` renders yellow `[PAPER]` and red `[🔴 LIVE]` badges |
+| AC4 | ✅ | `paperSignalCount`/`liveOrderCount` in state, displayed in status bar and shutdown |
+| AC5 | ✅ | `formatModePrefix()` applied to signal, entry, AND exit translations (fixed) |
+| AC6 | ✅ | Mode detected from: explicit field, `paper_mode_signal`, `order_placed`, `entry_executed`, `order_filled`, `position_opened` |
+
+### Remaining Low-Priority Items (Not Fixed)
+
+- **L1**: Magic strings 'PAPER'/'LIVE' could use constants (cosmetic, low risk)
+- **L2**: Doc estimate mismatch (19 vs 34 tests) - informational only
+
 ## Change Log
 
 | Date | Change |
 |------|--------|
 | 2026-02-01 | Story E.3 implementation complete - Added paper/live mode detection, visual badges, counters, and translations. 34 new tests added. |
+| 2026-02-02 | Code review: Fixed 3 HIGH issues, 1 MEDIUM issue. Added 4 tests. Total tests now 129. Status → done. |
