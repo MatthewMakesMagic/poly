@@ -490,41 +490,75 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
     }
   }
 
-  return function executeComposedStrategy(context) {
+  return function executeComposedStrategy(marketContext) {
     const results = {
       strategyName: strategyDef.name,
       signals: [],
       componentResults: {},
     };
 
-    // Execute each component in pipeline order if defined
-    const order = pipeline?.order || Object.keys(components);
+    // Extract windows and spot price from market context
+    const windows = marketContext.windows || [];
+    const spotPrice = marketContext.spot_price;
 
-    for (const slot of order) {
-      const versionIds = Array.isArray(components[slot]) ? components[slot] : [components[slot]];
+    // Evaluate each window through the component pipeline
+    for (const window of windows) {
+      // Build per-window context for components
+      const windowContext = {
+        spotPrice: spotPrice,
+        targetPrice: 0.5, // Binary market midpoint (strike)
+        timeToExpiry: window.time_remaining_ms || window.timeRemaining || 0,
+        symbol: window.crypto?.toUpperCase() || window.symbol || 'BTC',
+        window_id: window.window_id || window.id,
+        market_price: window.market_price || window.yes_price,
+        token_id: window.token_id,
+        market_id: window.market_id,
+      };
 
-      for (const versionId of versionIds) {
-        if (!versionId) continue;
+      // Execute each component in pipeline order
+      const componentOrder = pipeline?.order || Object.keys(components);
+      let windowSignal = null;
 
-        const component = catalog[getComponentType(versionId)]?.[versionId];
-        if (!component?.module?.evaluate) continue;
+      for (const slot of componentOrder) {
+        const versionIds = Array.isArray(components[slot]) ? components[slot] : [components[slot]];
 
-        try {
-          const componentResult = component.module.evaluate(context, strategyConfig);
-          results.componentResults[versionId] = componentResult;
+        for (const versionId of versionIds) {
+          if (!versionId) continue;
 
-          // Collect signals from signal-generating components
-          if (componentResult?.signal || componentResult?.signals) {
-            const signals = componentResult.signals || [componentResult.signal];
-            results.signals.push(...signals.filter(Boolean));
+          const component = catalog[getComponentType(versionId)]?.[versionId];
+          if (!component?.module?.evaluate) continue;
+
+          try {
+            const componentResult = component.module.evaluate(windowContext, strategyConfig);
+            results.componentResults[`${window.window_id}:${versionId}`] = componentResult;
+
+            // Check if component generated an entry signal
+            if (componentResult?.signal === 'entry' || componentResult?.probability > 0.7) {
+              windowSignal = {
+                window_id: windowContext.window_id,
+                token_id: windowContext.token_id,
+                market_id: windowContext.market_id,
+                direction: 'long',
+                confidence: componentResult.probability || 0.7,
+                market_price: windowContext.market_price,
+                strategy_id: strategyDef.name,
+                component: versionId,
+              };
+            }
+          } catch (err) {
+            log.warn('component_execution_failed', {
+              strategy: strategyDef.name,
+              component: versionId,
+              window_id: windowContext.window_id,
+              error: err.message,
+            });
           }
-        } catch (err) {
-          log.warn('component_execution_failed', {
-            strategy: strategyDef.name,
-            component: versionId,
-            error: err.message,
-          });
         }
+      }
+
+      // Add signal if generated for this window
+      if (windowSignal) {
+        results.signals.push(windowSignal);
       }
     }
 
