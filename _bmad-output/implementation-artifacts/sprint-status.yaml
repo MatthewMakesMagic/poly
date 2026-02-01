@@ -122,7 +122,7 @@ development_status:
   7-15-market-reference-price-parsing: backlog
   7-16-edge-based-signal-generation: backlog
   # NEW stories from Sprint Change Proposal 2026-02-01 (Production Safeguards)
-  7-19-cross-module-integration-tests: review  # HIGH - prevent recurrence
+  7-19-cross-module-integration-tests: done  # HIGH - Code Review 2026-02-02: test infrastructure fixed
   7-20-per-crypto-oracle-price-fix: done  # HIGH - root cause fix (Code Review: 2026-02-01)
   epic-7-retrospective: optional
 
@@ -138,5 +138,5 @@ development_status:
   8-7-position-entry-safeguards: backlog
   # NEW stories from Sprint Change Proposal 2026-02-01 (Production Safeguards)
   8-8-live-trading-gate: done  # CRITICAL - completed 2026-02-01
-  8-9-one-trade-per-window-safeguard: review  # CRITICAL - must complete before any deploy
+  8-9-one-trade-per-window-safeguard: done  # CRITICAL - Code Review 2026-02-02: test mocks added
   epic-8-retrospective: optional

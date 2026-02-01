@@ -32,10 +32,18 @@ vi.mock('../../../clients/spot/index.js', () => ({
   getCurrentPrice: vi.fn().mockReturnValue({ price: 50000, timestamp: Date.now() }),
 }));
 
+vi.mock('../../window-manager/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+  getActiveWindows: vi.fn().mockReturnValue([]),
+}));
+
 vi.mock('../../position-manager/index.js', () => ({
   init: vi.fn().mockResolvedValue(undefined),
   shutdown: vi.fn().mockResolvedValue(undefined),
   getState: vi.fn().mockReturnValue({ initialized: true }),
+  getPositions: vi.fn().mockReturnValue([]),  // Story 8-9: For safeguards init
 }));
 
 vi.mock('../../order-manager/index.js', () => ({
@@ -51,6 +59,25 @@ vi.mock('../../safety/index.js', () => ({
   setOrderManager: vi.fn(),
   checkDrawdownLimit: vi.fn().mockReturnValue({ breached: false, current: 0, limit: 0.05, autoStopped: false }),
   isAutoStopped: vi.fn().mockReturnValue(false),
+}));
+
+// Story 8-9: Safeguards module mock
+vi.mock('../../position-manager/safeguards.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true, config: {}, stats: { entries_confirmed: 0, entries_reserved: 0, tick_entry_count: 0, symbols_tracked: 0 } }),
+  canEnterPosition: vi.fn().mockReturnValue({ allowed: true }),
+  recordEntry: vi.fn(),
+  reserveEntry: vi.fn().mockReturnValue(true),
+  confirmEntry: vi.fn().mockReturnValue(true),
+  releaseEntry: vi.fn().mockReturnValue(true),
+  removeEntry: vi.fn().mockReturnValue(true),
+  resetTickEntries: vi.fn(),
+  resetState: vi.fn(),
+  initializeFromPositions: vi.fn().mockReturnValue(0),
+  hasEnteredWindow: vi.fn().mockReturnValue(false),
+  getTimeSinceLastEntry: vi.fn().mockReturnValue(null),
+  getTickEntryCount: vi.fn().mockReturnValue(0),
 }));
 
 vi.mock('../../launch-config/index.js', () => ({
@@ -93,6 +120,64 @@ vi.mock('../../logger/index.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   }),
+}));
+
+// Strategy modules (from MODULE_INIT_ORDER)
+vi.mock('../../strategy-evaluator/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+  evaluateStrategy: vi.fn().mockReturnValue({ signals: [] }),
+}));
+
+vi.mock('../../position-sizer/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+  calculateSize: vi.fn().mockReturnValue({ size: 10 }),
+}));
+
+vi.mock('../../stop-loss/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../take-profit/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../window-expiry/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../trade-event/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+// Strategy composition modules (Story 7-12)
+vi.mock('../../strategy/loader.js', () => ({
+  loadAllStrategies: vi.fn().mockResolvedValue([]),
+  getLoadedStrategy: vi.fn().mockReturnValue(null),
+  setActiveStrategy: vi.fn(),
+  getActiveStrategy: vi.fn().mockReturnValue(null),
+  getActiveStrategyName: vi.fn().mockReturnValue(null),
+  listLoadedStrategies: vi.fn().mockReturnValue([]),
+}));
+
+vi.mock('../../strategy/logic.js', () => ({
+  discoverComponents: vi.fn().mockResolvedValue({ strategies: [], composites: [] }),
+}));
+
+vi.mock('../../strategy/state.js', () => ({
+  setCatalog: vi.fn(),
+  getCatalog: vi.fn().mockReturnValue(null),
 }));
 
 vi.mock('../../../../kill-switch/state-snapshot.js', () => ({
