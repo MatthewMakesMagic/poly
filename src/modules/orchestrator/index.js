@@ -471,6 +471,25 @@ async function initializeStrategies(cfg) {
 function createComposedStrategyExecutor(strategyDef, catalog) {
   const { components, config: strategyConfig, pipeline } = strategyDef;
 
+  // Initialize all components that have init() functions
+  const order = pipeline?.order || Object.keys(components);
+  for (const slot of order) {
+    const versionIds = Array.isArray(components[slot]) ? components[slot] : [components[slot]];
+    for (const versionId of versionIds) {
+      if (!versionId) continue;
+      const component = catalog[getComponentType(versionId)]?.[versionId];
+      if (component?.module?.init && typeof component.module.init === 'function') {
+        try {
+          // Call init with strategy config merged with global config
+          component.module.init(config);
+          log.info('component_initialized', { strategy: strategyDef.name, component: versionId });
+        } catch (err) {
+          log.warn('component_init_failed', { strategy: strategyDef.name, component: versionId, error: err.message });
+        }
+      }
+    }
+  }
+
   return function executeComposedStrategy(context) {
     const results = {
       strategyName: strategyDef.name,
