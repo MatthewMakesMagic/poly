@@ -504,15 +504,18 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
     // Evaluate each window through the component pipeline
     for (const window of windows) {
       // Build per-window context for components
+      // Note: For binary markets, spotPrice is the TOKEN price (0-1), not crypto dollar price
+      const tokenPrice = window.market_price || window.yes_price || 0.5;
       const windowContext = {
-        spotPrice: spotPrice,
+        spotPrice: tokenPrice,  // Token price (probability 0-1)
         targetPrice: 0.5, // Binary market midpoint (strike)
         timeToExpiry: window.time_remaining_ms || window.timeRemaining || 0,
         symbol: (window.crypto || window.symbol || 'btc').toLowerCase(),
         window_id: window.window_id || window.id,
-        market_price: window.market_price || window.yes_price,
+        market_price: tokenPrice,
         token_id: window.token_id,
         market_id: window.market_id,
+        underlying_price: spotPrice, // Keep crypto dollar price for reference
       };
 
       // Execute each component in pipeline order
