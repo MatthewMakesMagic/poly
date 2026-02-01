@@ -19,6 +19,8 @@ import {
   SUPPORTED_CRYPTOS,
   GAMMA_API,
   CLOB_API,
+  BINANCE_API,
+  BINANCE_SYMBOLS,
   WINDOW_DURATION_SECONDS,
 } from './types.js';
 
@@ -70,6 +72,100 @@ export function parseReferencePrice(question) {
   }
 
   return null;
+}
+
+/**
+ * Fetch opening price from Binance for a given crypto and epoch
+ *
+ * For "Up or Down" markets, the reference/strike price is the
+ * crypto price at window start time. This function fetches that
+ * price from Binance's klines (candlestick) API.
+ *
+ * @param {string} crypto - Crypto symbol (btc, eth, sol, xrp)
+ * @param {number} epoch - Window start epoch timestamp (seconds)
+ * @returns {Promise<number|null>} Opening price or null if fetch fails
+ */
+export async function fetchOpeningPrice(crypto, epoch) {
+  const symbol = BINANCE_SYMBOLS[crypto.toLowerCase()];
+  if (!symbol) {
+    if (log) {
+      log.warn('unsupported_crypto_for_binance', { crypto });
+    }
+    return null;
+  }
+
+  try {
+    // Convert epoch to milliseconds for Binance API
+    const startTimeMs = epoch * 1000;
+
+    // Fetch 1-minute kline starting at window epoch
+    const url = `${BINANCE_API}/klines?symbol=${symbol}&interval=1m&limit=1&startTime=${startTimeMs}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      if (log) {
+        log.warn('binance_fetch_failed', { crypto, status: response.status });
+      }
+      return null;
+    }
+
+    const klines = await response.json();
+
+    // Kline format: [openTime, open, high, low, close, volume, ...]
+    if (klines && klines.length > 0) {
+      const openPrice = parseFloat(klines[0][1]); // Open price is index 1
+
+      if (!isNaN(openPrice) && openPrice > 0) {
+        if (log) {
+          log.info('opening_price_fetched', {
+            crypto,
+            epoch,
+            openPrice,
+            source: 'binance',
+          });
+        }
+        return openPrice;
+      }
+    }
+  } catch (error) {
+    if (log) {
+      log.warn('binance_fetch_error', { crypto, epoch, error: error.message });
+    }
+  }
+
+  return null;
+}
+
+// Cache for opening prices to avoid repeated Binance calls
+const openingPriceCache = new Map();
+
+/**
+ * Get opening price with caching
+ *
+ * @param {string} crypto - Crypto symbol
+ * @param {number} epoch - Window epoch
+ * @returns {Promise<number|null>} Opening price or null
+ */
+async function getCachedOpeningPrice(crypto, epoch) {
+  const cacheKey = `${crypto}-${epoch}`;
+
+  if (openingPriceCache.has(cacheKey)) {
+    return openingPriceCache.get(cacheKey);
+  }
+
+  const price = await fetchOpeningPrice(crypto, epoch);
+
+  if (price !== null) {
+    openingPriceCache.set(cacheKey, price);
+
+    // Clean old cache entries (keep last 20)
+    if (openingPriceCache.size > 20) {
+      const firstKey = openingPriceCache.keys().next().value;
+      openingPriceCache.delete(firstKey);
+    }
+  }
+
+  return price;
 }
 
 // Cache to reduce API calls
@@ -151,7 +247,13 @@ export async function fetchMarket(crypto, epoch) {
       const prices = JSON.parse(market.outcomePrices || '[]');
 
       // Story 7-15: Parse reference price from question (e.g., "$94,500" from "Will BTC be above $94,500?")
-      const referencePrice = parseReferencePrice(market.question);
+      let referencePrice = parseReferencePrice(market.question);
+
+      // Story 7-20: Fallback for "Up or Down" markets - fetch opening price from Binance
+      // These markets use the crypto price at window start as the reference/strike price
+      if (!referencePrice) {
+        referencePrice = await getCachedOpeningPrice(crypto, epoch);
+      }
 
       return {
         slug,
@@ -336,6 +438,7 @@ export async function shutdown() {
 export function clearCache() {
   windowCache.windows = [];
   windowCache.fetchedAt = 0;
+  openingPriceCache.clear();
 }
 
 /**

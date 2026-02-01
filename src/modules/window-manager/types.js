@@ -37,8 +37,19 @@ export const SUPPORTED_CRYPTOS = ['btc', 'eth', 'sol', 'xrp'];
  */
 export const GAMMA_API = 'https://gamma-api.polymarket.com';
 export const CLOB_API = 'https://clob.polymarket.com';
+export const BINANCE_API = 'https://api.binance.com/api/v3';
 
 /**
  * Window duration in seconds (15 minutes)
  */
 export const WINDOW_DURATION_SECONDS = 900;
+
+/**
+ * Binance symbol mapping for supported cryptos
+ */
+export const BINANCE_SYMBOLS = {
+  btc: 'BTCUSDT',
+  eth: 'ETHUSDT',
+  sol: 'SOLUSDT',
+  xrp: 'XRPUSDT',
+};
