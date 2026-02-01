@@ -32,7 +32,19 @@ import * as stopLoss from '../stop-loss/index.js';
 import * as takeProfit from '../take-profit/index.js';
 import * as windowExpiry from '../window-expiry/index.js';
 import * as tradeEvent from '../trade-event/index.js';
+import * as launchConfig from '../launch-config/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
+// Strategy composition integration (Story 7-12)
+import {
+  loadAllStrategies,
+  getLoadedStrategy,
+  setActiveStrategy as setActiveStrategyLoader,
+  getActiveStrategy as getActiveStrategyLoader,
+  getActiveStrategyName,
+  listLoadedStrategies,
+} from '../strategy/loader.js';
+import { discoverComponents } from '../strategy/logic.js';
+import { setCatalog, getCatalog } from '../strategy/state.js';
 
 import {
   OrchestratorError,
@@ -48,11 +60,14 @@ import {
   getModule,
   getAllModules,
   clearModules,
+  recordError,
+  getErrorCount1m,
 } from './state.js';
 import { ExecutionLoop } from './execution-loop.js';
 
 // Module references mapping for dynamic initialization
 const MODULE_MAP = {
+  'launch-config': launchConfig,
   persistence: persistence,
   polymarket: polymarket,
   spot: spot,
@@ -78,6 +93,8 @@ let state = createInitialState();
 let executionLoop = null;
 let stateUpdateInterval = null;
 let stateWriteInProgress = false;
+let loadedManifest = null;  // Launch manifest loaded from config/launch.json
+let activeComposedStrategy = null;  // Active composed strategy function (Story 7-12)
 
 /**
  * Write the main process PID file for watchdog integration
@@ -254,6 +271,9 @@ export async function init(cfg) {
     state.state = OrchestratorState.INITIALIZED;
     state.startedAt = new Date().toISOString();
 
+    // Initialize strategy composition framework (Story 7-12)
+    await initializeStrategies(cfg);
+
     // Start periodic state updates for kill switch recovery
     startPeriodicStateUpdates();
 
@@ -261,6 +281,7 @@ export async function init(cfg) {
       moduleCount: state.initializationOrder.length,
       modules: state.initializationOrder,
       pid: process.pid,
+      activeStrategy: getActiveStrategyName(),
     });
   } catch (err) {
     state.state = OrchestratorState.ERROR;
@@ -312,6 +333,22 @@ async function initializeModules(cfg) {
       setModule(entry.name, moduleInstance);
       state.initializationOrder.push(entry.name);
 
+      // Special handling: capture launch manifest after launch-config init
+      if (entry.name === 'launch-config') {
+        try {
+          loadedManifest = moduleInstance.loadManifest();
+          log.info('launch_manifest_loaded', {
+            strategies: loadedManifest.strategies,
+            position_size_dollars: loadedManifest.position_size_dollars,
+            max_exposure_dollars: loadedManifest.max_exposure_dollars,
+            kill_switch_enabled: loadedManifest.kill_switch_enabled,
+          });
+        } catch (err) {
+          log.warn('launch_manifest_load_failed', { error: err.message });
+          loadedManifest = null;
+        }
+      }
+
       // Special handling: wire up safety module with order-manager for auto-stop
       if (entry.name === 'safety') {
         const orderManagerModule = getModule('order-manager');
@@ -344,6 +381,160 @@ async function initializeModules(cfg) {
 }
 
 /**
+ * Initialize strategy composition framework (Story 7-12)
+ *
+ * Discovers components, loads strategies from config/strategies/,
+ * and sets the active strategy if specified in config or manifest.
+ *
+ * @param {Object} cfg - Full application configuration
+ * @returns {Promise<void>}
+ * @private
+ */
+async function initializeStrategies(cfg) {
+  try {
+    // 1. Discover all strategy components from filesystem
+    const catalog = await discoverComponents();
+    setCatalog(catalog);
+
+    const totalComponents = Object.values(catalog).reduce(
+      (sum, type) => sum + Object.keys(type).length,
+      0
+    );
+
+    log.info('strategy_components_discovered', {
+      total: totalComponents,
+      probability: Object.keys(catalog.probability || {}).length,
+      entry: Object.keys(catalog.entry || {}).length,
+      exit: Object.keys(catalog.exit || {}).length,
+      sizing: Object.keys(catalog.sizing || {}).length,
+      'price-source': Object.keys(catalog['price-source'] || {}).length,
+      analysis: Object.keys(catalog.analysis || {}).length,
+      'signal-generator': Object.keys(catalog['signal-generator'] || {}).length,
+    });
+
+    // 2. Load all strategies from config/strategies/
+    const loadResult = loadAllStrategies();
+    log.info('strategies_loaded', {
+      loaded: loadResult.loaded,
+      failed: loadResult.failed.map(f => f.file),
+    });
+
+    // 3. Set active strategy if specified
+    // Priority: config.strategy.active > manifest.strategies[0] > none
+    const configActive = cfg?.strategy?.active;
+    const manifestStrategies = loadedManifest?.strategies || [];
+    const defaultStrategy = configActive || (manifestStrategies.length > 0 ? manifestStrategies[0] : null);
+
+    if (defaultStrategy) {
+      const strategyDef = getLoadedStrategy(defaultStrategy);
+      if (strategyDef) {
+        try {
+          setActiveStrategyLoader(defaultStrategy);
+          activeComposedStrategy = createComposedStrategyExecutor(strategyDef, catalog);
+          log.info('active_strategy_set', {
+            strategy: defaultStrategy,
+            valid: strategyDef.validation.valid,
+            componentCount: Object.keys(strategyDef.components).length,
+          });
+        } catch (err) {
+          log.warn('active_strategy_set_failed', {
+            strategy: defaultStrategy,
+            error: err.message,
+          });
+        }
+      } else {
+        log.warn('configured_strategy_not_found', {
+          strategy: defaultStrategy,
+          available: listLoadedStrategies().map(s => s.name),
+        });
+      }
+    }
+  } catch (err) {
+    log.warn('strategy_initialization_failed', {
+      error: err.message,
+    });
+    // Continue without strategy composition - fall back to strategy-evaluator
+  }
+}
+
+/**
+ * Create a composed strategy executor function
+ *
+ * Wraps a strategy definition to provide a standardized execution interface
+ * compatible with the execution loop.
+ *
+ * @param {Object} strategyDef - Strategy definition from loader
+ * @param {Object} catalog - Component catalog
+ * @returns {Function} Strategy executor function
+ * @private
+ */
+function createComposedStrategyExecutor(strategyDef, catalog) {
+  const { components, config: strategyConfig, pipeline } = strategyDef;
+
+  return function executeComposedStrategy(context) {
+    const results = {
+      strategyName: strategyDef.name,
+      signals: [],
+      componentResults: {},
+    };
+
+    // Execute each component in pipeline order if defined
+    const order = pipeline?.order || Object.keys(components);
+
+    for (const slot of order) {
+      const versionIds = Array.isArray(components[slot]) ? components[slot] : [components[slot]];
+
+      for (const versionId of versionIds) {
+        if (!versionId) continue;
+
+        const component = catalog[getComponentType(versionId)]?.[versionId];
+        if (!component?.module?.evaluate) continue;
+
+        try {
+          const componentResult = component.module.evaluate(context, strategyConfig);
+          results.componentResults[versionId] = componentResult;
+
+          // Collect signals from signal-generating components
+          if (componentResult?.signal || componentResult?.signals) {
+            const signals = componentResult.signals || [componentResult.signal];
+            results.signals.push(...signals.filter(Boolean));
+          }
+        } catch (err) {
+          log.warn('component_execution_failed', {
+            strategy: strategyDef.name,
+            component: versionId,
+            error: err.message,
+          });
+        }
+      }
+    }
+
+    return results;
+  };
+}
+
+/**
+ * Get component type from version ID
+ *
+ * @param {string} versionId - Component version ID (e.g., "prob-spot-lag-v1")
+ * @returns {string} Component type
+ * @private
+ */
+function getComponentType(versionId) {
+  const prefixMap = {
+    prob: 'probability',
+    entry: 'entry',
+    exit: 'exit',
+    sizing: 'sizing',
+    src: 'price-source',
+    anal: 'analysis',
+    sig: 'signal-generator',
+  };
+  const prefix = versionId.split('-')[0];
+  return prefixMap[prefix] || 'unknown';
+}
+
+/**
  * Start the execution loop
  *
  * @throws {OrchestratorError} If not initialized
@@ -363,6 +554,9 @@ export function start() {
       modules: getAllModules(),
       log: child({ module: 'execution-loop' }),
       onError: handleLoopError,
+      // Story 7-12: Pass active composed strategy for multi-strategy support
+      composedStrategy: activeComposedStrategy,
+      composedStrategyName: getActiveStrategyName(),
     });
   }
 
@@ -442,9 +636,16 @@ export function getState() {
     modules,
     loop: loopState,
     errorCount: state.errorCount,
+    errorCount1m: getErrorCount1m(), // 1-minute error count for health endpoint
     recoveryCount: state.recoveryCount,
     lastError: state.lastError,
     startedAt: state.startedAt,
+    // Launch manifest for health endpoint (Story 8-3)
+    manifest: loadedManifest,
+    loadedStrategies: loadedManifest?.strategies ?? [],
+    // Strategy composition state (Story 7-12)
+    activeStrategy: getActiveStrategyName(),
+    availableStrategies: listLoadedStrategies().map(s => s.name),
   };
 }
 
@@ -495,6 +696,7 @@ export async function shutdown() {
   clearModules();
   state = createInitialState();
   state.stoppedAt = new Date().toISOString();
+  loadedManifest = null;
 
   log.info('orchestrator_shutdown_complete');
   log = null;
@@ -544,6 +746,7 @@ async function shutdownModules() {
  */
 function handleLoopError(err) {
   state.errorCount++;
+  recordError(); // Track timestamp for 1-minute error counting
   state.lastError = {
     code: err.code || 'UNKNOWN',
     message: err.message,
@@ -639,6 +842,148 @@ async function withTimeout(promise, ms, errorMessage) {
  */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Get the loaded launch manifest
+ *
+ * Returns the manifest loaded during initialization, or null if not loaded.
+ *
+ * @returns {Object|null} Launch manifest or null
+ */
+export function getLoadedManifest() {
+  return loadedManifest ? { ...loadedManifest } : null;
+}
+
+/**
+ * Get list of strategies allowed by manifest
+ *
+ * @returns {string[]} Array of strategy names from manifest
+ */
+export function getAllowedStrategies() {
+  return loadedManifest?.strategies ?? [];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRATEGY COMPOSITION FUNCTIONS (Story 7-12)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Set the active composed strategy at runtime
+ *
+ * Allows switching strategies without restarting the orchestrator.
+ * The strategy must be loaded and have valid component references.
+ *
+ * @param {string} strategyName - Name of strategy to activate
+ * @returns {Object} Result { success, strategyName, error? }
+ */
+export function setActiveStrategy(strategyName) {
+  ensureInitialized();
+
+  const strategyDef = getLoadedStrategy(strategyName);
+  if (!strategyDef) {
+    const available = listLoadedStrategies().map(s => s.name);
+    log.warn('strategy_not_found', { strategyName, available });
+    return {
+      success: false,
+      strategyName,
+      error: `Strategy not found: ${strategyName}. Available: ${available.join(', ')}`,
+    };
+  }
+
+  if (!strategyDef.validation.valid) {
+    log.warn('strategy_invalid', {
+      strategyName,
+      errors: strategyDef.validation.errors,
+    });
+    return {
+      success: false,
+      strategyName,
+      error: `Strategy has invalid component references: ${strategyDef.validation.errors?.join(', ')}`,
+    };
+  }
+
+  try {
+    setActiveStrategyLoader(strategyName);
+    activeComposedStrategy = createComposedStrategyExecutor(strategyDef, getCatalog());
+
+    // Update execution loop with new strategy
+    if (executionLoop) {
+      executionLoop.setComposedStrategy(activeComposedStrategy, strategyName);
+    }
+
+    log.info('active_strategy_changed', {
+      strategyName,
+      components: Object.keys(strategyDef.components),
+    });
+
+    return {
+      success: true,
+      strategyName,
+    };
+  } catch (err) {
+    log.error('strategy_activation_failed', {
+      strategyName,
+      error: err.message,
+    });
+    return {
+      success: false,
+      strategyName,
+      error: err.message,
+    };
+  }
+}
+
+/**
+ * Clear the active composed strategy
+ *
+ * Returns the execution loop to using the default strategy-evaluator module.
+ *
+ * @returns {Object} Result { success, previousStrategy }
+ */
+export function clearActiveStrategy() {
+  const previousStrategy = getActiveStrategyName();
+  activeComposedStrategy = null;
+
+  // Clear in loader
+  try {
+    // Reset the active strategy in the loader
+    if (getActiveStrategyLoader()) {
+      // There's no clearActiveStrategy in the loader, so we just clear our local state
+    }
+  } catch {
+    // Ignore - just clearing local state
+  }
+
+  // Update execution loop
+  if (executionLoop) {
+    executionLoop.setComposedStrategy(null, null);
+  }
+
+  log.info('active_strategy_cleared', { previousStrategy });
+
+  return {
+    success: true,
+    previousStrategy,
+  };
+}
+
+/**
+ * Get current active strategy name
+ *
+ * @returns {string|null} Active strategy name or null if using default
+ */
+export function getActiveStrategyNameFromOrchestrator() {
+  return getActiveStrategyName();
+}
+
+/**
+ * List all available strategies
+ *
+ * @returns {Object[]} Array of strategy summaries
+ */
+export function listAvailableStrategies() {
+  return listLoadedStrategies();
 }
 
 // Re-export types

@@ -217,6 +217,8 @@ describe('ExecutionLoop', () => {
         lastTickAt: null,
         tickIntervalMs: 100,
         tickInProgress: false,
+        activeStrategy: null,
+        usingComposedStrategy: false,
       });
     });
 

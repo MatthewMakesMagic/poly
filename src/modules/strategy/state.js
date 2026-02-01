@@ -13,11 +13,17 @@ let initialized = false;
 
 // In-memory component catalog
 // Structure: { probability: { 'prob-name-v1': componentInfo, ... }, ... }
+// Epic 6 types: probability, entry, exit, sizing
+// Epic 7 types: price-source, analysis, signal-generator
 let componentCatalog = {
   probability: {},
   entry: {},
   exit: {},
   sizing: {},
+  // Epic 7: Oracle Edge Infrastructure types
+  'price-source': {},
+  analysis: {},
+  'signal-generator': {},
 };
 
 // Statistics
@@ -133,6 +139,10 @@ export function resetState() {
     entry: {},
     exit: {},
     sizing: {},
+    // Epic 7: Oracle Edge Infrastructure types
+    'price-source': {},
+    analysis: {},
+    'signal-generator': {},
   };
   stats = {
     strategiesRegistered: 0,
@@ -154,6 +164,10 @@ export function getStateSnapshot() {
       entry: Object.keys(componentCatalog.entry).length,
       exit: Object.keys(componentCatalog.exit).length,
       sizing: Object.keys(componentCatalog.sizing).length,
+      // Epic 7: Oracle Edge Infrastructure types
+      'price-source': Object.keys(componentCatalog['price-source'] || {}).length,
+      analysis: Object.keys(componentCatalog.analysis || {}).length,
+      'signal-generator': Object.keys(componentCatalog['signal-generator'] || {}).length,
     },
   };
 }

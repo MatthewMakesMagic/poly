@@ -207,6 +207,9 @@ describe('Strategy Module Integration (Story 6.1)', () => {
         entry: {},
         exit: {},
         sizing: {},
+        'price-source': {},
+        analysis: {},
+        'signal-generator': {},
       });
     });
 
@@ -218,6 +221,9 @@ describe('Strategy Module Integration (Story 6.1)', () => {
         entry: {},
         exit: {},
         sizing: {},
+        'price-source': {},
+        analysis: {},
+        'signal-generator': {},
       });
     });
   });

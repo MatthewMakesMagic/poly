@@ -8,12 +8,19 @@ import { PolyError } from '../../types/index.js';
 
 /**
  * Component types supported by the registry
+ *
+ * Epic 6 original types: probability, entry, exit, sizing
+ * Epic 7 additions: price-source, analysis, signal-generator
  */
 export const ComponentType = {
   PROBABILITY: 'probability',
   ENTRY: 'entry',
   EXIT: 'exit',
   SIZING: 'sizing',
+  // Epic 7: Oracle Edge Infrastructure component types
+  PRICE_SOURCE: 'price-source',
+  ANALYSIS: 'analysis',
+  SIGNAL_GENERATOR: 'signal-generator',
 };
 
 /**
@@ -24,6 +31,10 @@ export const TypePrefix = {
   [ComponentType.ENTRY]: 'entry',
   [ComponentType.EXIT]: 'exit',
   [ComponentType.SIZING]: 'sizing',
+  // Epic 7: Oracle Edge Infrastructure type prefixes
+  [ComponentType.PRICE_SOURCE]: 'src',
+  [ComponentType.ANALYSIS]: 'anal',
+  [ComponentType.SIGNAL_GENERATOR]: 'sig',
 };
 
 /**

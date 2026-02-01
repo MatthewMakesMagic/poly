@@ -8,6 +8,18 @@
 import { OrchestratorState } from './types.js';
 
 /**
+ * Error timestamps for 1-minute error counting
+ * Used by health endpoint to report error_count_1m
+ */
+let errorTimestamps = [];
+
+/**
+ * Maximum number of error timestamps to keep in memory
+ * Prevents memory exhaustion during error storms (100 errors/sec = 30k in 5 min)
+ */
+const MAX_ERROR_TIMESTAMPS = 1000;
+
+/**
  * Module initialization order - critical for dependency management
  *
  * Order:
@@ -22,6 +34,8 @@ import { OrchestratorState } from './types.js';
  */
 export const MODULE_INIT_ORDER = [
   // Logger is initialized before orchestrator by app entry point, not managed here
+  // Launch-config - reads launch manifest, must be first to provide strategy filter
+  { name: 'launch-config', module: null, configKey: null },
   { name: 'persistence', module: null, configKey: 'database' },
   { name: 'polymarket', module: null, configKey: 'polymarket' },
   { name: 'spot', module: null, configKey: 'spot' },
@@ -111,4 +125,42 @@ export function clearModules() {
  */
 export function getModuleCount() {
   return Object.keys(moduleRefs).length;
+}
+
+/**
+ * Record an error timestamp for 1-minute error counting
+ *
+ * Called by orchestrator's handleLoopError() to track errors.
+ * Timestamps older than 5 minutes are pruned to save memory.
+ * Also enforces a hard cap to prevent memory exhaustion during error storms.
+ */
+export function recordError() {
+  const now = Date.now();
+  errorTimestamps.push(now);
+
+  // Prune old timestamps (older than 5 minutes to save memory)
+  errorTimestamps = errorTimestamps.filter((ts) => now - ts < 5 * 60 * 1000);
+
+  // Hard cap to prevent memory exhaustion during error storms
+  // Keep only the most recent timestamps if over limit
+  if (errorTimestamps.length > MAX_ERROR_TIMESTAMPS) {
+    errorTimestamps = errorTimestamps.slice(-MAX_ERROR_TIMESTAMPS);
+  }
+}
+
+/**
+ * Get count of errors in the last minute
+ *
+ * @returns {number} Number of errors recorded in the last 60 seconds
+ */
+export function getErrorCount1m() {
+  const oneMinuteAgo = Date.now() - 60 * 1000;
+  return errorTimestamps.filter((ts) => ts > oneMinuteAgo).length;
+}
+
+/**
+ * Clear all error timestamps (for testing)
+ */
+export function clearErrorTimestamps() {
+  errorTimestamps = [];
 }

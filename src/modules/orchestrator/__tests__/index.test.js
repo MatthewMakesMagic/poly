@@ -53,6 +53,39 @@ vi.mock('../../safety/index.js', () => ({
   isAutoStopped: vi.fn().mockReturnValue(false),
 }));
 
+vi.mock('../../launch-config/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({
+    initialized: true,
+    manifest: {
+      strategies: ['simple-threshold'],
+      position_size_dollars: 10,
+      max_exposure_dollars: 500,
+      symbols: ['BTC', 'ETH'],
+      kill_switch_enabled: true,
+    },
+  }),
+  loadManifest: vi.fn().mockReturnValue({
+    strategies: ['simple-threshold'],
+    position_size_dollars: 10,
+    max_exposure_dollars: 500,
+    symbols: ['BTC', 'ETH'],
+    kill_switch_enabled: true,
+  }),
+  updateManifest: vi.fn().mockReturnValue({
+    strategies: ['simple-threshold'],
+    position_size_dollars: 10,
+    max_exposure_dollars: 500,
+    symbols: ['BTC', 'ETH'],
+    kill_switch_enabled: true,
+  }),
+  listAvailableStrategies: vi.fn().mockReturnValue([
+    { name: 'simple-threshold', description: '70% threshold', dependencies: ['Epic 3'] },
+    { name: 'oracle-edge', description: 'Staleness fade', dependencies: ['Epic 7'] },
+  ]),
+}));
+
 vi.mock('../../logger/index.js', () => ({
   child: vi.fn().mockReturnValue({
     info: vi.fn(),
@@ -83,6 +116,7 @@ import * as polymarket from '../../../clients/polymarket/index.js';
 import * as spot from '../../../clients/spot/index.js';
 import * as positionManager from '../../position-manager/index.js';
 import * as orderManager from '../../order-manager/index.js';
+import * as launchConfig from '../../launch-config/index.js';
 import { OrchestratorErrorCodes, OrchestratorState } from '../types.js';
 import { writeSnapshot, buildSnapshot } from '../../../../kill-switch/state-snapshot.js';
 
@@ -513,6 +547,76 @@ describe('Orchestrator Module', () => {
 
       // Should still be running (not crashed)
       expect(orchestrator.getState().state).toBe(OrchestratorState.INITIALIZED);
+    });
+  });
+
+  describe('Launch Manifest Integration (Story 8-1)', () => {
+    it('initializes launch-config module first in order', async () => {
+      const initOrder = [];
+
+      launchConfig.init.mockImplementation(() => {
+        initOrder.push('launch-config');
+        return Promise.resolve();
+      });
+      persistence.init.mockImplementation(() => {
+        initOrder.push('persistence');
+        return Promise.resolve();
+      });
+
+      await orchestrator.init(mockConfig);
+
+      // launch-config should be first
+      expect(initOrder[0]).toBe('launch-config');
+    });
+
+    it('loads manifest after launch-config init', async () => {
+      await orchestrator.init(mockConfig);
+
+      // loadManifest should have been called
+      expect(launchConfig.loadManifest).toHaveBeenCalled();
+    });
+
+    it('exposes manifest in orchestrator state', async () => {
+      await orchestrator.init(mockConfig);
+
+      const state = orchestrator.getState();
+      expect(state.manifest).toBeDefined();
+      expect(state.manifest.strategies).toContain('simple-threshold');
+    });
+
+    it('exposes loadedStrategies from manifest', async () => {
+      await orchestrator.init(mockConfig);
+
+      const state = orchestrator.getState();
+      expect(state.loadedStrategies).toEqual(['simple-threshold']);
+    });
+
+    it('handles manifest load failure gracefully', async () => {
+      launchConfig.loadManifest.mockImplementationOnce(() => {
+        throw new Error('Manifest not found');
+      });
+
+      // Should not throw - graceful degradation
+      await orchestrator.init(mockConfig);
+
+      const state = orchestrator.getState();
+      // Manifest will be null but system still works
+      expect(state.state).toBe(OrchestratorState.INITIALIZED);
+    });
+
+    it('provides getAllowedStrategies() from manifest', async () => {
+      await orchestrator.init(mockConfig);
+
+      const allowed = orchestrator.getAllowedStrategies();
+      expect(allowed).toEqual(['simple-threshold']);
+    });
+
+    it('getLoadedManifest returns cloned manifest', async () => {
+      await orchestrator.init(mockConfig);
+
+      const manifest = orchestrator.getLoadedManifest();
+      expect(manifest.strategies).toEqual(['simple-threshold']);
+      expect(manifest.position_size_dollars).toBe(10);
     });
   });
 });

@@ -55,20 +55,23 @@ export function parseVersionId(versionId) {
     return null;
   }
 
-  // Match pattern: prefix-name-vN
-  const match = versionId.match(/^(prob|entry|exit|sizing)-(.+)-v(\d+)$/);
+  // Match pattern: prefix-name-vN (including Epic 7 prefixes: src, anal, sig)
+  const match = versionId.match(/^(prob|entry|exit|sizing|src|anal|sig)-(.+)-v(\d+)$/);
   if (!match) {
     return null;
   }
 
   const [, prefix, name, version] = match;
 
-  // Map prefix back to type
+  // Map prefix back to type (including Epic 7 types)
   const typeMap = {
     prob: ComponentType.PROBABILITY,
     entry: ComponentType.ENTRY,
     exit: ComponentType.EXIT,
     sizing: ComponentType.SIZING,
+    src: ComponentType.PRICE_SOURCE,
+    anal: ComponentType.ANALYSIS,
+    sig: ComponentType.SIGNAL_GENERATOR,
   };
 
   return {
@@ -132,16 +135,24 @@ export function validateComponentInterface(component) {
  * Scans src/modules/strategy/components/{type}/ directories
  * and validates each .js file exports required interface.
  *
+ * Epic 6 types: probability, entry, exit, sizing
+ * Epic 7 types: price-source, analysis, signal-generator
+ *
  * @param {string} [basePath] - Base path for component directories (defaults to ./components)
  * @returns {Promise<Object>} Component catalog by type
  */
 export async function discoverComponents(basePath) {
   const componentsPath = basePath || join(__dirname, 'components');
   const catalog = {
+    // Epic 6 original types
     probability: {},
     entry: {},
     exit: {},
     sizing: {},
+    // Epic 7: Oracle Edge Infrastructure types
+    'price-source': {},
+    analysis: {},
+    'signal-generator': {},
   };
 
   const types = Object.values(ComponentType);

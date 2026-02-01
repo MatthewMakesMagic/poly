@@ -33,7 +33,7 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-01-30
+generated: 2026-01-31
 project: poly
 project_key: NOKEY
 tracking_system: file-system
@@ -41,7 +41,7 @@ story_location: _bmad-output/implementation-artifacts
 
 development_status:
   # Epic 1: Foundation & Persistence
-  epic-1: in-progress
+  epic-1: done
   1-1-project-structure-configuration: done
   1-2-sqlite-database-core-schema: done
   1-3-write-ahead-logging: done
@@ -50,7 +50,7 @@ development_status:
   epic-1-retrospective: optional
 
   # Epic 2: Trading Operations
-  epic-2: in-progress
+  epic-2: done
   2-1-polymarket-api-client-integration: done
   2-2-order-manager-place-track-orders: done
   2-3-order-manager-partial-fills-cancellation: done
@@ -60,7 +60,7 @@ development_status:
   epic-2-retrospective: optional
 
   # Epic 3: Strategy Execution
-  epic-3: in-progress
+  epic-3: done
   3-1-orchestrator-module-execution-loop: done
   3-2-strategy-entry-evaluation: done
   3-3-position-sizing-liquidity: done
@@ -70,7 +70,7 @@ development_status:
   epic-3-retrospective: optional
 
   # Epic 4: Safety Controls
-  epic-4: in-progress
+  epic-4: done
   4-1-kill-switch-watchdog-process: done
   4-2-state-snapshot-on-kill: done
   4-3-drawdown-tracking: done
@@ -78,7 +78,7 @@ development_status:
   epic-4-retrospective: optional
 
   # Epic 5: Monitoring & Diagnostics
-  epic-5: in-progress
+  epic-5: done
   5-1-trade-event-logging-expected-vs-actual: done
   5-2-latency-slippage-recording: done
   5-3-divergence-detection: done
@@ -87,7 +87,7 @@ development_status:
   epic-5-retrospective: optional
 
   # Epic 6: Strategy Composition
-  epic-6: in-progress
+  epic-6: done
   6-1-strategy-component-registry: done
   6-2-strategy-composition: done
   6-3-strategy-forking: done
@@ -96,5 +96,30 @@ development_status:
   epic-6-retrospective: optional
 
   # Epic Extra: Scout Real-Time Monitor
-  epic-extra-scout: in-progress
+  epic-extra-scout: done
   E-1-scout-core-module: done
+
+  # Epic 7: Oracle Edge Infrastructure (NEW - from correct-course 2026-01-31)
+  epic-7: in-progress
+  7-1-rtds-websocket-client: review
+  7-2-feed-tick-logger: review
+  7-3-feed-divergence-tracker: review
+  7-4-oracle-update-pattern-tracker: review
+  7-5-oracle-update-predictor: review
+  7-6-oracle-staleness-detector: review
+  7-7-oracle-edge-signal-generator: review
+  7-8-signal-outcome-logger: review
+  7-9-strategy-quality-gate: review
+  7-10-window-timing-model: review
+  7-11-lag-tracker: review
+  7-12-strategy-composition-integration: in-progress
+  epic-7-retrospective: optional
+
+  # Epic 8: Launch Control & Deployment Pipeline (NEW - from correct-course 2026-02-01)
+  epic-8: done
+  8-1-launch-manifest: done
+  8-2-pre-flight-checks: done
+  8-3-health-endpoint-enhancement: done
+  8-4-deploy-command: done
+  8-5-post-deploy-verification: done
+  epic-8-retrospective: optional

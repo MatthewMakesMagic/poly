@@ -104,10 +104,15 @@ export async function init(config = {}) {
 
       log.info('components_discovered', {
         total: totalComponents,
+        // Epic 6 types
         probability: Object.keys(catalog.probability).length,
         entry: Object.keys(catalog.entry).length,
         exit: Object.keys(catalog.exit).length,
         sizing: Object.keys(catalog.sizing).length,
+        // Epic 7 types
+        'price-source': Object.keys(catalog['price-source'] || {}).length,
+        analysis: Object.keys(catalog.analysis || {}).length,
+        'signal-generator': Object.keys(catalog['signal-generator'] || {}).length,
       });
     } catch (err) {
       log.warn('component_discovery_failed', { error: err.message });
@@ -319,10 +324,15 @@ export async function rediscoverComponents(componentsPath) {
 
   log.info('components_rediscovered', {
     total: totalComponents,
+    // Epic 6 types
     probability: Object.keys(catalog.probability).length,
     entry: Object.keys(catalog.entry).length,
     exit: Object.keys(catalog.exit).length,
     sizing: Object.keys(catalog.sizing).length,
+    // Epic 7 types
+    'price-source': Object.keys(catalog['price-source'] || {}).length,
+    analysis: Object.keys(catalog.analysis || {}).length,
+    'signal-generator': Object.keys(catalog['signal-generator'] || {}).length,
   });
 
   return catalog;

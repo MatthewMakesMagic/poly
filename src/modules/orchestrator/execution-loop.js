@@ -22,12 +22,17 @@ export class ExecutionLoop {
    * @param {Object} params.modules - References to initialized modules
    * @param {Object} params.log - Logger instance
    * @param {Function} params.onError - Error handler callback
+   * @param {Function} [params.composedStrategy] - Active composed strategy function (Story 7-12)
+   * @param {string} [params.composedStrategyName] - Active composed strategy name
    */
-  constructor({ config, modules, log, onError }) {
+  constructor({ config, modules, log, onError, composedStrategy, composedStrategyName }) {
     this.config = config;
     this.modules = modules;
     this.log = log;
     this.onError = onError;
+    // Story 7-12: Composed strategy support
+    this.composedStrategy = composedStrategy || null;
+    this.composedStrategyName = composedStrategyName || null;
 
     // State
     this.state = LoopState.STOPPED;
@@ -35,6 +40,21 @@ export class ExecutionLoop {
     this.lastTickAt = null;
     this.tickInProgress = false;
     this.intervalId = null;
+  }
+
+  /**
+   * Set the active composed strategy at runtime (Story 7-12)
+   *
+   * @param {Function|null} strategy - Composed strategy function or null to clear
+   * @param {string|null} strategyName - Strategy name for logging
+   */
+  setComposedStrategy(strategy, strategyName) {
+    this.composedStrategy = strategy;
+    this.composedStrategyName = strategyName;
+    this.log.info('composed_strategy_updated', {
+      strategyName: strategyName || 'none (using default)',
+      hasStrategy: !!strategy,
+    });
   }
 
   /**
@@ -109,6 +129,9 @@ export class ExecutionLoop {
       lastTickAt: this.lastTickAt,
       tickIntervalMs: this.config.tickIntervalMs,
       tickInProgress: this.tickInProgress,
+      // Story 7-12: Strategy state
+      activeStrategy: this.composedStrategyName,
+      usingComposedStrategy: !!this.composedStrategy,
     };
   }
 
@@ -161,94 +184,123 @@ export class ExecutionLoop {
       }
 
       // 3. Evaluate strategy entry conditions (Story 3.2) - skip if auto-stopped
+      // Story 7-12: Support for composed strategies via strategy composition framework
       let entrySignals = [];
       let windows = [];
-      if (!entriesSkipped && this.modules['strategy-evaluator'] && spotData) {
-        const strategyEvaluator = this.modules['strategy-evaluator'];
-        if (typeof strategyEvaluator.evaluateEntryConditions === 'function') {
-          // TEMP SOLUTION: Fetch active windows from window-manager module
-          // Production should use WebSocket subscriptions for real-time updates
-          if (this.modules['window-manager'] && typeof this.modules['window-manager'].getActiveWindows === 'function') {
-            try {
-              windows = await this.modules['window-manager'].getActiveWindows();
-              if (windows.length > 0) {
-                this.log.debug('windows_loaded', {
-                  count: windows.length,
-                  cryptos: [...new Set(windows.map(w => w.crypto))],
-                });
-              }
-            } catch (windowErr) {
-              this.log.warn('window_manager_error', { error: windowErr.message });
-              windows = [];
+      if (!entriesSkipped && spotData) {
+        // TEMP SOLUTION: Fetch active windows from window-manager module
+        // Production should use WebSocket subscriptions for real-time updates
+        if (this.modules['window-manager'] && typeof this.modules['window-manager'].getActiveWindows === 'function') {
+          try {
+            windows = await this.modules['window-manager'].getActiveWindows();
+            if (windows.length > 0) {
+              this.log.debug('windows_loaded', {
+                count: windows.length,
+                cryptos: [...new Set(windows.map(w => w.crypto))],
+              });
+            }
+          } catch (windowErr) {
+            this.log.warn('window_manager_error', { error: windowErr.message });
+            windows = [];
+          }
+        }
+
+        const marketState = {
+          spot_price: spotData.price,
+          windows, // Now populated from window-manager module
+        };
+
+        // Story 7-12: Use composed strategy if available, otherwise fall back to strategy-evaluator
+        if (this.composedStrategy) {
+          // Execute composed strategy
+          try {
+            const strategyResult = this.composedStrategy(marketState);
+            entrySignals = strategyResult.signals || [];
+
+            if (entrySignals.length > 0) {
+              this.log.info('composed_strategy_signals', {
+                strategy: this.composedStrategyName,
+                signalCount: entrySignals.length,
+                componentResults: Object.keys(strategyResult.componentResults || {}),
+              });
+            }
+          } catch (strategyErr) {
+            this.log.error('composed_strategy_error', {
+              strategy: this.composedStrategyName,
+              error: strategyErr.message,
+            });
+            // Fall back to default strategy-evaluator on error
+            if (this.modules['strategy-evaluator']) {
+              entrySignals = this.modules['strategy-evaluator'].evaluateEntryConditions(marketState);
             }
           }
+        } else if (this.modules['strategy-evaluator']) {
+          // Default: use strategy-evaluator module
+          const strategyEvaluator = this.modules['strategy-evaluator'];
+          if (typeof strategyEvaluator.evaluateEntryConditions === 'function') {
+            entrySignals = strategyEvaluator.evaluateEntryConditions(marketState);
+          }
+        }
 
-          const marketState = {
-            spot_price: spotData.price,
-            windows, // Now populated from window-manager module
-          };
+        if (entrySignals && entrySignals.length > 0) {
+          this.log.info('entry_signals_generated', {
+            count: entrySignals.length,
+            strategy: this.composedStrategyName || 'default',
+            signals: entrySignals.map(s => ({
+              window_id: s.window_id,
+              direction: s.direction,
+              confidence: s.confidence,
+            })),
+          });
 
-          entrySignals = strategyEvaluator.evaluateEntryConditions(marketState);
+          // Record signal events via trade-event module (Story 5.1, 5.2)
+          if (this.modules['trade-event']) {
+            for (const signal of entrySignals) {
+              try {
+                // Capture market context at signal time (Story 5.2, AC3)
+                let marketContext = {
+                  bidAtSignal: signal.bid,
+                  askAtSignal: signal.ask,
+                  spreadAtSignal: signal.spread,
+                  depthAtSignal: signal.depth,
+                };
 
-          if (entrySignals && entrySignals.length > 0) {
-            this.log.info('entry_signals_generated', {
-              count: entrySignals.length,
-              signals: entrySignals.map(s => ({
-                window_id: s.window_id,
-                direction: s.direction,
-                confidence: s.confidence,
-              })),
-            });
-
-            // Record signal events via trade-event module (Story 5.1, 5.2)
-            if (this.modules['trade-event']) {
-              for (const signal of entrySignals) {
-                try {
-                  // Capture market context at signal time (Story 5.2, AC3)
-                  let marketContext = {
-                    bidAtSignal: signal.bid,
-                    askAtSignal: signal.ask,
-                    spreadAtSignal: signal.spread,
-                    depthAtSignal: signal.depth,
-                  };
-
-                  // If polymarket client is available, fetch real-time market context
-                  if (this.modules.polymarket && typeof this.modules.polymarket.getMarketContext === 'function' && signal.token_id) {
-                    try {
-                      const pmContext = await this.modules.polymarket.getMarketContext(signal.token_id);
-                      marketContext = {
-                        bidAtSignal: pmContext.bidAtSignal,
-                        askAtSignal: pmContext.askAtSignal,
-                        spreadAtSignal: pmContext.spreadAtSignal,
-                        depthAtSignal: pmContext.depthAtSignal,
-                      };
-                    } catch (ctxErr) {
-                      this.log.debug('market_context_fetch_fallback', {
-                        window_id: signal.window_id,
-                        error: ctxErr.message,
-                      });
-                      // Keep signal-provided values as fallback
-                    }
+                // If polymarket client is available, fetch real-time market context
+                if (this.modules.polymarket && typeof this.modules.polymarket.getMarketContext === 'function' && signal.token_id) {
+                  try {
+                    const pmContext = await this.modules.polymarket.getMarketContext(signal.token_id);
+                    marketContext = {
+                      bidAtSignal: pmContext.bidAtSignal,
+                      askAtSignal: pmContext.askAtSignal,
+                      spreadAtSignal: pmContext.spreadAtSignal,
+                      depthAtSignal: pmContext.depthAtSignal,
+                    };
+                  } catch (ctxErr) {
+                    this.log.debug('market_context_fetch_fallback', {
+                      window_id: signal.window_id,
+                      error: ctxErr.message,
+                    });
+                    // Keep signal-provided values as fallback
                   }
-
-                  // Store market context on signal for later use in recordEntry (Story 5.2, AC7)
-                  signal.marketContext = marketContext;
-                  signal.signalDetectedAt = new Date().toISOString();
-
-                  await this.modules['trade-event'].recordSignal({
-                    windowId: signal.window_id,
-                    strategyId: signal.strategy_id || 'default',
-                    signalType: 'entry',
-                    priceAtSignal: spotData?.price || signal.price,
-                    expectedPrice: signal.expected_price || signal.price,
-                    marketContext,
-                  });
-                } catch (tradeEventErr) {
-                  this.log.warn('trade_event_record_signal_failed', {
-                    window_id: signal.window_id,
-                    error: tradeEventErr.message,
-                  });
                 }
+
+                // Store market context on signal for later use in recordEntry (Story 5.2, AC7)
+                signal.marketContext = marketContext;
+                signal.signalDetectedAt = new Date().toISOString();
+
+                await this.modules['trade-event'].recordSignal({
+                  windowId: signal.window_id,
+                  strategyId: signal.strategy_id || this.composedStrategyName || 'default',
+                  signalType: 'entry',
+                  priceAtSignal: spotData?.price || signal.price,
+                  expectedPrice: signal.expected_price || signal.price,
+                  marketContext,
+                });
+              } catch (tradeEventErr) {
+                this.log.warn('trade_event_record_signal_failed', {
+                  window_id: signal.window_id,
+                  error: tradeEventErr.message,
+                });
               }
             }
           }
@@ -323,7 +375,7 @@ export class ExecutionLoop {
                     await this.modules['trade-event'].recordEntry({
                       windowId: signal.window_id,
                       orderId: orderResult.orderId,
-                      strategyId: signal.strategy_id || 'execution-test',
+                      strategyId: signal.strategy_id || this.composedStrategyName || 'execution-test',
                       timestamps: {
                         signalDetectedAt: signal.signalDetectedAt,
                         orderSubmittedAt: orderResult.timestamps?.orderSubmittedAt,

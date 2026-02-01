@@ -11,7 +11,12 @@
     "exec:check": "node scripts/test_order_simple.mjs check",
     "exec:book": "node scripts/test_order_simple.mjs book",
     "exec:roundtrip": "node scripts/test_roundtrip.mjs",
-    "exec:roundtrip:dry": "node scripts/test_roundtrip.mjs --dry-run"
+    "exec:roundtrip:dry": "node scripts/test_roundtrip.mjs --dry-run",
+    "launch:config": "node scripts/launch-config.mjs",
+    "preflight": "node scripts/preflight.mjs",
+    "backtest": "node scripts/backtest.mjs",
+    "verify": "node scripts/verify.mjs",
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
