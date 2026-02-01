@@ -13,5 +13,9 @@
   "edge": {
     "min_edge_threshold": 0.10,
     "max_edge_threshold": 0.50
+  },
+  "window_timing": {
+    "min_time_remaining_ms": 30000,
+    "max_time_remaining_ms": 600000
   }
 }

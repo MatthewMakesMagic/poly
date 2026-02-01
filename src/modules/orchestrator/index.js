@@ -505,6 +505,30 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
 
     // Evaluate each window through the component pipeline
     for (const window of windows) {
+      // Story 7-19: Window timing filter - only enter windows in the valid time range
+      // Prevents entering windows that just started (next window) or are about to expire
+      const timeRemainingMs = window.time_remaining_ms || window.timeRemaining || 0;
+      const minTimeMs = strategyConfig?.window_timing?.min_time_remaining_ms ?? 30000;  // Default 30s
+      const maxTimeMs = strategyConfig?.window_timing?.max_time_remaining_ms ?? 600000; // Default 10min
+
+      if (timeRemainingMs < minTimeMs) {
+        log.debug('window_skipped_too_late', {
+          window_id: window.window_id,
+          time_remaining_ms: timeRemainingMs,
+          min_required_ms: minTimeMs,
+        });
+        continue;
+      }
+
+      if (timeRemainingMs > maxTimeMs) {
+        log.debug('window_skipped_too_early', {
+          window_id: window.window_id,
+          time_remaining_ms: timeRemainingMs,
+          max_allowed_ms: maxTimeMs,
+        });
+        continue;
+      }
+
       // Story 7-14: Build per-window context with correct price types
       // - oracle_price: Crypto dollar price for Black-Scholes S (e.g., $95,000)
       // - reference_price: Strike price from market question for Black-Scholes K (e.g., $94,500)

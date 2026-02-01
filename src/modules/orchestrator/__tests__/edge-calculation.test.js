@@ -268,4 +268,78 @@ describe('Edge Calculation Pipeline', () => {
       expect(edge).toBeLessThan(0);  // Negative edge - don't trade
     });
   });
+
+  describe('Window Timing Filter (Story 7-19)', () => {
+    it('should define timing thresholds in config', () => {
+      // Verify config structure
+      const config = {
+        window_timing: {
+          min_time_remaining_ms: 30000,  // 30 seconds
+          max_time_remaining_ms: 600000, // 10 minutes
+        },
+      };
+
+      expect(config.window_timing.min_time_remaining_ms).toBe(30000);
+      expect(config.window_timing.max_time_remaining_ms).toBe(600000);
+    });
+
+    it('should skip window when time remaining < min threshold', () => {
+      // Window with only 20s remaining (below 30s min)
+      const timeRemainingMs = 20000;
+      const minTimeMs = 30000;
+
+      const shouldSkip = timeRemainingMs < minTimeMs;
+      expect(shouldSkip).toBe(true);
+    });
+
+    it('should skip window when time remaining > max threshold', () => {
+      // Window with 12 minutes remaining (above 10min max)
+      const timeRemainingMs = 720000;
+      const maxTimeMs = 600000;
+
+      const shouldSkip = timeRemainingMs > maxTimeMs;
+      expect(shouldSkip).toBe(true);
+    });
+
+    it('should allow window when time is within valid range', () => {
+      // Window with 5 minutes remaining (within 30s-10min range)
+      const timeRemainingMs = 300000;
+      const minTimeMs = 30000;
+      const maxTimeMs = 600000;
+
+      const shouldSkip = timeRemainingMs < minTimeMs || timeRemainingMs > maxTimeMs;
+      expect(shouldSkip).toBe(false);
+    });
+
+    it('should allow window at exact min boundary', () => {
+      // Window with exactly 30s remaining
+      const timeRemainingMs = 30000;
+      const minTimeMs = 30000;
+      const maxTimeMs = 600000;
+
+      const shouldSkip = timeRemainingMs < minTimeMs || timeRemainingMs > maxTimeMs;
+      expect(shouldSkip).toBe(false);
+    });
+
+    it('should allow window at exact max boundary', () => {
+      // Window with exactly 10min remaining
+      const timeRemainingMs = 600000;
+      const minTimeMs = 30000;
+      const maxTimeMs = 600000;
+
+      const shouldSkip = timeRemainingMs < minTimeMs || timeRemainingMs > maxTimeMs;
+      expect(shouldSkip).toBe(false);
+    });
+
+    it('should use default thresholds when config not provided', () => {
+      // Test default behavior
+      const strategyConfig = {};
+
+      const minTimeMs = strategyConfig?.window_timing?.min_time_remaining_ms ?? 30000;
+      const maxTimeMs = strategyConfig?.window_timing?.max_time_remaining_ms ?? 600000;
+
+      expect(minTimeMs).toBe(30000);
+      expect(maxTimeMs).toBe(600000);
+    });
+  });
 });

@@ -577,6 +577,72 @@ async function checkSafeguardsConfig() {
 }
 
 /**
+ * Test window timing config is valid (Story 7-19)
+ * @returns {Promise<CheckResult>}
+ */
+async function checkWindowTimingConfig() {
+  const configPath = 'config/launch.json';
+
+  try {
+    const content = readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(content);
+
+    if (!config.window_timing) {
+      return {
+        name: 'Window Timing Config',
+        pass: false,
+        error: 'Missing "window_timing" section in launch.json',
+      };
+    }
+
+    const { min_time_remaining_ms, max_time_remaining_ms } = config.window_timing;
+
+    // Validate min threshold
+    if (typeof min_time_remaining_ms !== 'number' || min_time_remaining_ms < 0) {
+      return {
+        name: 'Window Timing Config',
+        pass: false,
+        error: `Invalid min_time_remaining_ms: ${min_time_remaining_ms}`,
+      };
+    }
+
+    // Validate max threshold
+    if (typeof max_time_remaining_ms !== 'number' || max_time_remaining_ms <= 0) {
+      return {
+        name: 'Window Timing Config',
+        pass: false,
+        error: `Invalid max_time_remaining_ms: ${max_time_remaining_ms}`,
+      };
+    }
+
+    // Validate min < max
+    if (min_time_remaining_ms >= max_time_remaining_ms) {
+      return {
+        name: 'Window Timing Config',
+        pass: false,
+        error: `min (${min_time_remaining_ms}) >= max (${max_time_remaining_ms})`,
+      };
+    }
+
+    // Convert to human-readable
+    const minSec = (min_time_remaining_ms / 1000).toFixed(0);
+    const maxMin = (max_time_remaining_ms / 60000).toFixed(1);
+
+    return {
+      name: 'Window Timing Config',
+      pass: true,
+      details: `min=${minSec}s max=${maxMin}min`,
+    };
+  } catch (err) {
+    return {
+      name: 'Window Timing Config',
+      pass: false,
+      error: `Config error: ${err.message}`,
+    };
+  }
+}
+
+/**
  * Format verification results for console output
  * @param {CheckResult[]} results
  */
@@ -617,6 +683,7 @@ async function main() {
   results.push(await checkVolatilityLookback());
   results.push(await checkEvaluateFunction());
   results.push(await checkSafeguardsConfig());
+  results.push(await checkWindowTimingConfig());
 
   // Display results
   formatResults(results);
@@ -635,6 +702,7 @@ export {
   checkVolatilityLookback,
   checkEvaluateFunction,
   checkSafeguardsConfig,
+  checkWindowTimingConfig,
   formatResults,
 };
 
