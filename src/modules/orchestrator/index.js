@@ -513,7 +513,9 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
         symbol: (window.crypto || window.symbol || 'btc').toLowerCase(),
         window_id: window.window_id || window.id,
         market_price: tokenPrice,
-        token_id: window.token_id,
+        token_id: window.token_id_up || window.token_id,  // Use UP token for long entries
+        token_id_up: window.token_id_up,
+        token_id_down: window.token_id_down,
         market_id: window.market_id,
         underlying_price: spotPrice, // Keep crypto dollar price for reference
       };
