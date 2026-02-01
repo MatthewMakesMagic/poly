@@ -24,6 +24,7 @@ import * as polymarket from '../../clients/polymarket/index.js';
 import * as spot from '../../clients/spot/index.js';
 import * as windowManager from '../window-manager/index.js';
 import * as positionManager from '../position-manager/index.js';
+import * as safeguards from '../position-manager/safeguards.js';
 import * as orderManager from '../order-manager/index.js';
 import * as safety from '../safety/index.js';
 import * as strategyEvaluator from '../strategy-evaluator/index.js';
@@ -73,6 +74,7 @@ const MODULE_MAP = {
   spot: spot,
   'window-manager': windowManager,
   'position-manager': positionManager,
+  'safeguards': safeguards,
   'order-manager': orderManager,
   'safety': safety,
   'strategy-evaluator': strategyEvaluator,
@@ -503,21 +505,42 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
 
     // Evaluate each window through the component pipeline
     for (const window of windows) {
-      // Build per-window context for components
-      // Note: For binary markets, spotPrice is the TOKEN price (0-1), not crypto dollar price
+      // Story 7-14: Build per-window context with correct price types
+      // - oracle_price: Crypto dollar price for Black-Scholes S (e.g., $95,000)
+      // - reference_price: Strike price from market question for Black-Scholes K (e.g., $94,500)
+      // - market_price: Token price (0-1) for edge calculation
       const tokenPrice = window.market_price || window.yes_price || 0.5;
+      const referencePrice = window.reference_price;
+
+      // Story 7-15: Skip windows without reference price (can't calculate probability)
+      if (!referencePrice) {
+        log.debug('window_skipped_no_reference_price', {
+          window_id: window.window_id,
+          question: window.question,
+        });
+        continue;
+      }
+
       const windowContext = {
-        spotPrice: tokenPrice,  // Token price (probability 0-1)
-        targetPrice: 0.5, // Binary market midpoint (strike)
+        // Probability model inputs (Black-Scholes)
+        oracle_price: spotPrice,      // S: Crypto dollar price (e.g., $95,000)
+        reference_price: referencePrice, // K: Strike from market question (e.g., $94,500)
         timeToExpiry: window.time_remaining_ms || window.timeRemaining || 0,
         symbol: (window.crypto || window.symbol || 'btc').toLowerCase(),
+
+        // Edge calculation inputs
+        market_price: tokenPrice,     // Token price (0-1) for comparing to model probability
+
+        // Legacy fields for backwards compatibility
+        spotPrice: spotPrice,         // Crypto dollar price (deprecated name)
+        targetPrice: referencePrice,  // Strike price (deprecated name)
+
+        // Window identification
         window_id: window.window_id || window.id,
-        market_price: tokenPrice,
         token_id: window.token_id_up || window.token_id,  // Use UP token for long entries
         token_id_up: window.token_id_up,
         token_id_down: window.token_id_down,
         market_id: window.market_id,
-        underlying_price: spotPrice, // Keep crypto dollar price for reference
       };
 
       // Execute each component in pipeline order
@@ -537,18 +560,68 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
             const componentResult = component.module.evaluate(windowContext, strategyConfig);
             results.componentResults[`${window.window_id}:${versionId}`] = componentResult;
 
-            // Check if component generated an entry signal
-            if (componentResult?.signal === 'entry' || componentResult?.probability > 0.7) {
-              windowSignal = {
+            // Story 7-16: Edge-based signal generation
+            // Only generate entry signal if there's positive edge (model > market)
+            const modelProbability = componentResult?.probability;
+            const marketPrice = windowContext.market_price;
+
+            if (modelProbability != null && marketPrice != null) {
+              const edge = modelProbability - marketPrice;
+              const minEdgeThreshold = strategyConfig?.edge?.min_edge_threshold ?? 0.10;
+              const maxEdgeThreshold = strategyConfig?.edge?.max_edge_threshold ?? 0.50;
+
+              // Log edge calculation
+              log.debug('edge_calculated', {
                 window_id: windowContext.window_id,
-                token_id: windowContext.token_id,
-                market_id: windowContext.market_id,
-                direction: 'long',
-                confidence: componentResult.probability || 0.7,
-                market_price: windowContext.market_price,
-                strategy_id: strategyDef.name,
+                symbol: windowContext.symbol,
+                model_probability: modelProbability,
+                market_price: marketPrice,
+                edge,
+                min_threshold: minEdgeThreshold,
+              });
+
+              // Check for suspicious edge (too high = possible stale data)
+              if (edge > maxEdgeThreshold) {
+                log.warn('edge_suspicious', {
+                  window_id: windowContext.window_id,
+                  edge,
+                  max_threshold: maxEdgeThreshold,
+                  reason: 'Edge too high - possible stale data or market issue',
+                });
+                // Skip this window - edge is suspiciously high
+                continue;
+              }
+
+              // Generate signal only if positive edge above threshold
+              if (edge >= minEdgeThreshold) {
+                windowSignal = {
+                  window_id: windowContext.window_id,
+                  token_id: windowContext.token_id,
+                  market_id: windowContext.market_id,
+                  direction: 'long',
+                  confidence: modelProbability,
+                  market_price: marketPrice,
+                  edge,
+                  strategy_id: strategyDef.name,
+                  component: versionId,
+                  oracle_price: windowContext.oracle_price,
+                  reference_price: windowContext.reference_price,
+                };
+
+                log.info('edge_signal_generated', {
+                  window_id: windowContext.window_id,
+                  symbol: windowContext.symbol,
+                  model_probability: modelProbability,
+                  market_price: marketPrice,
+                  edge,
+                });
+              }
+            } else if (componentResult?.signal === 'entry') {
+              // Fallback for components that don't return probability
+              log.warn('legacy_signal_without_edge', {
+                window_id: windowContext.window_id,
                 component: versionId,
-              };
+              });
             }
           } catch (err) {
             log.warn('component_execution_failed', {

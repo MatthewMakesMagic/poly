@@ -16,6 +16,7 @@
     "preflight": "node scripts/preflight.mjs",
     "backtest": "node scripts/backtest.mjs",
     "verify": "node scripts/verify.mjs",
+    "verify:edge": "node scripts/verify-edge.mjs",
     "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {

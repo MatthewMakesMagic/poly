@@ -308,11 +308,34 @@ export class ExecutionLoop {
       }
 
       // 4. Process entry signals through position sizing (Story 3.3)
+      // Story 8-7: Reset per-tick entry counter at start of entry processing
+      if (this.modules.safeguards) {
+        this.modules.safeguards.resetTickEntries();
+      }
+
       let sizingResults = [];
+      let safeguardsBlocked = 0;
       if (!entriesSkipped && entrySignals.length > 0 && this.modules['position-sizer']) {
         const positionSizer = this.modules['position-sizer'];
 
         for (const signal of entrySignals) {
+          // Story 8-7: Check safeguards before processing entry
+          if (this.modules.safeguards) {
+            const openPositions = this.modules['position-manager']?.getPositions?.() || [];
+            const safeguardCheck = this.modules.safeguards.canEnterPosition(signal, openPositions);
+
+            if (!safeguardCheck.allowed) {
+              this.log.info('entry_blocked_by_safeguards', {
+                window_id: signal.window_id,
+                symbol: signal.symbol,
+                reason: safeguardCheck.reason,
+                details: safeguardCheck.details,
+              });
+              safeguardsBlocked++;
+              continue; // Skip this signal
+            }
+          }
+
           try {
             const sizingResult = await positionSizer.calculateSize(signal, {
               getOrderBook: this.modules.polymarket?.getOrderBook?.bind(this.modules.polymarket),
@@ -368,6 +391,11 @@ export class ExecutionLoop {
                       size: sizingResult.actual_size,
                       entry_price: position.entry_price,
                     });
+
+                    // Story 8-7: Record entry with safeguards for rate limiting / duplicate prevention
+                    if (this.modules.safeguards) {
+                      this.modules.safeguards.recordEntry(signal.window_id, signal.symbol);
+                    }
                   }
 
                   // Record entry event for diagnostics (Story 5.2)
@@ -673,6 +701,7 @@ export class ExecutionLoop {
         drawdownPct: drawdownCheck.current,
         entriesSkipped,
         entrySignalsCount: entrySignals.length,
+        safeguardsBlocked,
         sizingResultsCount: sizingResults.length,
         sizingSuccessCount: sizingResults.filter(r => r.success).length,
         stopLossEvaluated: stopLossResults.summary.evaluated,

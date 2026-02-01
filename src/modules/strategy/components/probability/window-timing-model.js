@@ -232,8 +232,9 @@ export function calculateProbability(oraclePrice, strike, timeToExpiryMs, symbol
     );
   }
 
-  // Get volatility for symbol
-  const sigma = getVolatilityForCalculation(symbol);
+  // Get volatility for symbol, scaled to window duration
+  // Short windows use short-term vol, longer windows use long-term vol
+  const sigma = getVolatilityForCalculation(symbol, timeToExpiryMs);
 
   // Convert time to years
   const T = timeToExpiryMs / (365.25 * 24 * 60 * 60 * 1000);
@@ -372,9 +373,10 @@ export function calculateRealizedVolatility(symbol, lookbackMs = null) {
  * Get volatility for a symbol, using cache if valid
  *
  * @param {string} symbol - Cryptocurrency symbol
+ * @param {number} [windowDurationMs] - Window duration for scaling lookback
  * @returns {number} Volatility (cached or freshly calculated)
  */
-export function getVolatility(symbol) {
+export function getVolatility(symbol, windowDurationMs = null) {
   ensureInitialized();
 
   if (!SUPPORTED_SYMBOLS.includes(symbol)) {
@@ -385,6 +387,15 @@ export function getVolatility(symbol) {
     );
   }
 
+  // Determine appropriate lookback based on window duration
+  // Short windows (< 30 min) → use short-term vol
+  // Longer windows → use long-term vol
+  const useShortTerm = windowDurationMs && windowDurationMs < 30 * 60 * 1000;
+  const lookbackMs = useShortTerm
+    ? config.volatility.shortTermLookbackMs
+    : config.volatility.longTermLookbackMs;
+
+  const cacheKey = `${symbol}_${useShortTerm ? 'short' : 'long'}`;
   const cached = volatilityCache[symbol];
   const now = Date.now();
 
@@ -396,15 +407,25 @@ export function getVolatility(symbol) {
     }
   }
 
-  // Recalculate
-  const sigma = calculateRealizedVolatility(symbol);
+  // Recalculate with appropriate lookback
+  const sigma = calculateRealizedVolatility(symbol, lookbackMs);
 
   if (sigma !== null) {
     volatilityCache[symbol] = {
       sigma,
       lastCalculated: new Date().toISOString(),
-      dataPoints: sigma > 0 ? 100 : 0, // Estimate - actual count from query
+      dataPoints: sigma > 0 ? 100 : 0,
+      lookbackMs,
     };
+
+    log.debug('volatility_selected', {
+      symbol,
+      sigma,
+      window_duration_ms: windowDurationMs,
+      lookback_ms: lookbackMs,
+      type: useShortTerm ? 'short_term' : 'long_term',
+    });
+
     return sigma;
   }
 
@@ -416,11 +437,12 @@ export function getVolatility(symbol) {
  * Get volatility for probability calculation (with fallback)
  *
  * @param {string} symbol - Cryptocurrency symbol
+ * @param {number} [windowDurationMs] - Window duration for scaling lookback
  * @returns {number} Volatility to use
  */
-function getVolatilityForCalculation(symbol) {
+function getVolatilityForCalculation(symbol, windowDurationMs = null) {
   try {
-    return getVolatility(symbol);
+    return getVolatility(symbol, windowDurationMs);
   } catch (err) {
     log.warn('volatility_fallback', {
       symbol,
@@ -758,29 +780,55 @@ function checkCalibrationAlerts() {
 /**
  * Evaluate probability (standard component interface)
  *
+ * Story 7-14: Updated to use correct price inputs
+ * - oracle_price (or spotPrice): Crypto dollar price for Black-Scholes S
+ * - reference_price (or targetPrice): Strike price from market question for Black-Scholes K
+ * - market_price: Token price (0-1) for edge calculation (passed through)
+ *
  * @param {Object} context - Market and strategy context
- * @param {number} context.spotPrice - Current oracle price
- * @param {number} context.targetPrice - Strike price
+ * @param {number} context.oracle_price - Crypto dollar price (e.g., $95,000)
+ * @param {number} context.reference_price - Strike price from market (e.g., $94,500)
+ * @param {number} context.market_price - Token price (0-1) for edge calculation
  * @param {number} context.timeToExpiry - Time to expiry in ms
- * @param {string} context.symbol - Cryptocurrency symbol
+ * @param {string} context.symbol - Cryptocurrency symbol (lowercase)
  * @param {Object} config - Component configuration (unused, uses module config)
- * @returns {Object} Evaluation result
+ * @returns {Object} Evaluation result with probability and market_price for edge calc
  */
 export function evaluate(context, componentConfig) {
-  const { spotPrice, targetPrice, timeToExpiry, symbol } = context;
+  // Story 7-14: Use new field names with fallback to legacy names
+  const oraclePrice = context.oracle_price || context.spotPrice;
+  const referencePrice = context.reference_price || context.targetPrice;
+  const { timeToExpiry, symbol, market_price } = context;
 
-  const result = calculateProbability(spotPrice, targetPrice, timeToExpiry, symbol);
+  // Validate we have the required inputs
+  if (!oraclePrice || !referencePrice) {
+    log.warn('probability_eval_missing_inputs', {
+      oracle_price: oraclePrice,
+      reference_price: referencePrice,
+      symbol,
+    });
+    return {
+      probability: null,
+      signal: 'hold',
+      error: 'Missing oracle_price or reference_price',
+    };
+  }
 
-  // Determine signal based on probability
+  const result = calculateProbability(oraclePrice, referencePrice, timeToExpiry, symbol);
+
+  // Story 7-16: Don't determine signal here - let edge calculation do it
+  // Just return the probability and market_price for edge calculation
+  // Legacy signal logic kept for backwards compatibility but should not be used
   let signal = 'hold';
   if (result.p_up > 0.7) {
-    signal = 'entry';
+    signal = 'entry';  // Legacy - edge calculation should override this
   } else if (result.p_up < 0.3) {
     signal = 'exit';
   }
 
   return {
     probability: result.p_up,
+    market_price,  // Pass through for edge calculation
     signal,
     details: {
       p_up: result.p_up,
@@ -788,6 +836,8 @@ export function evaluate(context, componentConfig) {
       d2: result.d2,
       sigma_used: result.sigma_used,
       vol_surprise: result.vol_surprise,
+      oracle_price: oraclePrice,
+      reference_price: referencePrice,
     },
   };
 }

@@ -27,6 +27,51 @@ let log = null;
 let initialized = false;
 let config = null;
 
+/**
+ * Parse reference price from market question
+ *
+ * Extracts the strike/reference price from questions like:
+ * - "Will BTC be above $94,500 at 12:15 UTC?"
+ * - "Will ETH be above $3,250.50 at 12:30 UTC?"
+ * - "Will SOL be above $185 at 12:00 UTC?"
+ *
+ * @param {string} question - Market question text
+ * @returns {number|null} Reference price or null if parsing fails
+ */
+export function parseReferencePrice(question) {
+  if (!question || typeof question !== 'string') {
+    return null;
+  }
+
+  // Pattern: "above $X" or "above $X.XX" with optional commas
+  // Handles: $94,500 | $3,250.50 | $185 | $94500
+  const patterns = [
+    /above\s*\$\s*([\d,]+(?:\.\d+)?)/i,   // "above $94,500" or "above $ 94,500"
+    />\s*\$\s*([\d,]+(?:\.\d+)?)/i,        // "> $94,500"
+    /over\s*\$\s*([\d,]+(?:\.\d+)?)/i,     // "over $94,500"
+  ];
+
+  for (const pattern of patterns) {
+    const match = question.match(pattern);
+    if (match && match[1]) {
+      // Remove commas and parse as float
+      const priceStr = match[1].replace(/,/g, '');
+      const price = parseFloat(priceStr);
+
+      if (!isNaN(price) && price > 0) {
+        return price;
+      }
+    }
+  }
+
+  // Log warning for unparseable questions
+  if (log) {
+    log.warn('reference_price_parse_failed', { question });
+  }
+
+  return null;
+}
+
 // Cache to reduce API calls
 let windowCache = {
   windows: [],
@@ -105,9 +150,13 @@ export async function fetchMarket(crypto, epoch) {
       const tokenIds = JSON.parse(market.clobTokenIds || '[]');
       const prices = JSON.parse(market.outcomePrices || '[]');
 
+      // Story 7-15: Parse reference price from question (e.g., "$94,500" from "Will BTC be above $94,500?")
+      const referencePrice = parseReferencePrice(market.question);
+
       return {
         slug,
         question: market.question,
+        referencePrice,  // Strike price for probability calculation
         upTokenId: tokenIds[0],
         downTokenId: tokenIds[1],
         upPrice: parseFloat(prices[0]) || 0.5,
@@ -216,6 +265,9 @@ export async function getActiveWindows() {
             epoch: epochData.epoch,
             crypto,
             end_time: epochData.endTime,
+            // Story 7-15: Reference price (strike) for probability calculation
+            reference_price: market.referencePrice,
+            question: market.question,
           });
         }
       } catch (error) {

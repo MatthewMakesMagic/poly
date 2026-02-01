@@ -42,6 +42,8 @@ export const MODULE_INIT_ORDER = [
   // TEMP SOLUTION: Window manager for fetching active 15-min markets
   { name: 'window-manager', module: null, configKey: null },
   { name: 'position-manager', module: null, configKey: null },
+  // Safeguards module - entry rate limiting, duplicate prevention (Story 8-7)
+  { name: 'safeguards', module: null, configKey: null },
   { name: 'order-manager', module: null, configKey: null },
   // Safety module - after order-manager so it can reference it for auto-stop
   { name: 'safety', module: null, configKey: null },

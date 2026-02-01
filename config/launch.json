@@ -3,5 +3,15 @@
   "position_size_dollars": 2,
   "max_exposure_dollars": 1000,
   "symbols": ["BTC", "ETH", "SOL", "XRP"],
-  "kill_switch_enabled": true
+  "kill_switch_enabled": true,
+  "safeguards": {
+    "max_concurrent_positions": 8,
+    "min_entry_interval_ms": 5000,
+    "max_entries_per_tick": 2,
+    "duplicate_window_prevention": true
+  },
+  "edge": {
+    "min_edge_threshold": 0.10,
+    "max_edge_threshold": 0.50
+  }
 }

@@ -113,13 +113,21 @@ development_status:
   7-10-window-timing-model: review
   7-11-lag-tracker: review
   7-12-strategy-composition-integration: in-progress
+  # NEW stories from Sprint Change Proposal 2026-02-01 (Probability Model Fix)
+  7-13-data-contract-integration-tests: backlog
+  7-14-correct-probability-model-inputs: backlog
+  7-15-market-reference-price-parsing: backlog
+  7-16-edge-based-signal-generation: backlog
   epic-7-retrospective: optional
 
   # Epic 8: Launch Control & Deployment Pipeline (NEW - from correct-course 2026-02-01)
-  epic-8: done
+  # REVERTED to in-progress per Sprint Change Proposal 2026-02-01
+  epic-8: in-progress
   8-1-launch-manifest: done
   8-2-pre-flight-checks: done
   8-3-health-endpoint-enhancement: done
   8-4-deploy-command: done
   8-5-post-deploy-verification: done
+  8-6-railway-api-kill-switch: backlog
+  8-7-position-entry-safeguards: backlog
   epic-8-retrospective: optional

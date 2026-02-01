@@ -31,6 +31,68 @@ describe('Window Manager Module', () => {
     await windowManager.shutdown().catch(() => {});
   });
 
+  describe('parseReferencePrice', () => {
+    it('should parse standard question format: "Will BTC be above $94,500 at..."', () => {
+      const price = windowManager.parseReferencePrice('Will BTC be above $94,500 at 12:15 UTC?');
+      expect(price).toBe(94500);
+    });
+
+    it('should parse price with decimals: "$3,250.50"', () => {
+      const price = windowManager.parseReferencePrice('Will ETH be above $3,250.50 at 12:00 UTC?');
+      expect(price).toBe(3250.50);
+    });
+
+    it('should parse price without commas: "$185"', () => {
+      const price = windowManager.parseReferencePrice('Will SOL be above $185 at 12:00 UTC?');
+      expect(price).toBe(185);
+    });
+
+    it('should parse price with space after $: "$ 94,500"', () => {
+      const price = windowManager.parseReferencePrice('Will BTC be above $ 94,500 at 12:00 UTC?');
+      expect(price).toBe(94500);
+    });
+
+    it('should handle "> $X" format', () => {
+      const price = windowManager.parseReferencePrice('Will BTC > $95,000 by end of window?');
+      expect(price).toBe(95000);
+    });
+
+    it('should handle "over $X" format', () => {
+      const price = windowManager.parseReferencePrice('Will BTC be over $96,000 at expiry?');
+      expect(price).toBe(96000);
+    });
+
+    it('should return null for null input', () => {
+      expect(windowManager.parseReferencePrice(null)).toBeNull();
+    });
+
+    it('should return null for undefined input', () => {
+      expect(windowManager.parseReferencePrice(undefined)).toBeNull();
+    });
+
+    it('should return null for non-string input', () => {
+      expect(windowManager.parseReferencePrice(123)).toBeNull();
+    });
+
+    it('should return null for question without price', () => {
+      expect(windowManager.parseReferencePrice('Will BTC go up?')).toBeNull();
+    });
+
+    it('should return null for malformed price', () => {
+      expect(windowManager.parseReferencePrice('Will BTC be above $abc at 12:00?')).toBeNull();
+    });
+
+    it('should handle large prices: "$100,000"', () => {
+      const price = windowManager.parseReferencePrice('Will BTC be above $100,000 at 12:00 UTC?');
+      expect(price).toBe(100000);
+    });
+
+    it('should handle very small prices: "$0.50"', () => {
+      const price = windowManager.parseReferencePrice('Will XRP be above $0.50 at 12:00 UTC?');
+      expect(price).toBe(0.50);
+    });
+  });
+
   describe('get15MinWindows', () => {
     it('should return correct number of windows', () => {
       const windows = windowManager.get15MinWindows(3);
@@ -108,7 +170,7 @@ describe('Window Manager Module', () => {
             ok: true,
             json: async () => [{
               slug: `btc-updown-15m-${mockEpoch}`,
-              question: 'Will BTC go up?',
+              question: 'Will BTC be above $94,500 at 12:15 UTC?',
               clobTokenIds: JSON.stringify(['token-up-123', 'token-down-456']),
               outcomePrices: JSON.stringify(['0.55', '0.45']),
               endDate: new Date(mockEpoch * 1000 + 900000).toISOString(),
@@ -142,6 +204,10 @@ describe('Window Manager Module', () => {
       expect(windows[0]).toHaveProperty('market_price');
       expect(windows[0]).toHaveProperty('time_remaining_ms');
       expect(windows[0].crypto).toBe('btc');
+      // Story 7-15: Reference price should be parsed from question
+      expect(windows[0]).toHaveProperty('reference_price');
+      expect(windows[0].reference_price).toBe(94500);
+      expect(windows[0]).toHaveProperty('question');
     });
 
     it('should use cache on subsequent calls', async () => {
