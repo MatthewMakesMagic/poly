@@ -708,6 +708,7 @@ export class ExecutionLoop {
 
           // Update each virtual position's current price
           let pricesUpdated = 0;
+          let expiredPositions = 0;
           for (const pos of virtualPositions) {
             const prices = windowPrices[pos.window_id];
             if (prices) {
@@ -715,16 +716,21 @@ export class ExecutionLoop {
               const newPrice = pos.token_side === 'DOWN' ? prices.down : prices.up;
               virtualPM.updatePrice(pos.id, newPrice);
               pricesUpdated++;
+            } else {
+              // Position's window is no longer active (expired)
+              expiredPositions++;
             }
           }
 
-          if (pricesUpdated > 0) {
-            this.log.debug('virtual_prices_updated', {
-              positions_updated: pricesUpdated,
-              total_positions: virtualPositions.length,
-              windows_with_prices: Object.keys(windowPrices).length,
-            });
-          }
+          // Log price update status
+          this.log.debug('virtual_position_price_check', {
+            total_positions: virtualPositions.length,
+            prices_updated: pricesUpdated,
+            expired_positions: expiredPositions,
+            active_windows: Object.keys(windowPrices).length,
+            position_windows: virtualPositions.map(p => p.window_id),
+            active_window_ids: Object.keys(windowPrices),
+          });
         }
       }
 
