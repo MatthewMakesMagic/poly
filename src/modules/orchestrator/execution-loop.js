@@ -683,7 +683,42 @@ export class ExecutionLoop {
         }
       }
 
-      // 5b. Evaluate virtual positions for stop-loss (PAPER mode)
+      // 5b. Update virtual position prices before evaluation (PAPER mode)
+      // Virtual positions track token prices, which move with market conditions
+      if (this.modules['virtual-position-manager'] && this.modules['window-manager']) {
+        const virtualPM = this.modules['virtual-position-manager'];
+        const virtualPositions = virtualPM.getPositions();
+
+        if (virtualPositions.length > 0) {
+          // Get current market prices for active windows
+          const activeWindows = windows || [];
+          const windowPrices = {};
+
+          for (const window of activeWindows) {
+            const windowId = window.window_id || window.id;
+            // Get token prices from window data
+            // For UP positions, use yes_price; for DOWN positions, use no_price (1 - yes_price)
+            if (window.yes_price != null) {
+              windowPrices[windowId] = {
+                up: window.yes_price,
+                down: 1 - window.yes_price,
+              };
+            }
+          }
+
+          // Update each virtual position's current price
+          for (const pos of virtualPositions) {
+            const prices = windowPrices[pos.window_id];
+            if (prices) {
+              // Use the appropriate price based on token side (UP or DOWN)
+              const newPrice = pos.token_side === 'DOWN' ? prices.down : prices.up;
+              virtualPM.updatePrice(pos.id, newPrice);
+            }
+          }
+        }
+      }
+
+      // 5c. Evaluate virtual positions for stop-loss (PAPER mode)
       if (this.modules['stop-loss'] && this.modules['virtual-position-manager']) {
         const stopLossModule = this.modules['stop-loss'];
         const virtualPM = this.modules['virtual-position-manager'];
