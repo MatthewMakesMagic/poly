@@ -7,10 +7,11 @@
  */
 
 export default {
-  // TRADING MODE - CRITICAL SAFETY GATE
+  // TRADING MODE - CRITICAL SAFETY GATE (Story 8-8)
   // PAPER: Signal generation only, NO order execution (DEFAULT - ENFORCED)
-  // LIVE: Actual order execution (requires explicit env override)
-  tradingMode: process.env.TRADING_MODE || 'PAPER',
+  // LIVE: Actual order execution (requires LIVE_TRADING_ENABLED=true in Railway)
+  // Railway variable: LIVE_TRADING_ENABLED = true/false
+  tradingMode: process.env.LIVE_TRADING_ENABLED === 'true' ? 'LIVE' : 'PAPER',
 
   // Polymarket API configuration
   polymarket: {
