@@ -409,12 +409,41 @@ export class ExecutionLoop {
                   window_id: signal.window_id,
                   strategy_id: strategyId,
                   direction: signal.direction,
+                  side: signal.side || 'UP',
                   confidence: signal.confidence,
+                  market_price: signal.market_price,
+                  edge: signal.edge,
                   size: sizingResult.actual_size,
                   would_have_traded: true,
                   trading_mode: tradingMode,
                   message: 'Order blocked - PAPER mode active',
                 });
+
+                // Create virtual position for PAPER mode tracking
+                // Enables stop-loss and take-profit simulation
+                if (this.modules['virtual-position-manager']) {
+                  try {
+                    const virtualPosition = this.modules['virtual-position-manager'].createVirtualPosition({
+                      ...signal,
+                      size: sizingResult.actual_size,
+                      strategy_id: strategyId,
+                    });
+                    this.log.info('virtual_position_opened', {
+                      position_id: virtualPosition.id,
+                      window_id: signal.window_id,
+                      strategy_id: strategyId,
+                      side: signal.side || 'UP',
+                      entry_price: signal.market_price,
+                      size: sizingResult.actual_size,
+                      trading_mode: tradingMode,
+                    });
+                  } catch (vpErr) {
+                    this.log.warn('virtual_position_creation_failed', {
+                      window_id: signal.window_id,
+                      error: vpErr.message,
+                    });
+                  }
+                }
 
                 // Story 8-9: Confirm the entry in paper mode
                 if (this.modules.safeguards && reserved) {
@@ -559,7 +588,11 @@ export class ExecutionLoop {
       }
 
       // 5. Evaluate exit conditions - stop-loss (Story 3.4) - always evaluate even when auto-stopped
+      // Also evaluates virtual positions for PAPER mode
       let stopLossResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
+      let virtualStopLossResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
+
+      // 5a. Evaluate real positions
       if (this.modules['stop-loss'] && this.modules['position-manager']) {
         const stopLossModule = this.modules['stop-loss'];
         const positionManager = this.modules['position-manager'];
@@ -650,8 +683,52 @@ export class ExecutionLoop {
         }
       }
 
+      // 5b. Evaluate virtual positions for stop-loss (PAPER mode)
+      if (this.modules['stop-loss'] && this.modules['virtual-position-manager']) {
+        const stopLossModule = this.modules['stop-loss'];
+        const virtualPM = this.modules['virtual-position-manager'];
+        const virtualPositions = virtualPM.getPositions();
+
+        if (virtualPositions.length > 0) {
+          // Get current price for each virtual position
+          const getVirtualPrice = (position) => position.current_price;
+
+          virtualStopLossResults = stopLossModule.evaluateAll(virtualPositions, getVirtualPrice);
+
+          // Close triggered virtual positions
+          for (const result of virtualStopLossResults.triggered) {
+            try {
+              virtualPM.closePosition(result.position_id, {
+                closePrice: result.current_price,
+                reason: 'stop_loss_triggered',
+              });
+
+              this.log.info('virtual_stop_loss_triggered', {
+                position_id: result.position_id,
+                window_id: result.window_id,
+                entry_price: result.entry_price,
+                close_price: result.current_price,
+                stop_loss_threshold: result.stop_loss_threshold,
+                loss_amount: result.loss_amount,
+                loss_pct: (result.loss_pct * 100).toFixed(2) + '%',
+                trading_mode: 'PAPER',
+              });
+            } catch (closeErr) {
+              this.log.warn('virtual_stop_loss_close_failed', {
+                position_id: result.position_id,
+                error: closeErr.message,
+              });
+            }
+          }
+        }
+      }
+
       // 6. Evaluate exit conditions - take-profit (Story 3.5) - always evaluate even when auto-stopped
+      // Also evaluates virtual positions for PAPER mode
       let takeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
+      let virtualTakeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
+
+      // 6a. Evaluate real positions
       if (this.modules['take-profit'] && this.modules['position-manager']) {
         const takeProfitModule = this.modules['take-profit'];
         const positionManager = this.modules['position-manager'];
@@ -742,6 +819,67 @@ export class ExecutionLoop {
         }
       }
 
+      // 6b. Evaluate virtual positions for take-profit (PAPER mode) - includes trailing stop
+      if (this.modules['take-profit'] && this.modules['virtual-position-manager']) {
+        const takeProfitModule = this.modules['take-profit'];
+        const virtualPM = this.modules['virtual-position-manager'];
+        const virtualPositions = virtualPM.getPositions();
+
+        if (virtualPositions.length > 0) {
+          // Update virtual position prices before evaluation
+          // For now, current_price is maintained from entry (will be enhanced later)
+          const getVirtualPrice = (position) => position.current_price;
+
+          virtualTakeProfitResults = takeProfitModule.evaluateAll(virtualPositions, getVirtualPrice);
+
+          // Close triggered virtual positions
+          for (const result of virtualTakeProfitResults.triggered) {
+            try {
+              virtualPM.closePosition(result.position_id, {
+                closePrice: result.current_price,
+                reason: 'take_profit_triggered',
+              });
+
+              // Log trailing vs fixed take-profit
+              const isTrailing = result.trailing_active || result.high_water_mark;
+              this.log.info('virtual_take_profit_triggered', {
+                position_id: result.position_id,
+                window_id: result.window_id,
+                entry_price: result.entry_price,
+                close_price: result.current_price,
+                high_water_mark: result.high_water_mark || null,
+                trailing_stop_price: result.trailing_stop_price || null,
+                profit_amount: result.profit_amount,
+                profit_pct: (result.profit_pct * 100).toFixed(2) + '%',
+                is_trailing: isTrailing,
+                trading_mode: 'PAPER',
+              });
+            } catch (closeErr) {
+              this.log.warn('virtual_take_profit_close_failed', {
+                position_id: result.position_id,
+                error: closeErr.message,
+              });
+            }
+          }
+
+          // Log trailing stop tracking for active virtual positions
+          const activePositions = virtualPM.getPositions();
+          for (const pos of activePositions) {
+            if (pos.peak_pnl_pct > 0.01) {  // Log if peak profit > 1%
+              this.log.debug('virtual_trailing_tracking', {
+                position_id: pos.id,
+                window_id: pos.window_id,
+                entry_price: pos.entry_price,
+                current_price: pos.current_price,
+                peak_price: pos.peak_price,
+                current_pnl_pct: (pos.unrealized_pnl_pct * 100).toFixed(2) + '%',
+                peak_pnl_pct: (pos.peak_pnl_pct * 100).toFixed(2) + '%',
+              });
+            }
+          }
+        }
+      }
+
       // 7. Evaluate exit conditions - window expiry (Story 3.6) - always evaluate even when auto-stopped
       let windowExpiryResults = { expiring: [], resolved: [], summary: { evaluated: 0, expiring: 0, resolved: 0, safe: 0 } };
       if (this.modules['window-expiry'] && this.modules['position-manager']) {
@@ -825,6 +963,11 @@ export class ExecutionLoop {
 
       // 8. Future: Process any pending orders
 
+      // Get virtual position stats
+      const virtualPositionCount = this.modules['virtual-position-manager']
+        ? this.modules['virtual-position-manager'].getPositions().length
+        : 0;
+
       const tickDurationMs = Date.now() - tickStart;
       this.log.info('tick_complete', {
         tickCount: this.tickCount,
@@ -843,10 +986,18 @@ export class ExecutionLoop {
         safeguardsBlocked,
         sizingResultsCount: sizingResults.length,
         sizingSuccessCount: sizingResults.filter(r => r.success).length,
+        // Real position stats
         stopLossEvaluated: stopLossResults.summary.evaluated,
         stopLossTriggered: stopLossResults.summary.triggered,
         takeProfitEvaluated: takeProfitResults.summary.evaluated,
         takeProfitTriggered: takeProfitResults.summary.triggered,
+        // Virtual position stats (PAPER mode)
+        virtualPositions: virtualPositionCount,
+        virtualStopLossEvaluated: virtualStopLossResults.summary.evaluated,
+        virtualStopLossTriggered: virtualStopLossResults.summary.triggered,
+        virtualTakeProfitEvaluated: virtualTakeProfitResults.summary.evaluated,
+        virtualTakeProfitTriggered: virtualTakeProfitResults.summary.triggered,
+        // Window expiry
         windowExpiryEvaluated: windowExpiryResults.summary.evaluated,
         windowExpiryExpiring: windowExpiryResults.summary.expiring,
         windowExpiryResolved: windowExpiryResults.summary.resolved,

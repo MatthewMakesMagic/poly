@@ -33,6 +33,7 @@ import * as stopLoss from '../stop-loss/index.js';
 import * as takeProfit from '../take-profit/index.js';
 import * as windowExpiry from '../window-expiry/index.js';
 import * as tradeEvent from '../trade-event/index.js';
+import * as virtualPositionManager from '../virtual-position-manager/index.js';
 import * as launchConfig from '../launch-config/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 // Strategy composition integration (Story 7-12)
@@ -74,6 +75,7 @@ const MODULE_MAP = {
   spot: spot,
   'window-manager': windowManager,
   'position-manager': positionManager,
+  'virtual-position-manager': virtualPositionManager,
   'safeguards': safeguards,
   'order-manager': orderManager,
   'safety': safety,
@@ -610,60 +612,111 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
             results.componentResults[`${window.window_id}:${versionId}`] = componentResult;
 
             // Story 7-16: Edge-based signal generation
-            // Only generate entry signal if there's positive edge (model > market)
+            // Generate entry signal for positive edge on either UP or DOWN side
             const modelProbability = componentResult?.probability;
             const marketPrice = windowContext.market_price;
 
             if (modelProbability != null && marketPrice != null) {
-              const edge = modelProbability - marketPrice;
+              // Calculate edge for UP side: model p_up vs market price of UP token
+              const edgeUp = modelProbability - marketPrice;
+              // DOWN edge is the inverse: model p_down vs implied market price of DOWN
+              // p_down = 1 - p_up, market_down ≈ 1 - market_up
+              // edge_down = (1-p_up) - (1-market_up) = market_up - p_up = -edge_up
+              const edgeDown = -edgeUp;
               const minEdgeThreshold = strategyConfig?.edge?.min_edge_threshold ?? 0.10;
               const maxEdgeThreshold = strategyConfig?.edge?.max_edge_threshold ?? 0.50;
 
-              // Log edge calculation
+              // Log edge calculation for both sides
               log.debug('edge_calculated', {
                 window_id: windowContext.window_id,
                 symbol: windowContext.symbol,
                 model_probability: modelProbability,
                 market_price: marketPrice,
-                edge,
+                edge_up: edgeUp,
+                edge_down: edgeDown,
                 min_threshold: minEdgeThreshold,
               });
 
-              // Check for suspicious edge (too high = possible stale data)
-              if (edge > maxEdgeThreshold) {
-                log.warn('edge_suspicious', {
-                  window_id: windowContext.window_id,
-                  edge,
-                  max_threshold: maxEdgeThreshold,
-                  reason: 'Edge too high - possible stale data or market issue',
-                });
-                // Skip this window - edge is suspiciously high
-                continue;
+              // Check for UP opportunity (model says UP more likely than market)
+              if (edgeUp >= minEdgeThreshold) {
+                // Check for suspicious edge (too high = possible stale data)
+                if (edgeUp > maxEdgeThreshold) {
+                  log.warn('edge_suspicious', {
+                    window_id: windowContext.window_id,
+                    edge: edgeUp,
+                    direction: 'UP',
+                    max_threshold: maxEdgeThreshold,
+                    reason: 'Edge too high - possible stale data or market issue',
+                  });
+                } else {
+                  windowSignal = {
+                    window_id: windowContext.window_id,
+                    token_id: windowContext.token_id_up || windowContext.token_id,
+                    market_id: windowContext.market_id,
+                    direction: 'long',
+                    side: 'UP',
+                    confidence: modelProbability,
+                    market_price: marketPrice,
+                    edge: edgeUp,
+                    strategy_id: strategyDef.name,
+                    component: versionId,
+                    oracle_price: windowContext.oracle_price,
+                    reference_price: windowContext.reference_price,
+                    symbol: windowContext.symbol,
+                  };
+
+                  log.info('edge_signal_generated', {
+                    window_id: windowContext.window_id,
+                    symbol: windowContext.symbol,
+                    side: 'UP',
+                    model_probability: modelProbability,
+                    market_price: marketPrice,
+                    edge: edgeUp,
+                  });
+                }
               }
+              // Check for DOWN opportunity (model says DOWN more likely than market implies)
+              else if (edgeDown >= minEdgeThreshold && windowContext.token_id_down) {
+                // Check for suspicious edge
+                if (edgeDown > maxEdgeThreshold) {
+                  log.warn('edge_suspicious', {
+                    window_id: windowContext.window_id,
+                    edge: edgeDown,
+                    direction: 'DOWN',
+                    max_threshold: maxEdgeThreshold,
+                    reason: 'Edge too high - possible stale data or market issue',
+                  });
+                } else {
+                  // p_down = 1 - p_up (probability model thinks it goes down)
+                  const pDown = 1 - modelProbability;
+                  // Market price for DOWN token (implied from UP price)
+                  const marketPriceDown = 1 - marketPrice;
 
-              // Generate signal only if positive edge above threshold
-              if (edge >= minEdgeThreshold) {
-                windowSignal = {
-                  window_id: windowContext.window_id,
-                  token_id: windowContext.token_id,
-                  market_id: windowContext.market_id,
-                  direction: 'long',
-                  confidence: modelProbability,
-                  market_price: marketPrice,
-                  edge,
-                  strategy_id: strategyDef.name,
-                  component: versionId,
-                  oracle_price: windowContext.oracle_price,
-                  reference_price: windowContext.reference_price,
-                };
+                  windowSignal = {
+                    window_id: windowContext.window_id,
+                    token_id: windowContext.token_id_down,
+                    market_id: windowContext.market_id,
+                    direction: 'long',  // We're going long on the DOWN token
+                    side: 'DOWN',
+                    confidence: pDown,
+                    market_price: marketPriceDown,
+                    edge: edgeDown,
+                    strategy_id: strategyDef.name,
+                    component: versionId,
+                    oracle_price: windowContext.oracle_price,
+                    reference_price: windowContext.reference_price,
+                    symbol: windowContext.symbol,
+                  };
 
-                log.info('edge_signal_generated', {
-                  window_id: windowContext.window_id,
-                  symbol: windowContext.symbol,
-                  model_probability: modelProbability,
-                  market_price: marketPrice,
-                  edge,
-                });
+                  log.info('edge_signal_generated', {
+                    window_id: windowContext.window_id,
+                    symbol: windowContext.symbol,
+                    side: 'DOWN',
+                    model_probability: pDown,
+                    market_price: marketPriceDown,
+                    edge: edgeDown,
+                  });
+                }
               }
             } else if (componentResult?.signal === 'entry') {
               // Fallback for components that don't return probability

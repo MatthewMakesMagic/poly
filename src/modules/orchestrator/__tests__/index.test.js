@@ -161,6 +161,21 @@ vi.mock('../../trade-event/index.js', () => ({
   getState: vi.fn().mockReturnValue({ initialized: true }),
 }));
 
+// Virtual position manager (PAPER mode position tracking)
+vi.mock('../../virtual-position-manager/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({
+    initialized: true,
+    stats: { total_positions: 0, open_positions: 0, closed_positions: 0 },
+  }),
+  createVirtualPosition: vi.fn().mockReturnValue({ id: 'vp-1', status: 'open' }),
+  getPositions: vi.fn().mockReturnValue([]),
+  getPosition: vi.fn().mockReturnValue(null),
+  updatePrice: vi.fn(),
+  closePosition: vi.fn(),
+}));
+
 // Strategy composition modules (Story 7-12)
 vi.mock('../../strategy/loader.js', () => ({
   loadAllStrategies: vi.fn().mockResolvedValue([]),

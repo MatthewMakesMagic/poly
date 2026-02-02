@@ -42,6 +42,8 @@ export const MODULE_INIT_ORDER = [
   // TEMP SOLUTION: Window manager for fetching active 15-min markets
   { name: 'window-manager', module: null, configKey: null },
   { name: 'position-manager', module: null, configKey: null },
+  // Virtual position manager - PAPER mode position tracking for stop-loss/take-profit
+  { name: 'virtual-position-manager', module: null, configKey: null },
   // Safeguards module - entry rate limiting, duplicate prevention (Story 8-7)
   { name: 'safeguards', module: null, configKey: null },
   { name: 'order-manager', module: null, configKey: null },
