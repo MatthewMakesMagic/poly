@@ -697,23 +697,33 @@ export class ExecutionLoop {
           for (const window of activeWindows) {
             const windowId = window.window_id || window.id;
             // Get token prices from window data
-            // For UP positions, use yes_price; for DOWN positions, use no_price (1 - yes_price)
-            if (window.yes_price != null) {
+            // market_price is the UP token price; DOWN token price is 1 - market_price
+            if (window.market_price != null) {
               windowPrices[windowId] = {
-                up: window.yes_price,
-                down: 1 - window.yes_price,
+                up: window.market_price,
+                down: 1 - window.market_price,
               };
             }
           }
 
           // Update each virtual position's current price
+          let pricesUpdated = 0;
           for (const pos of virtualPositions) {
             const prices = windowPrices[pos.window_id];
             if (prices) {
               // Use the appropriate price based on token side (UP or DOWN)
               const newPrice = pos.token_side === 'DOWN' ? prices.down : prices.up;
               virtualPM.updatePrice(pos.id, newPrice);
+              pricesUpdated++;
             }
+          }
+
+          if (pricesUpdated > 0) {
+            this.log.debug('virtual_prices_updated', {
+              positions_updated: pricesUpdated,
+              total_positions: virtualPositions.length,
+              windows_with_prices: Object.keys(windowPrices).length,
+            });
           }
         }
       }
