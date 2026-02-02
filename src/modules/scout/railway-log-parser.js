@@ -89,8 +89,8 @@ export class RailwayLogParser {
         return;
       }
 
-      // Spawn railway logs process with follow flag
-      this.process = spawn('railway', ['logs', '-f', '--json'], {
+      // Spawn railway logs process (streams by default in Railway CLI 4.x)
+      this.process = spawn('railway', ['logs', '--json'], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
