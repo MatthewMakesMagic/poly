@@ -26,6 +26,7 @@ import * as windowManager from '../window-manager/index.js';
 import * as positionManager from '../position-manager/index.js';
 import * as safeguards from '../position-manager/safeguards.js';
 import * as orderManager from '../order-manager/index.js';
+import * as staleOrderEvaluator from '../stale-order-evaluator/index.js';
 import * as safety from '../safety/index.js';
 import * as strategyEvaluator from '../strategy-evaluator/index.js';
 import * as positionSizer from '../position-sizer/index.js';
@@ -78,6 +79,7 @@ const MODULE_MAP = {
   'virtual-position-manager': virtualPositionManager,
   'safeguards': safeguards,
   'order-manager': orderManager,
+  'stale-order-evaluator': staleOrderEvaluator,
   'safety': safety,
   'strategy-evaluator': strategyEvaluator,
   'position-sizer': positionSizer,

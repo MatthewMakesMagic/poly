@@ -478,6 +478,14 @@ export class ExecutionLoop {
                     orderType: 'GTC',
                     windowId: signal.window_id,
                     marketId: signal.market_id,
+                    // Signal context for stale order detection
+                    signalContext: {
+                      edge: signal.edge,
+                      modelProbability: signal.confidence,
+                      symbol: signal.symbol,
+                      strategyId: strategyId,
+                      sideToken: signal.side || 'UP',
+                    },
                   });
 
                   this.log.info('order_placed', {
@@ -584,6 +592,73 @@ export class ExecutionLoop {
               code: sizingErr.code,
             });
           }
+        }
+      }
+
+      // 4b. Evaluate and cancel stale orders (LIVE mode only)
+      // Cancels open orders where edge has dropped below threshold or reversed
+      let staleOrderResults = { cancelled: [], failed: [], summary: { evaluated: 0, stale: 0, cancelled: 0 } };
+      const tradingModeForStale = this.config.tradingMode || 'PAPER';
+      if (tradingModeForStale === 'LIVE' &&
+          this.modules['stale-order-evaluator'] &&
+          this.modules['order-manager']) {
+        try {
+          const staleEvaluator = this.modules['stale-order-evaluator'];
+          const orderManager = this.modules['order-manager'];
+
+          // Get all open orders
+          const openOrders = orderManager.getOpenOrders();
+
+          if (openOrders.length > 0) {
+            // Get probability calculation function from window-timing-model if available
+            let calculateProbability = null;
+            if (this.modules['strategy-registry']) {
+              try {
+                const registry = this.modules['strategy-registry'];
+                const windowTimingModel = registry.getComponent?.('probability', 'prob-window-timing-model-v1');
+                if (windowTimingModel?.module?.calculateProbability) {
+                  calculateProbability = windowTimingModel.module.calculateProbability;
+                }
+              } catch {
+                // Fall back to no probability recalculation
+              }
+            }
+
+            // Evaluate all open orders
+            const evalResult = staleEvaluator.evaluateAll(
+              openOrders,
+              windows,
+              spotPrices,
+              calculateProbability
+            );
+
+            staleOrderResults.summary.evaluated = evalResult.summary.evaluated;
+            staleOrderResults.summary.stale = evalResult.summary.stale;
+
+            // Cancel stale orders
+            if (evalResult.stale.length > 0) {
+              const cancelResult = await staleEvaluator.cancelStaleOrders(
+                evalResult.stale,
+                orderManager
+              );
+              staleOrderResults.cancelled = cancelResult.cancelled;
+              staleOrderResults.failed = cancelResult.failed;
+              staleOrderResults.summary.cancelled = cancelResult.summary.cancelled;
+
+              this.log.info('stale_orders_processed', {
+                evaluated: evalResult.summary.evaluated,
+                stale: evalResult.summary.stale,
+                cancelled: cancelResult.summary.cancelled,
+                failed: cancelResult.summary.failed,
+                trading_mode: tradingModeForStale,
+              });
+            }
+          }
+        } catch (staleErr) {
+          this.log.warn('stale_order_evaluation_failed', {
+            error: staleErr.message,
+            code: staleErr.code,
+          });
         }
       }
 

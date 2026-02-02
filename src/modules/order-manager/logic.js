@@ -119,11 +119,17 @@ function mapPolymarketStatus(polymarketStatus, isFoK = false) {
  * @param {string} params.orderType - Order type (GTC, FOK, IOC)
  * @param {string} params.windowId - Window ID for tracking
  * @param {string} params.marketId - Market ID
+ * @param {Object} [params.signalContext] - Signal context for stale order detection
+ * @param {number} [params.signalContext.edge] - Edge at time of signal
+ * @param {number} [params.signalContext.modelProbability] - Model probability at signal
+ * @param {string} [params.signalContext.symbol] - Crypto symbol (btc, eth, sol, xrp)
+ * @param {string} [params.signalContext.strategyId] - Strategy that generated signal
+ * @param {string} [params.signalContext.sideToken] - Token side (UP or DOWN)
  * @param {Object} log - Logger instance
  * @returns {Promise<Object>} Order result with orderId, status, latencyMs
  */
 export async function placeOrder(params, log) {
-  const { tokenId, side, size, price, orderType, windowId, marketId } = params;
+  const { tokenId, side, size, price, orderType, windowId, marketId, signalContext } = params;
 
   // 1. Validate parameters
   validateOrderParams(params);
@@ -200,6 +206,12 @@ export async function placeOrder(params, log) {
       filled_at: orderFilledAt,
       cancelled_at: null,
       error_message: null,
+      // Signal context for stale order detection
+      original_edge: signalContext?.edge ?? null,
+      original_model_probability: signalContext?.modelProbability ?? null,
+      symbol: signalContext?.symbol ?? null,
+      strategy_id: signalContext?.strategyId ?? null,
+      side_token: signalContext?.sideToken ?? null,
     };
 
     // 11. Insert order into database
@@ -207,8 +219,9 @@ export async function placeOrder(params, log) {
       `INSERT INTO orders (
         order_id, intent_id, position_id, window_id, market_id, token_id,
         side, order_type, price, size, filled_size, avg_fill_price,
-        status, submitted_at, latency_ms, filled_at, cancelled_at, error_message
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
+        original_edge, original_model_probability, symbol, strategy_id, side_token
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         orderRecord.order_id,
         orderRecord.intent_id,
@@ -228,6 +241,11 @@ export async function placeOrder(params, log) {
         orderRecord.filled_at,
         orderRecord.cancelled_at,
         orderRecord.error_message,
+        orderRecord.original_edge,
+        orderRecord.original_model_probability,
+        orderRecord.symbol,
+        orderRecord.strategy_id,
+        orderRecord.side_token,
       ]
     );
 

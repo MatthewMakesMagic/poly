@@ -47,6 +47,8 @@ export const MODULE_INIT_ORDER = [
   // Safeguards module - entry rate limiting, duplicate prevention (Story 8-7)
   { name: 'safeguards', module: null, configKey: null },
   { name: 'order-manager', module: null, configKey: null },
+  // Stale order evaluator - cancels orders where edge has disappeared (LIVE mode)
+  { name: 'stale-order-evaluator', module: null, configKey: null },
   // Safety module - after order-manager so it can reference it for auto-stop
   { name: 'safety', module: null, configKey: null },
   // Strategy modules
