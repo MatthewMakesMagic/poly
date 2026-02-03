@@ -327,22 +327,22 @@ const config = {
       min: 2,
       max: 10,
       idleTimeoutMs: 30000,
-      connectionTimeoutMs: 5000,
+      connectionTimeoutMs: 15000, // Increased for Supabase (Singapore region)
     },
     // Circuit breaker dedicated pool
     circuitBreakerPool: {
       min: 1,
       max: 2,
       idleTimeoutMs: 30000,
-      connectionTimeoutMs: 1000, // Faster timeout for CB
+      connectionTimeoutMs: 5000, // Faster timeout for CB but still reasonable
     },
     // Query timeout
-    queryTimeoutMs: 5000,
+    queryTimeoutMs: 10000, // Increased for Supabase latency
     // Retry configuration
     retry: {
       maxAttempts: 3,
-      initialDelayMs: 100,
-      maxDelayMs: 2000,
+      initialDelayMs: 500, // Increased initial delay
+      maxDelayMs: 5000,    // Increased max delay
     },
   },
 
@@ -371,8 +371,8 @@ const config = {
   // Orchestrator configuration
   orchestrator: {
     tickIntervalMs: 1000,
-    moduleInitTimeoutMs: 5000,
-    moduleShutdownTimeoutMs: 5000,
+    moduleInitTimeoutMs: 30000, // Increased for PostgreSQL connection (Supabase can be slow)
+    moduleShutdownTimeoutMs: 10000,
     maxRetryAttempts: 3,
     retryBackoffMs: 1000,
     inflightTimeoutMs: 10000,
