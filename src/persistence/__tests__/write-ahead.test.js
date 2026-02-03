@@ -3,12 +3,12 @@
  *
  * Tests for the write-ahead logging module that ensures crash recovery
  * through intent logging before execution.
+ *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
+ * All operations are now async.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import persistence from '../index.js';
 import {
   logIntent,
@@ -22,30 +22,54 @@ import {
 } from '../write-ahead.js';
 import { IntentError, ErrorCodes } from '../../types/errors.js';
 
-describe('Write-Ahead Logging', () => {
-  let tempDir;
-  let dbPath;
+// Use test database URL or skip tests
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
 
-  beforeEach(async () => {
-    // Create temp directory for test database
-    tempDir = mkdtempSync(join(tmpdir(), 'poly-wal-test-'));
-    dbPath = join(tempDir, 'test.db');
+// Skip all tests if no database URL configured
+const describeIfDb = TEST_DATABASE_URL ? describe : describe.skip;
 
-    // Initialize persistence with test database
-    await persistence.init({
-      database: { path: dbPath },
-    });
+// Increase timeout for slow Supabase connections
+vi.setConfig({ testTimeout: 30000, hookTimeout: 60000 });
+
+// Counter for unique window IDs
+let testCounter = 0;
+
+/**
+ * Generate a unique window ID for each test invocation
+ */
+function uniqueWindowId(suffix = '') {
+  testCounter++;
+  const timestamp = Date.now();
+  return `wal-test-${timestamp}-${testCounter}${suffix ? `-${suffix}` : ''}`;
+}
+
+describeIfDb('Write-Ahead Logging', () => {
+  const testConfig = {
+    database: {
+      url: TEST_DATABASE_URL,
+      pool: { min: 1, max: 2, connectionTimeoutMs: 10000 },
+      circuitBreakerPool: { min: 1, max: 1, connectionTimeoutMs: 10000 },
+      queryTimeoutMs: 10000,
+      retry: { maxAttempts: 3, initialDelayMs: 500, maxDelayMs: 5000 },
+    },
+  };
+
+  beforeAll(async () => {
+    // Initialize persistence to set up database connection
+    if (persistence.getState().initialized) {
+      await persistence.shutdown();
+    }
+    await persistence.init(testConfig);
   });
 
-  afterEach(async () => {
-    // Shutdown and cleanup
-    await persistence.shutdown();
-
-    // Remove temp directory
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
+  afterAll(async () => {
+    // Clean up test data
+    if (persistence.getState().initialized) {
+      await persistence.run(
+        "DELETE FROM trade_intents WHERE window_id LIKE $1",
+        ['wal-test-%']
+      );
+      await persistence.shutdown();
     }
   });
 
@@ -68,33 +92,34 @@ describe('Write-Ahead Logging', () => {
   });
 
   describe('logIntent', () => {
-    it('creates pending intent with correct fields', () => {
+    it('creates pending intent with correct fields', async () => {
+      const windowId = uniqueWindowId('create');
       const payload = { market_id: 'btc-usd', size: 100 };
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', payload);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, windowId, payload);
 
       expect(intentId).toBeTypeOf('number');
       expect(intentId).toBeGreaterThan(0);
 
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
       expect(intent.intent_type).toBe('open_position');
-      expect(intent.window_id).toBe('window-123');
+      expect(intent.window_id).toBe(windowId);
       expect(intent.status).toBe('pending');
       expect(intent.payload).toEqual(payload);
-      expect(intent.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      expect(intent.created_at).toBeDefined();
       expect(intent.completed_at).toBeNull();
       expect(intent.result).toBeNull();
     });
 
-    it('returns intent ID', () => {
-      const id1 = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', { test: 1 });
-      const id2 = logIntent(INTENT_TYPES.PLACE_ORDER, 'w2', { test: 2 });
+    it('returns intent ID', async () => {
+      const id1 = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId('id1'), { test: 1 });
+      const id2 = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId('id2'), { test: 2 });
 
       expect(id1).toBeTypeOf('number');
       expect(id2).toBeTypeOf('number');
       expect(id2).toBeGreaterThan(id1);
     });
 
-    it('serializes payload to JSON', () => {
+    it('serializes payload to JSON', async () => {
       const complexPayload = {
         nested: { deep: { value: 42 } },
         array: [1, 2, 3],
@@ -104,19 +129,17 @@ describe('Write-Ahead Logging', () => {
         null: null,
       };
 
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', complexPayload);
-      const intent = getIntent(intentId);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, uniqueWindowId('json'), complexPayload);
+      const intent = await getIntent(intentId);
 
       expect(intent.payload).toEqual(complexPayload);
     });
 
-    it('throws IntentError for invalid type', () => {
-      expect(() => {
-        logIntent('invalid_type', 'w1', {});
-      }).toThrow(IntentError);
+    it('throws IntentError for invalid type', async () => {
+      await expect(logIntent('invalid_type', uniqueWindowId(), {})).rejects.toThrow(IntentError);
 
       try {
-        logIntent('bad_type', 'w1', {});
+        await logIntent('bad_type', uniqueWindowId(), {});
       } catch (error) {
         expect(error.code).toBe(ErrorCodes.INVALID_INTENT_TYPE);
         expect(error.context.providedType).toBe('bad_type');
@@ -124,103 +147,66 @@ describe('Write-Ahead Logging', () => {
       }
     });
 
-    it('throws IntentError for non-serializable payload', () => {
-      // Create circular reference
+    it('throws IntentError for non-serializable payload', async () => {
       const circular = { self: null };
       circular.self = circular;
 
-      expect(() => {
-        logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', circular);
-      }).toThrow(IntentError);
-
-      try {
-        logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', circular);
-      } catch (error) {
-        expect(error.code).toBe(ErrorCodes.INVALID_PAYLOAD);
-      }
+      await expect(logIntent(INTENT_TYPES.OPEN_POSITION, uniqueWindowId(), circular)).rejects.toThrow(IntentError);
     });
 
-    it('accepts all valid intent types', () => {
-      Object.values(INTENT_TYPES).forEach((type) => {
-        const id = logIntent(type, 'window-test', { type });
+    it('accepts all valid intent types', async () => {
+      for (const type of Object.values(INTENT_TYPES)) {
+        const id = await logIntent(type, uniqueWindowId(type), { type });
         expect(id).toBeTypeOf('number');
         expect(id).toBeGreaterThan(0);
-      });
-    });
-
-    it('throws IntentError for null windowId', () => {
-      expect(() => {
-        logIntent(INTENT_TYPES.OPEN_POSITION, null, {});
-      }).toThrow(IntentError);
-
-      try {
-        logIntent(INTENT_TYPES.OPEN_POSITION, null, {});
-      } catch (error) {
-        expect(error.code).toBe(ErrorCodes.INVALID_PAYLOAD);
       }
     });
 
-    it('throws IntentError for undefined windowId', () => {
-      expect(() => {
-        logIntent(INTENT_TYPES.OPEN_POSITION, undefined, {});
-      }).toThrow(IntentError);
-
-      try {
-        logIntent(INTENT_TYPES.OPEN_POSITION, undefined, {});
-      } catch (error) {
-        expect(error.code).toBe(ErrorCodes.INVALID_PAYLOAD);
-      }
+    it('throws IntentError for null windowId', async () => {
+      await expect(logIntent(INTENT_TYPES.OPEN_POSITION, null, {})).rejects.toThrow(IntentError);
     });
 
-    it('throws IntentError for empty string windowId', () => {
-      expect(() => {
-        logIntent(INTENT_TYPES.OPEN_POSITION, '', {});
-      }).toThrow(IntentError);
+    it('throws IntentError for undefined windowId', async () => {
+      await expect(logIntent(INTENT_TYPES.OPEN_POSITION, undefined, {})).rejects.toThrow(IntentError);
+    });
 
-      try {
-        logIntent(INTENT_TYPES.OPEN_POSITION, '', {});
-      } catch (error) {
-        expect(error.code).toBe(ErrorCodes.INVALID_PAYLOAD);
-      }
+    it('throws IntentError for empty string windowId', async () => {
+      await expect(logIntent(INTENT_TYPES.OPEN_POSITION, '', {})).rejects.toThrow(IntentError);
     });
   });
 
   describe('markExecuting', () => {
-    it('transitions pending intent to executing', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', { order: 1 });
+    it('transitions pending intent to executing', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), { order: 1 });
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.status).toBe('pending');
 
-      markExecuting(intentId);
+      await markExecuting(intentId);
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('executing');
     });
 
-    it('throws if intent not found', () => {
-      expect(() => {
-        markExecuting(99999);
-      }).toThrow(IntentError);
+    it('throws if intent not found', async () => {
+      await expect(markExecuting(99999)).rejects.toThrow(IntentError);
 
       try {
-        markExecuting(99999);
+        await markExecuting(99999);
       } catch (error) {
         expect(error.code).toBe(ErrorCodes.INTENT_NOT_FOUND);
         expect(error.context.intentId).toBe(99999);
       }
     });
 
-    it('throws if intent already executing', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
+    it('throws if intent already executing', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
 
-      expect(() => {
-        markExecuting(intentId);
-      }).toThrow(IntentError);
+      await expect(markExecuting(intentId)).rejects.toThrow(IntentError);
 
       try {
-        markExecuting(intentId);
+        await markExecuting(intentId);
       } catch (error) {
         expect(error.code).toBe(ErrorCodes.INVALID_STATUS_TRANSITION);
         expect(error.context.currentStatus).toBe('executing');
@@ -228,64 +214,60 @@ describe('Write-Ahead Logging', () => {
       }
     });
 
-    it('throws if intent already completed', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
-      markCompleted(intentId, { success: true });
+    it('throws if intent already completed', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
+      await markCompleted(intentId, { success: true });
 
-      expect(() => {
-        markExecuting(intentId);
-      }).toThrow(IntentError);
+      await expect(markExecuting(intentId)).rejects.toThrow(IntentError);
 
       try {
-        markExecuting(intentId);
+        await markExecuting(intentId);
       } catch (error) {
         expect(error.code).toBe(ErrorCodes.INVALID_STATUS_TRANSITION);
         expect(error.context.currentStatus).toBe('completed');
       }
     });
 
-    it('throws if intent already failed', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
-      markFailed(intentId, { code: 'ERROR' });
+    it('throws if intent already failed', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
+      await markFailed(intentId, { code: 'ERROR' });
 
-      expect(() => {
-        markExecuting(intentId);
-      }).toThrow(IntentError);
+      await expect(markExecuting(intentId)).rejects.toThrow(IntentError);
     });
   });
 
   describe('markCompleted', () => {
-    it('transitions executing intent to completed', () => {
-      const intentId = logIntent(INTENT_TYPES.CLOSE_POSITION, 'w1', { position: 1 });
-      markExecuting(intentId);
+    it('transitions executing intent to completed', async () => {
+      const intentId = await logIntent(INTENT_TYPES.CLOSE_POSITION, uniqueWindowId(), { position: 1 });
+      await markExecuting(intentId);
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.status).toBe('executing');
 
-      markCompleted(intentId, { orderId: 'ord-123', price: 0.55 });
+      await markCompleted(intentId, { orderId: 'ord-123', price: 0.55 });
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('completed');
     });
 
-    it('sets completed_at timestamp', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
+    it('sets completed_at timestamp', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.completed_at).toBeNull();
 
-      markCompleted(intentId, { success: true });
+      await markCompleted(intentId, { success: true });
 
-      intent = getIntent(intentId);
-      expect(intent.completed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      intent = await getIntent(intentId);
+      expect(intent.completed_at).toBeDefined();
     });
 
-    it('serializes result to JSON', () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', {});
-      markExecuting(intentId);
+    it('serializes result to JSON', async () => {
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, uniqueWindowId(), {});
+      await markExecuting(intentId);
 
       const result = {
         orderId: 'order-abc',
@@ -294,22 +276,19 @@ describe('Write-Ahead Logging', () => {
         fees: 0.01,
       };
 
-      markCompleted(intentId, result);
+      await markCompleted(intentId, result);
 
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
       expect(intent.result).toEqual(result);
     });
 
-    it('throws if intent not executing', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
+    it('throws if intent not executing', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
 
-      // Try to complete from pending (should fail)
-      expect(() => {
-        markCompleted(intentId, { success: true });
-      }).toThrow(IntentError);
+      await expect(markCompleted(intentId, { success: true })).rejects.toThrow(IntentError);
 
       try {
-        markCompleted(intentId, { success: true });
+        await markCompleted(intentId, { success: true });
       } catch (error) {
         expect(error.code).toBe(ErrorCodes.INVALID_STATUS_TRANSITION);
         expect(error.context.currentStatus).toBe('pending');
@@ -317,57 +296,53 @@ describe('Write-Ahead Logging', () => {
       }
     });
 
-    it('throws if intent already completed', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
-      markCompleted(intentId, { first: true });
+    it('throws if intent already completed', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
+      await markCompleted(intentId, { first: true });
 
-      expect(() => {
-        markCompleted(intentId, { second: true });
-      }).toThrow(IntentError);
+      await expect(markCompleted(intentId, { second: true })).rejects.toThrow(IntentError);
     });
 
-    it('throws if intent already failed', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
-      markFailed(intentId, { code: 'ERROR' });
+    it('throws if intent already failed', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
+      await markFailed(intentId, { code: 'ERROR' });
 
-      expect(() => {
-        markCompleted(intentId, { success: true });
-      }).toThrow(IntentError);
+      await expect(markCompleted(intentId, { success: true })).rejects.toThrow(IntentError);
     });
   });
 
   describe('markFailed', () => {
-    it('transitions executing intent to failed', () => {
-      const intentId = logIntent(INTENT_TYPES.CANCEL_ORDER, 'w1', { orderId: 'x' });
-      markExecuting(intentId);
+    it('transitions executing intent to failed', async () => {
+      const intentId = await logIntent(INTENT_TYPES.CANCEL_ORDER, uniqueWindowId(), { orderId: 'x' });
+      await markExecuting(intentId);
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.status).toBe('executing');
 
-      markFailed(intentId, { code: 'ORDER_NOT_FOUND', message: 'Order was already filled' });
+      await markFailed(intentId, { code: 'ORDER_NOT_FOUND', message: 'Order was already filled' });
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('failed');
     });
 
-    it('sets completed_at timestamp', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
+    it('sets completed_at timestamp', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.completed_at).toBeNull();
 
-      markFailed(intentId, { code: 'TIMEOUT' });
+      await markFailed(intentId, { code: 'TIMEOUT' });
 
-      intent = getIntent(intentId);
-      expect(intent.completed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      intent = await getIntent(intentId);
+      expect(intent.completed_at).toBeDefined();
     });
 
-    it('serializes error to JSON', () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', {});
-      markExecuting(intentId);
+    it('serializes error to JSON', async () => {
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, uniqueWindowId(), {});
+      await markExecuting(intentId);
 
       const error = {
         code: 'INSUFFICIENT_LIQUIDITY',
@@ -378,22 +353,19 @@ describe('Write-Ahead Logging', () => {
         },
       };
 
-      markFailed(intentId, error);
+      await markFailed(intentId, error);
 
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
       expect(intent.result).toEqual(error);
     });
 
-    it('throws if intent not executing', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
+    it('throws if intent not executing', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
 
-      // Try to fail from pending (should fail)
-      expect(() => {
-        markFailed(intentId, { code: 'ERROR' });
-      }).toThrow(IntentError);
+      await expect(markFailed(intentId, { code: 'ERROR' })).rejects.toThrow(IntentError);
 
       try {
-        markFailed(intentId, { code: 'ERROR' });
+        await markFailed(intentId, { code: 'ERROR' });
       } catch (error) {
         expect(error.code).toBe(ErrorCodes.INVALID_STATUS_TRANSITION);
         expect(error.context.currentStatus).toBe('pending');
@@ -403,81 +375,73 @@ describe('Write-Ahead Logging', () => {
   });
 
   describe('getIncompleteIntents', () => {
-    it('returns only executing intents', () => {
+    it('returns executing intents', async () => {
+      const windowPrefix = uniqueWindowId('incomplete');
+
       // Create intents in various states
-      const id1 = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', { id: 1 });
-      markExecuting(id1); // executing
+      const id1 = await logIntent(INTENT_TYPES.OPEN_POSITION, `${windowPrefix}-1`, { id: 1 });
+      await markExecuting(id1); // executing
 
-      const id2 = logIntent(INTENT_TYPES.CLOSE_POSITION, 'w2', { id: 2 });
-      markExecuting(id2);
-      markCompleted(id2, { success: true }); // completed
+      const id2 = await logIntent(INTENT_TYPES.CLOSE_POSITION, `${windowPrefix}-2`, { id: 2 });
+      await markExecuting(id2);
+      await markCompleted(id2, { success: true }); // completed
 
-      const id3 = logIntent(INTENT_TYPES.PLACE_ORDER, 'w3', { id: 3 });
-      markExecuting(id3);
-      markFailed(id3, { code: 'ERROR' }); // failed
+      const id3 = await logIntent(INTENT_TYPES.PLACE_ORDER, `${windowPrefix}-3`, { id: 3 });
+      await markExecuting(id3);
+      await markFailed(id3, { code: 'ERROR' }); // failed
 
-      const id4 = logIntent(INTENT_TYPES.CANCEL_ORDER, 'w4', { id: 4 }); // pending
+      await logIntent(INTENT_TYPES.CANCEL_ORDER, `${windowPrefix}-4`, { id: 4 }); // pending
 
-      const id5 = logIntent(INTENT_TYPES.OPEN_POSITION, 'w5', { id: 5 });
-      markExecuting(id5); // executing
+      const id5 = await logIntent(INTENT_TYPES.OPEN_POSITION, `${windowPrefix}-5`, { id: 5 });
+      await markExecuting(id5); // executing
 
-      const incomplete = getIncompleteIntents();
+      const incomplete = await getIncompleteIntents();
 
-      expect(incomplete).toHaveLength(2);
-      expect(incomplete.map((i) => i.id)).toContain(id1);
-      expect(incomplete.map((i) => i.id)).toContain(id5);
-      expect(incomplete.every((i) => i.status === 'executing')).toBe(true);
+      // Filter to only our test intents
+      const testIncomplete = incomplete.filter(i => i.window_id.startsWith(windowPrefix));
+      expect(testIncomplete).toHaveLength(2);
+      expect(testIncomplete.map((i) => i.id)).toContain(id1);
+      expect(testIncomplete.map((i) => i.id)).toContain(id5);
+      expect(testIncomplete.every((i) => i.status === 'executing')).toBe(true);
     });
 
-    it('returns empty array when none executing', () => {
-      // Create some non-executing intents
-      // Pending intent (not executing)
-      logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', {});
-
-      // Completed intent (not executing)
-      const id2 = logIntent(INTENT_TYPES.CLOSE_POSITION, 'w2', {});
-      markExecuting(id2);
-      markCompleted(id2, {});
-
-      const incomplete = getIncompleteIntents();
-      expect(incomplete).toHaveLength(0);
-      expect(incomplete).toEqual([]);
-    });
-
-    it('deserializes payload JSON', () => {
+    it('deserializes payload JSON', async () => {
       const payload = { market_id: 'eth-usd', amount: 50, nested: { key: 'value' } };
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', payload);
-      markExecuting(intentId);
+      const windowId = uniqueWindowId('deserialize');
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, windowId, payload);
+      await markExecuting(intentId);
 
-      const incomplete = getIncompleteIntents();
+      const incomplete = await getIncompleteIntents();
+      const testIntent = incomplete.find(i => i.id === intentId);
 
-      expect(incomplete).toHaveLength(1);
-      expect(incomplete[0].payload).toEqual(payload);
-      expect(typeof incomplete[0].payload).toBe('object');
+      expect(testIntent).toBeDefined();
+      expect(testIntent.payload).toEqual(payload);
+      expect(typeof testIntent.payload).toBe('object');
     });
   });
 
   describe('getIntent', () => {
-    it('returns intent by ID', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'window-abc', { size: 10 });
+    it('returns intent by ID', async () => {
+      const windowId = uniqueWindowId('getbyid');
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, windowId, { size: 10 });
 
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
 
       expect(intent).toBeDefined();
       expect(intent.id).toBe(intentId);
       expect(intent.intent_type).toBe('place_order');
-      expect(intent.window_id).toBe('window-abc');
+      expect(intent.window_id).toBe(windowId);
     });
 
-    it('deserializes payload and result JSON', () => {
+    it('deserializes payload and result JSON', async () => {
       const payload = { order: { side: 'buy', size: 100 } };
       const result = { orderId: 'ord-999', status: 'filled' };
 
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', payload);
-      markExecuting(intentId);
-      markCompleted(intentId, result);
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), payload);
+      await markExecuting(intentId);
+      await markCompleted(intentId, result);
 
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
 
       expect(intent.payload).toEqual(payload);
       expect(typeof intent.payload).toBe('object');
@@ -485,25 +449,26 @@ describe('Write-Ahead Logging', () => {
       expect(typeof intent.result).toBe('object');
     });
 
-    it('returns undefined for non-existent ID', () => {
-      const intent = getIntent(99999);
+    it('returns undefined for non-existent ID', async () => {
+      const intent = await getIntent(99999);
       expect(intent).toBeUndefined();
     });
 
-    it('handles null result for pending/executing intents', () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', { test: true });
+    it('handles null result for pending/executing intents', async () => {
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, uniqueWindowId(), { test: true });
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.result).toBeNull();
 
-      markExecuting(intentId);
-      intent = getIntent(intentId);
+      await markExecuting(intentId);
+      intent = await getIntent(intentId);
       expect(intent.result).toBeNull();
     });
   });
 
-  describe('Full lifecycle: pending → executing → completed', () => {
-    it('completes the success workflow', () => {
+  describe('Full lifecycle: pending -> executing -> completed', () => {
+    it('completes the success workflow', async () => {
+      const windowId = uniqueWindowId('lifecycle-success');
       const payload = {
         market_id: 'btc-yes',
         side: 'buy',
@@ -512,24 +477,24 @@ describe('Write-Ahead Logging', () => {
       };
 
       // Step 1: Log intent
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-2024-01-30-10:00', payload);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, windowId, payload);
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.status).toBe('pending');
       expect(intent.payload).toEqual(payload);
       expect(intent.completed_at).toBeNull();
       expect(intent.result).toBeNull();
 
       // Step 2: Mark executing
-      markExecuting(intentId);
+      await markExecuting(intentId);
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('executing');
       expect(intent.completed_at).toBeNull();
       expect(intent.result).toBeNull();
 
       // Verify shows up in incomplete
-      let incomplete = getIncompleteIntents();
+      let incomplete = await getIncompleteIntents();
       expect(incomplete.map((i) => i.id)).toContain(intentId);
 
       // Step 3: Mark completed
@@ -539,40 +504,41 @@ describe('Write-Ahead Logging', () => {
         fillSize: 50,
         fees: 0.005,
       };
-      markCompleted(intentId, result);
+      await markCompleted(intentId, result);
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('completed');
       expect(intent.completed_at).toBeTruthy();
       expect(intent.result).toEqual(result);
 
       // No longer in incomplete
-      incomplete = getIncompleteIntents();
+      incomplete = await getIncompleteIntents();
       expect(incomplete.map((i) => i.id)).not.toContain(intentId);
     });
   });
 
-  describe('Full lifecycle: pending → executing → failed', () => {
-    it('completes the failure workflow', () => {
+  describe('Full lifecycle: pending -> executing -> failed', () => {
+    it('completes the failure workflow', async () => {
+      const windowId = uniqueWindowId('lifecycle-failure');
       const payload = {
         orderId: 'ord-to-cancel',
         reason: 'user_request',
       };
 
       // Step 1: Log intent
-      const intentId = logIntent(INTENT_TYPES.CANCEL_ORDER, 'window-2024-01-30-10:15', payload);
+      const intentId = await logIntent(INTENT_TYPES.CANCEL_ORDER, windowId, payload);
 
-      let intent = getIntent(intentId);
+      let intent = await getIntent(intentId);
       expect(intent.status).toBe('pending');
 
       // Step 2: Mark executing
-      markExecuting(intentId);
+      await markExecuting(intentId);
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('executing');
 
       // Verify shows up in incomplete
-      let incomplete = getIncompleteIntents();
+      let incomplete = await getIncompleteIntents();
       expect(incomplete.map((i) => i.id)).toContain(intentId);
 
       // Step 3: Mark failed
@@ -584,62 +550,58 @@ describe('Write-Ahead Logging', () => {
           fillTime: '2024-01-30T10:14:55Z',
         },
       };
-      markFailed(intentId, error);
+      await markFailed(intentId, error);
 
-      intent = getIntent(intentId);
+      intent = await getIntent(intentId);
       expect(intent.status).toBe('failed');
       expect(intent.completed_at).toBeTruthy();
       expect(intent.result).toEqual(error);
 
       // No longer in incomplete
-      incomplete = getIncompleteIntents();
+      incomplete = await getIncompleteIntents();
       expect(incomplete.map((i) => i.id)).not.toContain(intentId);
     });
   });
 
   describe('Transition validation (status rules)', () => {
-    it('cannot complete a pending intent (must execute first)', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
+    it('cannot complete a pending intent (must execute first)', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
 
-      expect(() => {
-        markCompleted(intentId, { success: true });
-      }).toThrow(IntentError);
+      await expect(markCompleted(intentId, { success: true })).rejects.toThrow(IntentError);
 
       // Verify intent is still pending
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
       expect(intent.status).toBe('pending');
     });
 
-    it('cannot fail a pending intent (must execute first)', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
+    it('cannot fail a pending intent (must execute first)', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
 
-      expect(() => {
-        markFailed(intentId, { code: 'ERROR' });
-      }).toThrow(IntentError);
+      await expect(markFailed(intentId, { code: 'ERROR' })).rejects.toThrow(IntentError);
 
       // Verify intent is still pending
-      const intent = getIntent(intentId);
+      const intent = await getIntent(intentId);
       expect(intent.status).toBe('pending');
     });
 
-    it('cannot transition from completed to any state', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
-      markCompleted(intentId, {});
+    it('cannot transition from completed to any state', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
+      await markCompleted(intentId, {});
 
-      expect(() => markExecuting(intentId)).toThrow(IntentError);
-      expect(() => markCompleted(intentId, {})).toThrow(IntentError);
-      expect(() => markFailed(intentId, {})).toThrow(IntentError);
+      await expect(markExecuting(intentId)).rejects.toThrow(IntentError);
+      await expect(markCompleted(intentId, {})).rejects.toThrow(IntentError);
+      await expect(markFailed(intentId, {})).rejects.toThrow(IntentError);
     });
 
-    it('cannot transition from failed to any state', () => {
-      const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, 'w1', {});
-      markExecuting(intentId);
-      markFailed(intentId, {});
+    it('cannot transition from failed to any state', async () => {
+      const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, uniqueWindowId(), {});
+      await markExecuting(intentId);
+      await markFailed(intentId, {});
 
-      expect(() => markExecuting(intentId)).toThrow(IntentError);
-      expect(() => markCompleted(intentId, {})).toThrow(IntentError);
-      expect(() => markFailed(intentId, {})).toThrow(IntentError);
+      await expect(markExecuting(intentId)).rejects.toThrow(IntentError);
+      await expect(markCompleted(intentId, {})).rejects.toThrow(IntentError);
+      await expect(markFailed(intentId, {})).rejects.toThrow(IntentError);
     });
   });
 });

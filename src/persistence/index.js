@@ -4,11 +4,13 @@
  * Public interface for database operations.
  * Implements the standard module contract: init(), getState(), shutdown()
  *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
+ *
  * This module provides:
- * - SQLite database initialization
- * - Schema application (trade_intents table)
+ * - PostgreSQL database initialization
+ * - Schema application
  * - Migration infrastructure
- * - Query methods (run, get, all)
+ * - Query methods (run, get, all) - ALL ASYNC
  * - Raw SQL execution (exec)
  * - Transaction support (transaction)
  */
@@ -24,11 +26,15 @@ let initialized = false;
 /**
  * Initialize the persistence layer
  *
- * Creates database file, applies schema, runs migrations.
+ * Connects to PostgreSQL, applies schema, runs migrations.
  *
  * @param {Object} config - Configuration object
  * @param {Object} config.database - Database configuration
- * @param {string} config.database.path - Path to SQLite database file
+ * @param {string} config.database.url - PostgreSQL connection URL (DATABASE_URL)
+ * @param {Object} config.database.pool - Main pool configuration
+ * @param {Object} config.database.circuitBreakerPool - CB pool configuration
+ * @param {number} config.database.queryTimeoutMs - Query timeout
+ * @param {Object} config.database.retry - Retry configuration
  * @returns {Promise<void>}
  */
 async function init(config) {
@@ -36,24 +42,33 @@ async function init(config) {
     return;
   }
 
-  const dbPath = config?.database?.path;
-  if (!dbPath) {
+  const dbConfig = config?.database;
+  if (!dbConfig) {
     throw new PersistenceError(
       ErrorCodes.DB_CONNECTION_FAILED,
-      'Database path not configured',
+      'Database configuration not provided',
       { config }
     );
   }
 
-  console.log(`[persistence] Initializing with database path: ${dbPath}`);
+  // Require DATABASE_URL for PostgreSQL
+  if (!dbConfig.url) {
+    throw new PersistenceError(
+      ErrorCodes.DB_CONNECTION_FAILED,
+      'DATABASE_URL not configured. PostgreSQL is required.',
+      {}
+    );
+  }
 
-  // Open database connection
-  database.open(dbPath);
-  console.log('[persistence] Database connection opened');
+  console.log('[persistence] Initializing PostgreSQL connection...');
+
+  // Open database connection pools
+  await database.open(dbConfig);
+  console.log('[persistence] Database connection established');
 
   // Apply base schema (idempotent with CREATE IF NOT EXISTS)
   try {
-    applySchema();
+    await applySchema();
     console.log('[persistence] Base schema applied');
   } catch (err) {
     console.error('[persistence] Failed to apply schema:', err.message);
@@ -76,7 +91,7 @@ async function init(config) {
 /**
  * Get current module state
  *
- * @returns {{ initialized: boolean, connected: boolean, path: string|null }}
+ * @returns {{ initialized: boolean, connected: boolean, poolConfig: Object|null }}
  */
 function getState() {
   const dbState = database.getState();
@@ -89,12 +104,12 @@ function getState() {
 /**
  * Shutdown the persistence layer
  *
- * Closes database connection.
+ * Closes database connection pools.
  *
  * @returns {Promise<void>}
  */
 async function shutdown() {
-  database.close();
+  await database.close();
   initialized = false;
 }
 
@@ -103,9 +118,9 @@ async function shutdown() {
  *
  * @param {string} sql - SQL statement
  * @param {any[]} [params=[]] - Parameters for prepared statement
- * @returns {{ changes: number, lastInsertRowid: number|bigint }}
+ * @returns {Promise<{ changes: number, lastInsertRowid: number|null }>}
  */
-function run(sql, params = []) {
+async function run(sql, params = []) {
   if (!initialized) {
     throw new PersistenceError(
       ErrorCodes.DB_NOT_INITIALIZED,
@@ -117,13 +132,32 @@ function run(sql, params = []) {
 }
 
 /**
+ * Execute INSERT and return the inserted row's ID
+ * Use this for INSERT statements where you need the new row's ID
+ *
+ * @param {string} sql - INSERT statement
+ * @param {any[]} [params=[]] - Parameters for prepared statement
+ * @returns {Promise<{ changes: number, lastInsertRowid: number }>}
+ */
+async function runReturningId(sql, params = []) {
+  if (!initialized) {
+    throw new PersistenceError(
+      ErrorCodes.DB_NOT_INITIALIZED,
+      'Persistence layer not initialized. Call init() first.',
+      {}
+    );
+  }
+  return database.runReturningId(sql, params);
+}
+
+/**
  * Get single row from query
  *
  * @param {string} sql - SQL statement
  * @param {any[]} [params=[]] - Parameters for prepared statement
- * @returns {any|undefined} Single row or undefined
+ * @returns {Promise<any|undefined>} Single row or undefined
  */
-function get(sql, params = []) {
+async function get(sql, params = []) {
   if (!initialized) {
     throw new PersistenceError(
       ErrorCodes.DB_NOT_INITIALIZED,
@@ -139,9 +173,9 @@ function get(sql, params = []) {
  *
  * @param {string} sql - SQL statement
  * @param {any[]} [params=[]] - Parameters for prepared statement
- * @returns {any[]} Array of rows
+ * @returns {Promise<any[]>} Array of rows
  */
-function all(sql, params = []) {
+async function all(sql, params = []) {
   if (!initialized) {
     throw new PersistenceError(
       ErrorCodes.DB_NOT_INITIALIZED,
@@ -159,8 +193,9 @@ function all(sql, params = []) {
  * that don't require prepared statement parameters.
  *
  * @param {string} sql - SQL to execute (can contain multiple statements)
+ * @returns {Promise<void>}
  */
-function exec(sql) {
+async function exec(sql) {
   if (!initialized) {
     throw new PersistenceError(
       ErrorCodes.DB_NOT_INITIALIZED,
@@ -177,10 +212,13 @@ function exec(sql) {
  * Provides atomic execution of multiple database operations.
  * If the function throws, the transaction is rolled back.
  *
- * @param {Function} fn - Function to execute within transaction
- * @returns {any} Return value of the function
+ * @param {Function} fn - Async function to execute within transaction
+ *   Receives a client object with run, get, all methods
+ * @param {Object} options - Transaction options
+ * @param {string} options.isolationLevel - 'READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE'
+ * @returns {Promise<any>} Return value of the function
  */
-function transaction(fn) {
+async function transaction(fn, options = {}) {
   if (!initialized) {
     throw new PersistenceError(
       ErrorCodes.DB_NOT_INITIALIZED,
@@ -188,8 +226,26 @@ function transaction(fn) {
       {}
     );
   }
-  const db = database.getDb();
-  return db.transaction(fn)();
+  return database.transaction(fn, options);
+}
+
+/**
+ * Execute query using the circuit-breaker dedicated pool
+ * Use this for critical circuit-breaker state checks
+ *
+ * @param {string} sql - SQL statement
+ * @param {any[]} [params=[]] - Parameters
+ * @returns {Promise<any[]>} Result rows
+ */
+async function cbQuery(sql, params = []) {
+  if (!initialized) {
+    throw new PersistenceError(
+      ErrorCodes.DB_NOT_INITIALIZED,
+      'Persistence layer not initialized. Call init() first.',
+      {}
+    );
+  }
+  return database.cbQuery(sql, params);
 }
 
 // Export as default module with standard interface
@@ -198,11 +254,13 @@ export default {
   getState,
   shutdown,
   run,
+  runReturningId,
   get,
   all,
   exec,
   transaction,
+  cbQuery,
 };
 
 // Also export individual functions for convenience
-export { init, getState, shutdown, run, get, all, exec, transaction };
+export { init, getState, shutdown, run, runReturningId, get, all, exec, transaction, cbQuery };

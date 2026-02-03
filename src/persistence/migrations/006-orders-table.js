@@ -1,21 +1,22 @@
 /**
- * Migration 002: Orders Table
+ * Migration 006: Orders Table
  *
  * Creates the orders table for tracking order lifecycle.
  * This table stores all orders placed through the system,
  * linking them to trade intents for crash recovery.
+ *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
  */
 
-import { run } from '../database.js';
+import { exec } from '../database.js';
 
 /**
  * Apply the orders table schema
  */
-export function up() {
-  // Create orders table with all required columns
-  run(`
+export async function up() {
+  await exec(`
     CREATE TABLE IF NOT EXISTS orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       order_id TEXT UNIQUE NOT NULL,
       intent_id INTEGER,
       position_id INTEGER,
@@ -24,32 +25,33 @@ export function up() {
       token_id TEXT NOT NULL,
       side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
       order_type TEXT NOT NULL CHECK(order_type IN ('limit', 'market', 'GTC', 'FOK', 'IOC')),
-      price REAL,
-      size REAL NOT NULL,
-      filled_size REAL DEFAULT 0,
-      avg_fill_price REAL,
+      price DECIMAL(20, 8),
+      size DECIMAL(20, 8) NOT NULL,
+      filled_size DECIMAL(20, 8) DEFAULT 0,
+      avg_fill_price DECIMAL(20, 8),
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'open', 'partially_filled', 'filled', 'cancelled', 'expired', 'rejected')),
-      submitted_at TEXT NOT NULL,
+      submitted_at TIMESTAMPTZ NOT NULL,
       latency_ms INTEGER,
-      filled_at TEXT,
-      cancelled_at TEXT,
+      filled_at TIMESTAMPTZ,
+      cancelled_at TIMESTAMPTZ,
       error_message TEXT,
       FOREIGN KEY (intent_id) REFERENCES trade_intents(id)
-    )
-  `);
+    );
 
-  // Create indexes for efficient queries
-  run('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)');
-  run('CREATE INDEX IF NOT EXISTS idx_orders_window ON orders(window_id)');
-  run('CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders(order_id)');
+    CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+    CREATE INDEX IF NOT EXISTS idx_orders_window ON orders(window_id);
+    CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders(order_id);
+  `);
 }
 
 /**
  * Rollback the orders table
  */
-export function down() {
-  run('DROP INDEX IF EXISTS idx_orders_order_id');
-  run('DROP INDEX IF EXISTS idx_orders_window');
-  run('DROP INDEX IF EXISTS idx_orders_status');
-  run('DROP TABLE IF EXISTS orders');
+export async function down() {
+  await exec(`
+    DROP INDEX IF EXISTS idx_orders_order_id;
+    DROP INDEX IF EXISTS idx_orders_window;
+    DROP INDEX IF EXISTS idx_orders_status;
+    DROP TABLE IF EXISTS orders;
+  `);
 }

@@ -4,6 +4,9 @@
  * Implements the write-ahead logging pattern for crash recovery.
  * Every state-changing operation logs intent BEFORE execution.
  *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
+ * All operations are now async.
+ *
  * Flow:
  * 1. logIntent() - Create pending intent before action
  * 2. markExecuting() - Mark as executing when action starts
@@ -135,12 +138,12 @@ function safeParseJson(json) {
 /**
  * Get intent by ID and validate it exists
  * @param {number} intentId - Intent ID
- * @returns {Object} Intent record
+ * @returns {Promise<Object>} Intent record
  * @throws {IntentError} If intent not found
  */
-function getIntentOrThrow(intentId) {
-  const intent = persistence.get(
-    'SELECT * FROM trade_intents WHERE id = ?',
+async function getIntentOrThrow(intentId) {
+  const intent = await persistence.get(
+    'SELECT * FROM trade_intents WHERE id = $1',
     [intentId]
   );
 
@@ -183,12 +186,10 @@ function validateTransition(currentStatus, targetStatus) {
  * @param {string} type - Intent type (one of INTENT_TYPES)
  * @param {string} windowId - The 15-minute window ID (required, cannot be empty)
  * @param {Object} payload - Intent details (will be JSON serialized)
- * @returns {number} The intent ID (for tracking through lifecycle)
- *   Note: SQLite AUTOINCREMENT IDs are safe within JavaScript's Number range
- *   for typical usage. IDs exceeding 2^53 would require BigInt handling.
+ * @returns {Promise<number>} The intent ID (for tracking through lifecycle)
  * @throws {IntentError} If type/windowId is invalid or payload cannot be serialized
  */
-export function logIntent(type, windowId, payload) {
+export async function logIntent(type, windowId, payload) {
   // Validate intent type
   validateIntentType(type);
 
@@ -201,32 +202,29 @@ export function logIntent(type, windowId, payload) {
   // Generate timestamp
   const createdAt = new Date().toISOString();
 
-  // Insert with status='pending'
-  const result = persistence.run(
+  // Insert with status='pending' and get the ID back
+  const result = await persistence.runReturningId(
     `INSERT INTO trade_intents (intent_type, window_id, payload, status, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
+     VALUES ($1, $2, $3, $4, $5)`,
     [type, windowId, payloadJson, INTENT_STATUS.PENDING, createdAt]
   );
 
-  return Number(result.lastInsertRowid);
+  return result.lastInsertRowid;
 }
 
 /**
  * Mark intent as executing (operation starting)
  *
- * Note: This uses a read-then-write pattern which is safe for single-connection
- * SQLite usage. For multi-process scenarios, consider using database transactions
- * or optimistic locking with version columns.
- *
  * @param {number} intentId - The intent ID from logIntent
+ * @returns {Promise<void>}
  * @throws {IntentError} If intent not found or invalid transition
  */
-export function markExecuting(intentId) {
-  const intent = getIntentOrThrow(intentId);
+export async function markExecuting(intentId) {
+  const intent = await getIntentOrThrow(intentId);
   validateTransition(intent.status, INTENT_STATUS.EXECUTING);
 
-  persistence.run(
-    'UPDATE trade_intents SET status = ? WHERE id = ?',
+  await persistence.run(
+    'UPDATE trade_intents SET status = $1 WHERE id = $2',
     [INTENT_STATUS.EXECUTING, intentId]
   );
 }
@@ -236,17 +234,18 @@ export function markExecuting(intentId) {
  *
  * @param {number} intentId - The intent ID
  * @param {Object} result - Success result details
+ * @returns {Promise<void>}
  * @throws {IntentError} If intent not found, invalid transition, or result can't be serialized
  */
-export function markCompleted(intentId, result) {
-  const intent = getIntentOrThrow(intentId);
+export async function markCompleted(intentId, result) {
+  const intent = await getIntentOrThrow(intentId);
   validateTransition(intent.status, INTENT_STATUS.COMPLETED);
 
   const resultJson = serializePayload(result);
   const completedAt = new Date().toISOString();
 
-  persistence.run(
-    'UPDATE trade_intents SET status = ?, completed_at = ?, result = ? WHERE id = ?',
+  await persistence.run(
+    'UPDATE trade_intents SET status = $1, completed_at = $2, result = $3 WHERE id = $4',
     [INTENT_STATUS.COMPLETED, completedAt, resultJson, intentId]
   );
 }
@@ -256,17 +255,18 @@ export function markCompleted(intentId, result) {
  *
  * @param {number} intentId - The intent ID
  * @param {Object} error - Error details (code, message, context)
+ * @returns {Promise<void>}
  * @throws {IntentError} If intent not found, invalid transition, or error can't be serialized
  */
-export function markFailed(intentId, error) {
-  const intent = getIntentOrThrow(intentId);
+export async function markFailed(intentId, error) {
+  const intent = await getIntentOrThrow(intentId);
   validateTransition(intent.status, INTENT_STATUS.FAILED);
 
   const errorJson = serializePayload(error);
   const completedAt = new Date().toISOString();
 
-  persistence.run(
-    'UPDATE trade_intents SET status = ?, completed_at = ?, result = ? WHERE id = ?',
+  await persistence.run(
+    'UPDATE trade_intents SET status = $1, completed_at = $2, result = $3 WHERE id = $4',
     [INTENT_STATUS.FAILED, completedAt, errorJson, intentId]
   );
 }
@@ -274,11 +274,11 @@ export function markFailed(intentId, error) {
 /**
  * Get all intents with status='executing' (for crash recovery)
  *
- * @returns {Array<Object>} Intents that were executing when crash occurred
+ * @returns {Promise<Array<Object>>} Intents that were executing when crash occurred
  */
-export function getIncompleteIntents() {
-  const intents = persistence.all(
-    'SELECT * FROM trade_intents WHERE status = ?',
+export async function getIncompleteIntents() {
+  const intents = await persistence.all(
+    'SELECT * FROM trade_intents WHERE status = $1',
     [INTENT_STATUS.EXECUTING]
   );
 
@@ -294,11 +294,11 @@ export function getIncompleteIntents() {
  * Get a single intent by ID
  *
  * @param {number} intentId - The intent ID
- * @returns {Object|undefined} The intent record with parsed JSON, or undefined if not found
+ * @returns {Promise<Object|undefined>} The intent record with parsed JSON, or undefined if not found
  */
-export function getIntent(intentId) {
-  const intent = persistence.get(
-    'SELECT * FROM trade_intents WHERE id = ?',
+export async function getIntent(intentId) {
+  const intent = await persistence.get(
+    'SELECT * FROM trade_intents WHERE id = $1',
     [intentId]
   );
 

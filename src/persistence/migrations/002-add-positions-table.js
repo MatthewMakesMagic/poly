@@ -3,6 +3,8 @@
  *
  * Creates the positions table for tracking open positions.
  * Includes indexes on status and strategy_id for query optimization.
+ *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
  */
 
 import { exec } from '../database.js';
@@ -10,24 +12,24 @@ import { exec } from '../database.js';
 /**
  * Apply the positions table migration
  */
-export function up() {
-  exec(`
+export async function up() {
+  await exec(`
     CREATE TABLE IF NOT EXISTS positions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       window_id TEXT NOT NULL,
       market_id TEXT NOT NULL,
       token_id TEXT NOT NULL,
       side TEXT NOT NULL CHECK(side IN ('long', 'short')),
-      size REAL NOT NULL,
-      entry_price REAL NOT NULL,
-      current_price REAL,
+      size DECIMAL(20, 8) NOT NULL,
+      entry_price DECIMAL(20, 8) NOT NULL,
+      current_price DECIMAL(20, 8),
       status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed', 'liquidated')),
       strategy_id TEXT NOT NULL,
-      opened_at TEXT NOT NULL,
-      closed_at TEXT,
-      close_price REAL,
-      pnl REAL,
-      exchange_verified_at TEXT,
+      opened_at TIMESTAMPTZ NOT NULL,
+      closed_at TIMESTAMPTZ,
+      close_price DECIMAL(20, 8),
+      pnl DECIMAL(20, 8),
+      exchange_verified_at TIMESTAMPTZ,
       UNIQUE(window_id, market_id, token_id)
     );
 
@@ -39,8 +41,8 @@ export function up() {
 /**
  * Rollback the positions table migration
  */
-export function down() {
-  exec(`
+export async function down() {
+  await exec(`
     DROP INDEX IF EXISTS idx_positions_strategy;
     DROP INDEX IF EXISTS idx_positions_status;
     DROP TABLE IF EXISTS positions;

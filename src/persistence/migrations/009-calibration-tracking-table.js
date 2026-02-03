@@ -9,51 +9,52 @@
  * - Track actual outcomes when windows settle
  * - Calculate calibration error per bucket
  * - Detect model miscalibration
+ *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
  */
 
-import { run } from '../database.js';
+import { exec } from '../database.js';
 
 /**
  * Apply the probability_predictions table schema
  */
-export function up() {
-  // Create probability_predictions table
-  run(`
+export async function up() {
+  await exec(`
     CREATE TABLE IF NOT EXISTS probability_predictions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT NOT NULL,
+      id SERIAL PRIMARY KEY,
+      timestamp TIMESTAMPTZ NOT NULL,
       symbol TEXT NOT NULL,
       window_id TEXT NOT NULL,
-      predicted_p_up REAL NOT NULL,
+      predicted_p_up DECIMAL(10, 6) NOT NULL,
       bucket TEXT NOT NULL,
-      oracle_price_at_prediction REAL,
-      strike REAL,
+      oracle_price_at_prediction DECIMAL(20, 8),
+      strike DECIMAL(20, 8),
       time_to_expiry_ms INTEGER,
-      sigma_used REAL,
+      sigma_used DECIMAL(10, 6),
       vol_surprise INTEGER DEFAULT 0,
       actual_outcome TEXT,
       prediction_correct INTEGER,
-      settled_at TEXT
-    )
-  `);
+      settled_at TIMESTAMPTZ
+    );
 
-  // Create indexes for efficient queries
-  run('CREATE INDEX IF NOT EXISTS idx_prob_pred_timestamp ON probability_predictions(timestamp)');
-  run('CREATE INDEX IF NOT EXISTS idx_prob_pred_symbol ON probability_predictions(symbol)');
-  run('CREATE INDEX IF NOT EXISTS idx_prob_pred_bucket ON probability_predictions(bucket)');
-  run('CREATE INDEX IF NOT EXISTS idx_prob_pred_window ON probability_predictions(window_id)');
-  // Compound index for calibration queries: GROUP BY bucket WHERE actual_outcome IS NOT NULL
-  run('CREATE INDEX IF NOT EXISTS idx_prob_pred_bucket_outcome ON probability_predictions(bucket, actual_outcome)');
+    CREATE INDEX IF NOT EXISTS idx_prob_pred_timestamp ON probability_predictions(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_prob_pred_symbol ON probability_predictions(symbol);
+    CREATE INDEX IF NOT EXISTS idx_prob_pred_bucket ON probability_predictions(bucket);
+    CREATE INDEX IF NOT EXISTS idx_prob_pred_window ON probability_predictions(window_id);
+    CREATE INDEX IF NOT EXISTS idx_prob_pred_bucket_outcome ON probability_predictions(bucket, actual_outcome);
+  `);
 }
 
 /**
  * Rollback the probability_predictions table
  */
-export function down() {
-  run('DROP INDEX IF EXISTS idx_prob_pred_bucket_outcome');
-  run('DROP INDEX IF EXISTS idx_prob_pred_window');
-  run('DROP INDEX IF EXISTS idx_prob_pred_bucket');
-  run('DROP INDEX IF EXISTS idx_prob_pred_symbol');
-  run('DROP INDEX IF EXISTS idx_prob_pred_timestamp');
-  run('DROP TABLE IF EXISTS probability_predictions');
+export async function down() {
+  await exec(`
+    DROP INDEX IF EXISTS idx_prob_pred_bucket_outcome;
+    DROP INDEX IF EXISTS idx_prob_pred_window;
+    DROP INDEX IF EXISTS idx_prob_pred_bucket;
+    DROP INDEX IF EXISTS idx_prob_pred_symbol;
+    DROP INDEX IF EXISTS idx_prob_pred_timestamp;
+    DROP TABLE IF EXISTS probability_predictions;
+  `);
 }

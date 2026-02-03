@@ -11,43 +11,53 @@
  * - symbol: Crypto symbol (btc, eth, sol, xrp) for recalculation
  * - strategy_id: Strategy that generated the signal
  * - side_token: UP or DOWN - which token side this order is for
+ *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
  */
 
-import { run } from '../database.js';
+import { exec } from '../database.js';
 
 /**
  * Apply the signal context columns
  */
-export function up() {
-  // Add original_edge column
-  run(`ALTER TABLE orders ADD COLUMN original_edge REAL`);
+export async function up() {
+  await exec(`
+    -- Add original_edge column
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS original_edge DECIMAL(10, 6);
 
-  // Add original_model_probability column
-  run(`ALTER TABLE orders ADD COLUMN original_model_probability REAL`);
+    -- Add original_model_probability column
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS original_model_probability DECIMAL(10, 6);
 
-  // Add symbol column (crypto symbol for recalculation)
-  run(`ALTER TABLE orders ADD COLUMN symbol TEXT`);
+    -- Add symbol column (crypto symbol for recalculation)
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS symbol TEXT;
 
-  // Add strategy_id column
-  run(`ALTER TABLE orders ADD COLUMN strategy_id TEXT`);
+    -- Add strategy_id column (may already exist from previous migration)
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS strategy_id TEXT;
 
-  // Add side_token column (UP or DOWN)
-  run(`ALTER TABLE orders ADD COLUMN side_token TEXT CHECK(side_token IN ('UP', 'DOWN'))`);
+    -- Add side_token column (UP or DOWN)
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS side_token TEXT CHECK(side_token IN ('UP', 'DOWN'));
 
-  // Add index for efficient stale order queries (open orders with edge data)
-  run(`CREATE INDEX IF NOT EXISTS idx_orders_stale_check
-       ON orders(status, original_edge)
-       WHERE status IN ('open', 'partially_filled') AND original_edge IS NOT NULL`);
+    -- Add index for efficient stale order queries (open orders with edge data)
+    -- PostgreSQL supports partial indexes natively
+    CREATE INDEX IF NOT EXISTS idx_orders_stale_check
+    ON orders(status, original_edge)
+    WHERE status IN ('open', 'partially_filled') AND original_edge IS NOT NULL;
+  `);
 }
 
 /**
  * Rollback the signal context columns
+ * PostgreSQL supports DROP COLUMN, so we can do a clean rollback
  */
-export function down() {
-  // SQLite doesn't support DROP COLUMN directly in older versions
-  // For safety, we'll just drop the index
-  run('DROP INDEX IF EXISTS idx_orders_stale_check');
+export async function down() {
+  await exec(`
+    DROP INDEX IF EXISTS idx_orders_stale_check;
 
-  // Note: To fully rollback columns would require table recreation
-  // which is destructive. In practice, unused columns are harmless.
+    -- PostgreSQL allows dropping columns directly
+    ALTER TABLE orders DROP COLUMN IF EXISTS side_token;
+    ALTER TABLE orders DROP COLUMN IF EXISTS strategy_id;
+    ALTER TABLE orders DROP COLUMN IF EXISTS symbol;
+    ALTER TABLE orders DROP COLUMN IF EXISTS original_model_probability;
+    ALTER TABLE orders DROP COLUMN IF EXISTS original_edge;
+  `);
 }

@@ -3,6 +3,9 @@
  *
  * Discovers and runs database migrations in order.
  * Migrations are tracked in the schema_migrations table.
+ *
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
+ * All operations are now async.
  */
 
 import { readdirSync } from 'fs';
@@ -61,7 +64,9 @@ export async function runMigrations() {
   for (const filename of migrations) {
     const { version, name } = parseMigrationFilename(filename);
 
-    if (migrationApplied(version)) {
+    // Check if migration already applied (async)
+    const isApplied = await migrationApplied(version);
+    if (isApplied) {
       console.log(`[migrations] Skipping ${version}-${name} (already applied)`);
       continue;
     }
@@ -73,7 +78,7 @@ export async function runMigrations() {
       const migrationPath = join(__dirname, filename);
       const migration = await import(migrationPath);
 
-      // Run the migration
+      // Run the migration (async)
       if (typeof migration.up === 'function') {
         await migration.up();
       } else if (typeof migration.default === 'function') {
@@ -82,8 +87,8 @@ export async function runMigrations() {
         throw new Error('Migration must export an up() function or default function');
       }
 
-      // Record the migration
-      recordMigration(version, name);
+      // Record the migration (async)
+      await recordMigration(version, name);
       applied.push(version);
       console.log(`[migrations] Applied ${version}-${name}`);
     } catch (error) {
@@ -101,15 +106,16 @@ export async function runMigrations() {
 
 /**
  * Get list of pending migrations
- * @returns {string[]} Array of pending migration versions
+ * @returns {Promise<string[]>} Array of pending migration versions
  */
-export function getPendingMigrations() {
+export async function getPendingMigrations() {
   const pending = [];
   const migrations = getMigrationFiles();
 
   for (const filename of migrations) {
     const { version } = parseMigrationFilename(filename);
-    if (!migrationApplied(version)) {
+    const isApplied = await migrationApplied(version);
+    if (!isApplied) {
       pending.push(version);
     }
   }

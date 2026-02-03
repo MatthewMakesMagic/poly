@@ -7,17 +7,16 @@
  * Epic 6 - Story 6.1: Strategy Component Registry
  * Covers FR31 (version components independently) and FR32 (track component versions)
  *
- * Schema based on architecture.md specification.
+ * V3 Philosophy Implementation - Stage 2: PostgreSQL Foundation
  */
 
-import { run } from '../database.js';
+import { exec } from '../database.js';
 
 /**
  * Apply the strategy_instances table schema
  */
-export function up() {
-  // Create strategy_instances table per architecture.md
-  run(`
+export async function up() {
+  await exec(`
     CREATE TABLE IF NOT EXISTS strategy_instances (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -27,27 +26,24 @@ export function up() {
       exit_component TEXT NOT NULL,
       sizing_component TEXT NOT NULL,
       config TEXT NOT NULL,
-      created_at TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
       active INTEGER DEFAULT 1
-    )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_strategy_active ON strategy_instances(active);
+    CREATE INDEX IF NOT EXISTS idx_strategy_base ON strategy_instances(base_strategy_id);
+    CREATE INDEX IF NOT EXISTS idx_strategy_created ON strategy_instances(created_at);
   `);
-
-  // Create index on active column for efficient filtering
-  run('CREATE INDEX IF NOT EXISTS idx_strategy_active ON strategy_instances(active)');
-
-  // Create index on base_strategy_id for fork queries
-  run('CREATE INDEX IF NOT EXISTS idx_strategy_base ON strategy_instances(base_strategy_id)');
-
-  // Create index on created_at for chronological queries
-  run('CREATE INDEX IF NOT EXISTS idx_strategy_created ON strategy_instances(created_at)');
 }
 
 /**
  * Rollback the strategy_instances table
  */
-export function down() {
-  run('DROP INDEX IF EXISTS idx_strategy_created');
-  run('DROP INDEX IF EXISTS idx_strategy_base');
-  run('DROP INDEX IF EXISTS idx_strategy_active');
-  run('DROP TABLE IF EXISTS strategy_instances');
+export async function down() {
+  await exec(`
+    DROP INDEX IF EXISTS idx_strategy_created;
+    DROP INDEX IF EXISTS idx_strategy_base;
+    DROP INDEX IF EXISTS idx_strategy_active;
+    DROP TABLE IF EXISTS strategy_instances;
+  `);
 }
