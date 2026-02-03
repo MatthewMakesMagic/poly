@@ -40,7 +40,7 @@ export async function init(cfg) {
   log.info('module_init_start');
 
   // Load positions from database into cache
-  logic.loadPositionsFromDb(log);
+  await logic.loadPositionsFromDb(log);
 
   initialized = true;
   log.info('module_initialized');

@@ -399,10 +399,11 @@ export function updatePrice(positionId, newPrice, log) {
  * Load positions from database into cache on module init
  *
  * @param {Object} log - Logger instance
+ * @returns {Promise<void>}
  */
-export function loadPositionsFromDb(log) {
+export async function loadPositionsFromDb(log) {
   // Load open positions into cache
-  const openPositions = persistence.all(
+  const openPositions = await persistence.all(
     'SELECT * FROM positions WHERE status = ?',
     [PositionStatus.OPEN]
   );
