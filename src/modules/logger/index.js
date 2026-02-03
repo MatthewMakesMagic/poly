@@ -67,13 +67,12 @@ export async function init(config) {
   const requestedLevel = loggingConfig.level || 'info';
   const validLevel = isValidLevel(requestedLevel) ? requestedLevel : 'info';
 
-  // Set defaults
+  // Set defaults - console enabled by default (Railway captures stdout)
+  // V3 Philosophy: Same behavior everywhere, no NODE_ENV differences
   state.config = {
     level: validLevel,
     directory: loggingConfig.directory || './logs',
-    console: loggingConfig.console !== undefined
-      ? loggingConfig.console
-      : process.env.NODE_ENV !== 'production',
+    console: loggingConfig.console !== undefined ? loggingConfig.console : true,
   };
 
   // Create logs directory if it doesn't exist

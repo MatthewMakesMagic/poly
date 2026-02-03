@@ -15,11 +15,17 @@
  *   PORT - HTTP server port for health endpoint (default: 3333)
  */
 
+// IMMEDIATE DEBUG: Log env var BEFORE dotenv or any imports
+console.log(`[STARTUP] LIVE_TRADING_ENABLED (before dotenv): "${process.env.LIVE_TRADING_ENABLED}"`);
+
 import { config as loadEnv } from 'dotenv';
 
 // Load environment variables FIRST, before any other imports
 loadEnv({ path: '.env.local' });
 loadEnv(); // Fallback to .env
+
+// DEBUG: Log env var AFTER dotenv loads
+console.log(`[STARTUP] LIVE_TRADING_ENABLED (after dotenv): "${process.env.LIVE_TRADING_ENABLED}"`);
 
 // Now import the configuration and orchestrator
 import { createServer } from 'http';
@@ -129,7 +135,6 @@ async function main() {
   }
   console.log('═'.repeat(70));
   console.log(`   Trading Mode: ${tradingMode}`);
-  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`   Position Size: $${config.strategy?.sizing?.baseSizeDollars || 10}`);
   console.log(`   Max Exposure: $${config.risk?.maxExposure || 500}`);
   console.log(`   Drawdown Limit: ${config.risk?.dailyDrawdownLimit ? (config.risk.dailyDrawdownLimit * 100) + '%' : 'DISABLED'}`);

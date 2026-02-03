@@ -1,0 +1,26 @@
+# Exclude node_modules - native modules must be compiled in container
+node_modules
+
+# Exclude local data and logs
+data/
+logs/
+*.db
+
+# Exclude git
+.git
+.gitignore
+
+# Exclude dev/test artifacts
+coverage/
+.nyc_output/
+
+# Exclude environment files (secrets should be env vars)
+.env
+.env.*
+
+# Exclude IDE
+.vscode/
+.idea/
+
+# Exclude macOS
+.DS_Store
