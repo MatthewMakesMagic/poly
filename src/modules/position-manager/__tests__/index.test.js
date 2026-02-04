@@ -1,8 +1,9 @@
 /**
- * Position Manager Module Tests
+ * Position Manager Module Tests (V3 Stage 4: DB as single source of truth)
  *
  * Tests the public interface of the position manager module.
  * Uses vitest with mocked dependencies.
+ * All state queries now go directly to PostgreSQL (no in-memory cache).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -10,13 +11,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Mock dependencies
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-    get: vi.fn(),
-    all: vi.fn().mockReturnValue([]),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    runReturningId: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    get: vi.fn().mockResolvedValue(undefined),
+    all: vi.fn().mockResolvedValue([]),
   },
-  run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-  get: vi.fn(),
-  all: vi.fn().mockReturnValue([]),
+  run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+  runReturningId: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+  get: vi.fn().mockResolvedValue(undefined),
+  all: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../../persistence/write-ahead.js', () => ({
@@ -45,6 +48,11 @@ describe('Position Manager Module', () => {
     vi.clearAllMocks();
     // Reset module state before each test
     await positionManager.shutdown();
+    // Reset default mock implementations
+    persistence.get.mockResolvedValue(undefined);
+    persistence.all.mockResolvedValue([]);
+    persistence.run.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
+    persistence.runReturningId.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
   });
 
   afterEach(async () => {
@@ -53,12 +61,12 @@ describe('Position Manager Module', () => {
 
   describe('init()', () => {
     it('initializes module and updates state', async () => {
-      const stateBefore = positionManager.getState();
+      const stateBefore = await positionManager.getState();
       expect(stateBefore.initialized).toBe(false);
 
       await positionManager.init({});
 
-      const stateAfter = positionManager.getState();
+      const stateAfter = await positionManager.getState();
       expect(stateAfter.initialized).toBe(true);
     });
 
@@ -66,20 +74,16 @@ describe('Position Manager Module', () => {
       await positionManager.init({});
       await positionManager.init({});
 
-      expect(positionManager.getState().initialized).toBe(true);
+      const state = await positionManager.getState();
+      expect(state.initialized).toBe(true);
     });
 
-    it('loads open positions from database on init', async () => {
-      persistence.all.mockReturnValueOnce([
-        { id: 1, status: 'open', window_id: 'w1', market_id: 'm1', token_id: 't1', side: 'long', size: 100, entry_price: 0.5, current_price: 0.5, strategy_id: 's1', opened_at: '2026-01-30T00:00:00Z' },
-      ]);
-
+    it('no longer loads positions into cache on init', async () => {
       await positionManager.init({});
 
-      expect(persistence.all).toHaveBeenCalledWith(
-        expect.stringContaining('SELECT * FROM positions'),
-        ['open']
-      );
+      // No cache loading - persistence.all should not be called during init
+      // (it was previously called to load positions into cache)
+      expect(persistence.all).not.toHaveBeenCalled();
     });
   });
 
@@ -115,9 +119,9 @@ describe('Position Manager Module', () => {
         strategyId: 'strategy-1',
       });
 
-      // Verify logIntent was called before database run
+      // Verify logIntent was called before database runReturningId
       const logIntentCallOrder = writeAhead.logIntent.mock.invocationCallOrder[0];
-      const runCallOrder = persistence.run.mock.invocationCallOrder[0];
+      const runCallOrder = persistence.runReturningId.mock.invocationCallOrder[0];
       expect(logIntentCallOrder).toBeLessThan(runCallOrder);
 
       // Verify intent was logged with correct type
@@ -148,9 +152,9 @@ describe('Position Manager Module', () => {
 
       expect(writeAhead.markExecuting).toHaveBeenCalledWith(1);
 
-      // markExecuting should be called before database run
+      // markExecuting should be called before database runReturningId
       const markExecutingOrder = writeAhead.markExecuting.mock.invocationCallOrder[0];
-      const runOrder = persistence.run.mock.invocationCallOrder[0];
+      const runOrder = persistence.runReturningId.mock.invocationCallOrder[0];
       expect(markExecutingOrder).toBeLessThan(runOrder);
     });
 
@@ -165,7 +169,7 @@ describe('Position Manager Module', () => {
         strategyId: 'strategy-1',
       });
 
-      expect(persistence.run).toHaveBeenCalledWith(
+      expect(persistence.runReturningId).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO positions'),
         expect.arrayContaining([
           'window-1', // window_id
@@ -228,10 +232,9 @@ describe('Position Manager Module', () => {
     });
 
     it('rejects duplicate positions', async () => {
-      persistence.run.mockImplementationOnce(() => {
-        const error = new Error('UNIQUE constraint failed: positions.window_id, positions.market_id, positions.token_id');
-        throw error;
-      });
+      persistence.runReturningId.mockRejectedValueOnce(
+        new Error('UNIQUE constraint failed: positions.window_id, positions.market_id, positions.token_id')
+      );
 
       await expect(
         positionManager.addPosition({
@@ -349,12 +352,12 @@ describe('Position Manager Module', () => {
     it('throws when called before init', async () => {
       await positionManager.shutdown();
 
-      expect(() => positionManager.getPosition(1)).toThrow(
+      await expect(positionManager.getPosition(1)).rejects.toThrow(
         'Position manager not initialized'
       );
     });
 
-    it('returns position from cache after adding', async () => {
+    it('returns position from DB after adding', async () => {
       await positionManager.addPosition({
         windowId: 'window-1',
         marketId: 'market-1',
@@ -365,30 +368,50 @@ describe('Position Manager Module', () => {
         strategyId: 'strategy-1',
       });
 
-      const position = positionManager.getPosition(1);
+      // Mock DB to return the position
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
+        side: 'long',
+        size: 100,
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
+      });
+
+      const position = await positionManager.getPosition(1);
       expect(position).toBeDefined();
       expect(position.id).toBe(1);
       expect(position.token_id).toBe('token-1');
     });
 
     it('includes unrealized_pnl in response', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return the position
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
 
-      const position = positionManager.getPosition(1);
+      const position = await positionManager.getPosition(1);
       expect(position.unrealized_pnl).toBeDefined();
       expect(position.unrealized_pnl).toBe(0); // Same entry and current price
     });
 
-    it('falls back to database if not in cache', async () => {
-      persistence.get.mockReturnValueOnce({
+    it('queries database directly', async () => {
+      persistence.get.mockResolvedValueOnce({
         id: 99,
         window_id: 'w1',
         market_id: 'm1',
@@ -402,7 +425,7 @@ describe('Position Manager Module', () => {
         opened_at: '2026-01-30T00:00:00Z',
       });
 
-      const position = positionManager.getPosition(99);
+      const position = await positionManager.getPosition(99);
       expect(position).toBeDefined();
       expect(position.id).toBe(99);
       expect(persistence.get).toHaveBeenCalledWith(
@@ -412,9 +435,9 @@ describe('Position Manager Module', () => {
     });
 
     it('returns undefined for non-existent position', async () => {
-      persistence.get.mockReturnValueOnce(undefined);
+      persistence.get.mockResolvedValueOnce(undefined);
 
-      const position = positionManager.getPosition(999);
+      const position = await positionManager.getPosition(999);
       expect(position).toBeUndefined();
     });
   });
@@ -427,68 +450,62 @@ describe('Position Manager Module', () => {
     it('throws when called before init', async () => {
       await positionManager.shutdown();
 
-      expect(() => positionManager.getPositions()).toThrow(
+      await expect(positionManager.getPositions()).rejects.toThrow(
         'Position manager not initialized'
       );
     });
 
-    it('returns open positions from cache', async () => {
-      // Add positions to cache via addPosition
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
+    it('returns open positions from DB', async () => {
+      // Mock DB to return open positions
+      persistence.all.mockResolvedValueOnce([
+        {
+          id: 1,
+          window_id: 'window-1',
+          market_id: 'market-1',
+          token_id: 'token-1',
+          side: 'long',
+          size: 100,
+          entry_price: 0.5,
+          current_price: 0.5,
+          status: 'open',
+          strategy_id: 'strategy-1',
+        },
+        {
+          id: 2,
+          window_id: 'window-2',
+          market_id: 'market-2',
+          token_id: 'token-2',
+          side: 'short',
+          size: 50,
+          entry_price: 0.6,
+          current_price: 0.6,
+          status: 'open',
+          strategy_id: 'strategy-2',
+        },
+      ]);
 
-      persistence.run.mockReturnValueOnce({ lastInsertRowid: 2, changes: 1 });
-      await positionManager.addPosition({
-        windowId: 'window-2',
-        marketId: 'market-2',
-        tokenId: 'token-2',
-        side: 'short',
-        size: 50,
-        entryPrice: 0.6,
-        strategyId: 'strategy-2',
-      });
-
-      const positions = positionManager.getPositions();
+      const positions = await positionManager.getPositions();
       expect(positions).toHaveLength(2);
-      // Verify both positions are returned from cache
       expect(positions.some((p) => p.window_id === 'window-1')).toBe(true);
       expect(positions.some((p) => p.window_id === 'window-2')).toBe(true);
     });
 
-    it('returns only open positions', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
-
-      // Mock database to return the placed position
-      persistence.all.mockReturnValueOnce([
+    it('returns only open positions from DB', async () => {
+      persistence.all.mockResolvedValueOnce([
         { id: 1, status: 'open', side: 'long', size: 100, entry_price: 0.5, current_price: 0.5 },
       ]);
 
-      const openPositions = positionManager.getPositions();
+      const openPositions = await positionManager.getPositions();
       expect(openPositions.length).toBeGreaterThanOrEqual(1);
       expect(openPositions.every((p) => p.status === 'open')).toBe(true);
     });
 
     it('includes unrealized_pnl for each position', async () => {
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         { id: 1, status: 'open', side: 'long', size: 100, entry_price: 0.5, current_price: 0.6 },
       ]);
 
-      const positions = positionManager.getPositions();
+      const positions = await positionManager.getPositions();
       expect(positions[0].unrealized_pnl).toBeDefined();
     });
   });
@@ -507,26 +524,30 @@ describe('Position Manager Module', () => {
     });
 
     it('throws if position not found', async () => {
+      // DB returns no position
+      persistence.get.mockResolvedValueOnce(undefined);
+
       await expect(positionManager.closePosition(999, {})).rejects.toThrow(
         'Position not found: 999'
       );
     });
 
     it('closes position with normal close flow', async () => {
-      // First add a position
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return the open position for closePosition lookup
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
 
-      vi.clearAllMocks();
-
-      // Close the position
       const result = await positionManager.closePosition(1, {});
 
       expect(result.status).toBe('closed');
@@ -542,17 +563,20 @@ describe('Position Manager Module', () => {
     });
 
     it('closes position with emergency flag', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return the open position
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
-
-      vi.clearAllMocks();
 
       const result = await positionManager.closePosition(1, { emergency: true });
 
@@ -567,18 +591,20 @@ describe('Position Manager Module', () => {
     });
 
     it('updates position status, pnl, and closed_at', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return position with updated price
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.6,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
-
-      // Update price to create P&L
-      positionManager.updatePrice(1, 0.6);
 
       const result = await positionManager.closePosition(1, {});
 
@@ -590,17 +616,21 @@ describe('Position Manager Module', () => {
     });
 
     it('rejects closing already closed position', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return closed position
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'closed',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
+        closed_at: '2026-01-30T01:00:00Z',
       });
-
-      await positionManager.closePosition(1, {});
 
       await expect(positionManager.closePosition(1, {})).rejects.toThrow(
         'Cannot close position with status: closed'
@@ -608,14 +638,19 @@ describe('Position Manager Module', () => {
     });
 
     it('uses explicit closePrice when provided', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return the open position
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
 
       const result = await positionManager.closePosition(1, { closePrice: 0.7 });
@@ -626,14 +661,19 @@ describe('Position Manager Module', () => {
     });
 
     it('rejects invalid negative closePrice', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB to return the open position
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.5,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
 
       await expect(
@@ -676,19 +716,8 @@ describe('Position Manager Module', () => {
     });
 
     it('detects divergence when exchange balance differs', async () => {
-      // Add a position
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
-
       // Mock database to return our position
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         {
           id: 1,
           status: 'open',
@@ -715,17 +744,7 @@ describe('Position Manager Module', () => {
     });
 
     it('updates exchange_verified_at on match', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
-
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         {
           id: 1,
           status: 'open',
@@ -754,17 +773,7 @@ describe('Position Manager Module', () => {
     });
 
     it('logs warning for orphaned exchange positions', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
-
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         {
           id: 1,
           status: 'open',
@@ -796,24 +805,17 @@ describe('Position Manager Module', () => {
     it('throws when called before init', async () => {
       await positionManager.shutdown();
 
-      expect(() => positionManager.getCurrentExposure()).toThrow(
+      await expect(positionManager.getCurrentExposure()).rejects.toThrow(
         'Position manager not initialized'
       );
     });
 
-    it('returns total exposure from open positions', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
+    it('returns total exposure from DB', async () => {
+      // Mock DB to return exposure sum
+      persistence.get.mockResolvedValueOnce({ total: 50 }); // 100 * 0.5 = 50
 
-      // 100 * 0.5 = 50
-      expect(positionManager.getCurrentExposure()).toBe(50);
+      const exposure = await positionManager.getCurrentExposure();
+      expect(exposure).toBe(50);
     });
   });
 
@@ -825,75 +827,95 @@ describe('Position Manager Module', () => {
     it('throws when called before init', async () => {
       await positionManager.shutdown();
 
-      expect(() => positionManager.updatePrice(1, 0.6)).toThrow(
+      await expect(positionManager.updatePrice(1, 0.6)).rejects.toThrow(
         'Position manager not initialized'
       );
     });
 
-    it('updates current_price in cache', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+    it('updates current_price in DB', async () => {
+      // Mock DB: UPDATE RETURNING * returns updated row
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.6,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
 
-      const updated = positionManager.updatePrice(1, 0.6);
+      const updated = await positionManager.updatePrice(1, 0.6);
       expect(updated.current_price).toBe(0.6);
     });
 
     it('recalculates unrealized_pnl after price update', async () => {
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
+      // Mock DB: UPDATE RETURNING * returns updated row
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        window_id: 'window-1',
+        market_id: 'market-1',
+        token_id: 'token-1',
         side: 'long',
         size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+        entry_price: 0.5,
+        current_price: 0.6,
+        status: 'open',
+        strategy_id: 'strategy-1',
+        opened_at: '2026-01-30T00:00:00Z',
       });
 
-      const updated = positionManager.updatePrice(1, 0.6);
+      const updated = await positionManager.updatePrice(1, 0.6);
       // (0.6 - 0.5) * 100 * 1 = 10
       expect(updated.unrealized_pnl).toBeCloseTo(10, 5);
     });
 
     it('throws if position not found', async () => {
-      expect(() => positionManager.updatePrice(999, 0.6)).toThrow(
+      // Mock DB: UPDATE RETURNING * returns nothing (no row matched)
+      persistence.get.mockResolvedValueOnce(undefined);
+
+      await expect(positionManager.updatePrice(999, 0.6)).rejects.toThrow(
         'Position not found'
       );
     });
   });
 
   describe('getState()', () => {
-    it('returns initialized false before init', () => {
-      const state = positionManager.getState();
+    it('returns initialized false before init', async () => {
+      const state = await positionManager.getState();
       expect(state.initialized).toBe(false);
     });
 
     it('returns initialized true after init', async () => {
       await positionManager.init({});
-      const state = positionManager.getState();
+
+      // Mock getStats DB query
+      persistence.get.mockResolvedValueOnce({
+        open_count: 0,
+        closed_count: 0,
+        total_count: 0,
+        total_pnl: 0,
+      });
+
+      const state = await positionManager.getState();
       expect(state.initialized).toBe(true);
     });
 
-    it('includes position counts and stats after adding positions', async () => {
+    it('includes position counts and stats from DB', async () => {
       await positionManager.init({});
 
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
+      // Mock getStats DB query
+      persistence.get.mockResolvedValueOnce({
+        open_count: 1,
+        closed_count: 0,
+        total_count: 1,
+        total_pnl: 0,
       });
 
-      const state = positionManager.getState();
+      const state = await positionManager.getState();
       expect(state.positions).toBeDefined();
       expect(state.positions.open).toBe(1);
       expect(state.stats).toBeDefined();
@@ -909,7 +931,17 @@ describe('Position Manager Module', () => {
         },
       });
 
-      const state = positionManager.getState();
+      // Mock getStats DB query
+      persistence.get.mockResolvedValueOnce({
+        open_count: 0,
+        closed_count: 0,
+        total_count: 0,
+        total_pnl: 0,
+      });
+      // Mock calculateTotalExposure DB query
+      persistence.get.mockResolvedValueOnce({ total: 0 });
+
+      const state = await positionManager.getState();
       expect(state.limits).toBeDefined();
       expect(state.limits.maxPositionSize).toBe(100);
       expect(state.limits.maxExposure).toBe(500);
@@ -920,12 +952,20 @@ describe('Position Manager Module', () => {
     it('includes lastReconciliation after reconcile()', async () => {
       await positionManager.init({});
 
-      persistence.all.mockReturnValueOnce([]);
+      persistence.all.mockResolvedValueOnce([]);
 
       const mockClient = { getBalance: vi.fn() };
       await positionManager.reconcile(mockClient);
 
-      const state = positionManager.getState();
+      // Mock getStats DB query for getState
+      persistence.get.mockResolvedValueOnce({
+        open_count: 0,
+        closed_count: 0,
+        total_count: 0,
+        total_pnl: 0,
+      });
+
+      const state = await positionManager.getState();
       expect(state.lastReconciliation).toBeDefined();
       expect(state.lastReconciliation.timestamp).toBeDefined();
       expect(state.lastReconciliation.success).toBe(true);
@@ -935,10 +975,20 @@ describe('Position Manager Module', () => {
   describe('shutdown()', () => {
     it('cleans up resources and resets state', async () => {
       await positionManager.init({});
-      expect(positionManager.getState().initialized).toBe(true);
+
+      // Mock getStats for first getState call
+      persistence.get.mockResolvedValueOnce({
+        open_count: 0,
+        closed_count: 0,
+        total_count: 0,
+        total_pnl: 0,
+      });
+      const stateBefore = await positionManager.getState();
+      expect(stateBefore.initialized).toBe(true);
 
       await positionManager.shutdown();
-      expect(positionManager.getState().initialized).toBe(false);
+      const stateAfter = await positionManager.getState();
+      expect(stateAfter.initialized).toBe(false);
     });
 
     it('is idempotent - can be called multiple times', async () => {
@@ -946,27 +996,17 @@ describe('Position Manager Module', () => {
       await positionManager.shutdown();
       await positionManager.shutdown();
 
-      expect(positionManager.getState().initialized).toBe(false);
+      const state = await positionManager.getState();
+      expect(state.initialized).toBe(false);
     });
 
-    it('clears position cache', async () => {
+    it('clears state on shutdown', async () => {
       await positionManager.init({});
-
-      await positionManager.addPosition({
-        windowId: 'window-1',
-        marketId: 'market-1',
-        tokenId: 'token-1',
-        side: 'long',
-        size: 100,
-        entryPrice: 0.5,
-        strategyId: 'strategy-1',
-      });
-
-      expect(positionManager.getState().positions.open).toBe(1);
 
       await positionManager.shutdown();
 
-      expect(positionManager.getState().positions.open).toBe(0);
+      const state = await positionManager.getState();
+      expect(state.positions.open).toBe(0);
     });
   });
 });

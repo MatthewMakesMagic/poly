@@ -21,7 +21,7 @@ import {
   hasWarnedAtLevel,
   markWarnedAtLevel,
   clearAutoStopState,
-  deleteAutoStopStateFile,
+  resetAutoStopStateInDb,
   clearWarnedLevels,
 } from './state.js';
 import { SafetyError, SafetyErrorCodes } from './types.js';
@@ -404,8 +404,8 @@ export function triggerAutoStop(details, log, orderManager = null) {
     });
   }
 
-  // Persist auto-stop state to survive restarts
-  persistAutoStopState(log);
+  // Persist auto-stop state to survive restarts (fire-and-forget)
+  persistAutoStopState(log).catch(() => {});
 
   // Cancel all open orders (fire-and-forget, don't block on failure)
   if (orderManager && typeof orderManager.cancelAllOrders === 'function') {
@@ -444,7 +444,7 @@ export function triggerAutoStop(details, log, orderManager = null) {
  * @param {Object} [log] - Optional logger instance
  * @throws {SafetyError} If confirm is not true
  */
-export function resetAutoStop(options = {}, log) {
+export async function resetAutoStop(options = {}, log) {
   const { confirm } = options;
 
   if (confirm !== true) {
@@ -461,8 +461,8 @@ export function resetAutoStop(options = {}, log) {
   // Clear warning levels
   clearWarnedLevels();
 
-  // Delete persisted state file
-  deleteAutoStopStateFile(log);
+  // Reset persisted state in database
+  await resetAutoStopStateInDb(log);
 
   // Log the reset
   if (log) {

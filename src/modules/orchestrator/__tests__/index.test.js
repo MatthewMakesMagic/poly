@@ -61,22 +61,21 @@ vi.mock('../../safety/index.js', () => ({
   isAutoStopped: vi.fn().mockReturnValue(false),
 }));
 
-// Story 8-9: Safeguards module mock
+// V3 Stage 4: Safeguards module mock (async DB-backed operations)
 vi.mock('../../position-manager/safeguards.js', () => ({
   init: vi.fn().mockResolvedValue(undefined),
   shutdown: vi.fn().mockResolvedValue(undefined),
-  getState: vi.fn().mockReturnValue({ initialized: true, config: {}, stats: { entries_confirmed: 0, entries_reserved: 0, tick_entry_count: 0, symbols_tracked: 0 } }),
-  canEnterPosition: vi.fn().mockReturnValue({ allowed: true }),
-  recordEntry: vi.fn(),
-  reserveEntry: vi.fn().mockReturnValue(true),
-  confirmEntry: vi.fn().mockReturnValue(true),
-  releaseEntry: vi.fn().mockReturnValue(true),
-  removeEntry: vi.fn().mockReturnValue(true),
+  getState: vi.fn().mockResolvedValue({ initialized: true, config: {}, stats: { entries_confirmed: 0, entries_reserved: 0, tick_entry_count: 0 } }),
+  canEnterPosition: vi.fn().mockResolvedValue({ allowed: true }),
+  recordEntry: vi.fn().mockResolvedValue(undefined),
+  reserveEntry: vi.fn().mockResolvedValue(true),
+  confirmEntry: vi.fn().mockResolvedValue(true),
+  releaseEntry: vi.fn().mockResolvedValue(true),
+  removeEntry: vi.fn().mockResolvedValue(true),
   resetTickEntries: vi.fn(),
-  resetState: vi.fn(),
-  initializeFromPositions: vi.fn().mockReturnValue(0),
-  hasEnteredWindow: vi.fn().mockReturnValue(false),
-  getTimeSinceLastEntry: vi.fn().mockReturnValue(null),
+  resetState: vi.fn().mockResolvedValue(undefined),
+  hasEnteredWindow: vi.fn().mockResolvedValue(false),
+  getTimeSinceLastEntry: vi.fn().mockResolvedValue(null),
   getTickEntryCount: vi.fn().mockReturnValue(0),
 }));
 
@@ -193,6 +192,68 @@ vi.mock('../../strategy/logic.js', () => ({
 vi.mock('../../strategy/state.js', () => ({
   setCatalog: vi.fn(),
   getCatalog: vi.fn().mockReturnValue(null),
+}));
+
+// V3 Phase 5: Data capture module mocks
+vi.mock('../../tick-logger/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../oracle-tracker/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../divergence-tracker/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../lag-tracker/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../signal-outcome-logger/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../quality-gate/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../window-close-event-recorder/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../partition-manager/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+vi.mock('../../order-book-collector/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
+}));
+
+// Stale order evaluator mock
+vi.mock('../../stale-order-evaluator/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true }),
 }));
 
 vi.mock('../../../../kill-switch/state-snapshot.js', () => ({

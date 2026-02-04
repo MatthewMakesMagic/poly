@@ -11,7 +11,7 @@ import {
   createEntrySignal,
   createEvaluationResult,
 } from './types.js';
-import { hasEnteredWindow, markWindowEntered } from './state.js';
+
 
 // Entry threshold: 70%
 const ENTRY_THRESHOLD = 0.70;
@@ -57,19 +57,6 @@ export function evaluateEntry({
     threshold_pct: entryThreshold,
     time_remaining_ms,
   };
-
-  // Check if we've already entered this window
-  if (hasEnteredWindow(window_id)) {
-    const result = createEvaluationResult({
-      ...baseResult,
-      signal_generated: false,
-      reason: NoSignalReason.ALREADY_ENTERED_WINDOW,
-    });
-
-    logEvaluation(log, result, thresholds);
-
-    return { signal: null, result };
-  }
 
   // Check time remaining
   if (time_remaining_ms < minTimeRemainingMs) {
@@ -120,9 +107,6 @@ export function evaluateEntry({
     token_id_up,
     token_id_down,
   });
-
-  // Mark this window as entered
-  markWindowEntered(window_id);
 
   const result = createEvaluationResult({
     ...baseResult,

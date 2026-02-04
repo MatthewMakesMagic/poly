@@ -4,19 +4,18 @@
  * Tests for Story 4.4: Drawdown Limit Enforcement & Auto-Stop
  * Covers AC1-AC7: limit configuration, warning alerts, breach detection,
  * auto-stop trigger, manual resume, module interface, and orchestrator integration.
+ *
+ * V3 Stage 4: Updated for DB-based auto-stop state persistence.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
 
 // Mock dependencies
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-    get: vi.fn(),
-    all: vi.fn().mockReturnValue([]),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    get: vi.fn().mockResolvedValue(undefined),
+    all: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -58,7 +57,6 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       safety: {
         startingCapital: 1000,
         drawdownWarningPct: 0.03,
-        autoStopStateFile: './data/auto-stop-state.json',
       },
       risk: {
         dailyDrawdownLimit: 0.05,
@@ -274,24 +272,24 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
   });
 
   describe('resetAutoStop() (AC5)', () => {
-    it('should require confirmation', () => {
+    it('should require confirmation', async () => {
       setAutoStopped(true, 'test');
 
-      expect(() => resetAutoStop()).toThrow();
-      expect(() => resetAutoStop({})).toThrow();
-      expect(() => resetAutoStop({ confirm: false })).toThrow();
+      await expect(resetAutoStop()).rejects.toThrow();
+      await expect(resetAutoStop({})).rejects.toThrow();
+      await expect(resetAutoStop({ confirm: false })).rejects.toThrow();
     });
 
-    it('should clear auto-stop state with confirmation', () => {
+    it('should clear auto-stop state with confirmation', async () => {
       setAutoStopped(true, 'test');
       expect(isAutoStopped()).toBe(true);
 
-      resetAutoStop({ confirm: true });
+      await resetAutoStop({ confirm: true });
 
       expect(isAutoStopped()).toBe(false);
     });
 
-    it('should log reset event', () => {
+    it('should log reset event', async () => {
       setAutoStopped(true, 'test');
 
       const mockLog = {
@@ -299,18 +297,28 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
         warn: vi.fn(),
       };
 
-      resetAutoStop({ confirm: true }, mockLog);
+      await resetAutoStop({ confirm: true }, mockLog);
 
       expect(mockLog.info).toHaveBeenCalledWith('auto_stop_reset', expect.objectContaining({
         message: 'Auto-stop manually reset by user',
       }));
     });
 
-    it('should throw with correct error code', () => {
+    it('should reset auto-stop state in database', async () => {
+      setAutoStopped(true, 'test');
+
+      await resetAutoStop({ confirm: true });
+
+      expect(persistence.run).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE auto_stop_state')
+      );
+    });
+
+    it('should throw with correct error code', async () => {
       setAutoStopped(true, 'test');
 
       try {
-        resetAutoStop({ confirm: false });
+        await resetAutoStop({ confirm: false });
       } catch (err) {
         expect(err.code).toBe(SafetyErrorCodes.RESET_REQUIRES_CONFIRMATION);
       }
@@ -398,9 +406,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       expect(isAutoStopped()).toBe(true); // Still stopped
     });
 
-    it('should persist auto-stop state (AC4)', () => {
-      // triggerAutoStop calls persistAutoStopState which writes to file
-      // We verify the state is set correctly - file write is an implementation detail
+    it('should persist auto-stop state to database (AC4)', () => {
       triggerAutoStop({
         reason: 'test',
         current_pct: 0.06,
@@ -408,6 +414,11 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       });
 
       expect(isAutoStopped()).toBe(true);
+      // persistAutoStopState is called fire-and-forget, verify the DB call was initiated
+      expect(persistence.run).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE auto_stop_state'),
+        expect.arrayContaining([true])
+      );
     });
   });
 
@@ -440,103 +451,81 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
     });
   });
 
-  describe('Auto-Stop State Persistence (AC4, AC5)', () => {
-    // Use a temp directory for file-based tests
-    let tempDir;
-    let tempFile;
-
-    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safety-test-'));
-      tempFile = path.join(tempDir, 'auto-stop-state.json');
-      setConfig({
-        safety: {
-          startingCapital: 1000,
-          drawdownWarningPct: 0.03,
-          autoStopStateFile: tempFile,
-        },
-        risk: {
-          dailyDrawdownLimit: 0.05,
-        },
-      });
-    });
-
-    afterEach(() => {
-      // Clean up temp files
-      try {
-        if (fs.existsSync(tempFile)) {
-          fs.unlinkSync(tempFile);
-        }
-        if (fs.existsSync(tempDir)) {
-          fs.rmdirSync(tempDir);
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-    });
-
-    it('should persist state to file', () => {
+  describe('Auto-Stop State DB Persistence (AC4, AC5)', () => {
+    it('should persist state to database', async () => {
       setAutoStopped(true, 'test');
 
-      persistAutoStopState();
+      await persistAutoStopState();
 
-      expect(fs.existsSync(tempFile)).toBe(true);
-      const content = fs.readFileSync(tempFile, 'utf-8');
-      const data = JSON.parse(content);
-      expect(data.autoStopped).toBe(true);
-      expect(data.autoStopReason).toBe('test');
-      expect(data.date).toBe(today);
+      expect(persistence.run).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE auto_stop_state'),
+        expect.arrayContaining([true, expect.any(String), 'test', today])
+      );
     });
 
-    it('should load state from file if current day', () => {
-      const mockData = {
-        autoStopped: true,
-        autoStoppedAt: new Date().toISOString(),
-        autoStopReason: 'persisted_test',
+    it('should load state from database if current day', async () => {
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        auto_stopped: true,
+        auto_stopped_at: new Date().toISOString(),
+        auto_stop_reason: 'persisted_test',
         date: today,
-      };
-
-      fs.writeFileSync(tempFile, JSON.stringify(mockData), 'utf-8');
+        updated_at: new Date().toISOString(),
+      });
 
       // Clear current state first
       clearAutoStopState();
       expect(isAutoStopped()).toBe(false);
 
-      const loaded = loadAutoStopState();
+      const loaded = await loadAutoStopState();
 
       expect(loaded).not.toBeNull();
       expect(loaded.autoStopped).toBe(true);
       expect(isAutoStopped()).toBe(true);
     });
 
-    it('should ignore state from previous day', () => {
+    it('should ignore state from previous day', async () => {
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().split('T')[0];
 
-      const mockData = {
-        autoStopped: true,
-        autoStoppedAt: yesterday.toISOString(),
-        autoStopReason: 'old_test',
+      persistence.get.mockResolvedValueOnce({
+        id: 1,
+        auto_stopped: true,
+        auto_stopped_at: yesterday.toISOString(),
+        auto_stop_reason: 'old_test',
         date: yesterdayStr,
-      };
+        updated_at: yesterday.toISOString(),
+      });
 
-      fs.writeFileSync(tempFile, JSON.stringify(mockData), 'utf-8');
-
-      const loaded = loadAutoStopState();
+      const loaded = await loadAutoStopState();
 
       expect(loaded).toBeNull();
       expect(isAutoStopped()).toBe(false);
     });
 
-    it('should handle missing file gracefully', () => {
-      // Ensure file doesn't exist
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
-      }
+    it('should handle missing database row gracefully', async () => {
+      persistence.get.mockResolvedValueOnce(undefined);
 
-      const loaded = loadAutoStopState();
+      const loaded = await loadAutoStopState();
 
       expect(loaded).toBeNull();
+    });
+
+    it('should handle database errors gracefully', async () => {
+      persistence.get.mockRejectedValueOnce(new Error('DB connection failed'));
+
+      const mockLog = {
+        info: vi.fn(),
+        warn: vi.fn(),
+      };
+
+      const loaded = await loadAutoStopState(mockLog);
+
+      expect(loaded).toBeNull();
+      expect(mockLog.warn).toHaveBeenCalledWith('auto_stop_state_load_failed', expect.objectContaining({
+        error: 'DB connection failed',
+      }));
     });
   });
 

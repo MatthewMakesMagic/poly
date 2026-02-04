@@ -1,5 +1,5 @@
 /**
- * Order Manager Module Tests
+ * Order Manager Module Tests (V3 Stage 4: DB as single source of truth)
  *
  * Tests the public interface of the order manager module.
  * Uses vitest with mocked dependencies.
@@ -59,6 +59,10 @@ describe('Order Manager Module', () => {
     vi.clearAllMocks();
     // Reset module state before each test
     await orderManager.shutdown();
+    // Reset persistence mocks to defaults
+    persistence.run.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
+    persistence.get.mockResolvedValue(undefined);
+    persistence.all.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -444,12 +448,12 @@ describe('Order Manager Module', () => {
     it('throws when called before init', async () => {
       await orderManager.shutdown();
 
-      expect(() => orderManager.getOrder('order-123')).toThrow(
+      await expect(orderManager.getOrder('order-123')).rejects.toThrow(
         'Order manager not initialized'
       );
     });
 
-    it('returns order from cache after placing', async () => {
+    it('returns order from DB after placing', async () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
@@ -460,13 +464,20 @@ describe('Order Manager Module', () => {
         marketId: 'market-1',
       });
 
+      // Mock DB to return the placed order
+      persistence.get.mockResolvedValueOnce({
+        order_id: 'order-123',
+        token_id: 'token-1',
+        status: 'open',
+      });
+
       const order = await orderManager.getOrder('order-123');
       expect(order).toBeDefined();
       expect(order.order_id).toBe('order-123');
       expect(order.token_id).toBe('token-1');
     });
 
-    it('falls back to database if not in cache', async () => {
+    it('queries database directly', async () => {
       persistence.get.mockResolvedValueOnce({
         order_id: 'order-db-1',
         token_id: 'token-1',
@@ -498,7 +509,7 @@ describe('Order Manager Module', () => {
     it('throws when called before init', async () => {
       await orderManager.shutdown();
 
-      expect(() => orderManager.getOpenOrders()).toThrow(
+      await expect(orderManager.getOpenOrders()).rejects.toThrow(
         'Order manager not initialized'
       );
     });
@@ -605,7 +616,7 @@ describe('Order Manager Module', () => {
       expect(orderManager.getState().initialized).toBe(false);
     });
 
-    it('clears order cache', async () => {
+    it('clears session stats', async () => {
       await orderManager.init({});
 
       await orderManager.placeOrder({
@@ -618,11 +629,11 @@ describe('Order Manager Module', () => {
         marketId: 'market-1',
       });
 
-      expect(orderManager.getState().cachedOrderCount).toBe(1);
+      expect(orderManager.getState().ordersPlaced).toBe(1);
 
       await orderManager.shutdown();
 
-      expect(orderManager.getState().cachedOrderCount).toBe(0);
+      expect(orderManager.getState().ordersPlaced).toBe(0);
     });
   });
 });

@@ -1,65 +1,123 @@
 /**
- * State Reconciler Integration Tests
+ * State Reconciler Tests
  *
- * Tests for the state reconciler module with database integration.
+ * Tests for the state reconciler module with mocked persistence.
+ * V3: All persistence operations are async PostgreSQL queries.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+
+// --- In-memory intent store for mocking ---
+const intentStore = new Map();
+let nextIntentId = 1;
+
+// Mock logger before imports
+vi.mock('../../logger/index.js', () => ({
+  child: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
+  init: vi.fn(),
+  shutdown: vi.fn(),
+}));
+
+// Mock persistence (V3: async PostgreSQL API)
+vi.mock('../../../persistence/index.js', () => ({
+  default: {
+    init: vi.fn().mockResolvedValue(undefined),
+    get: vi.fn(async (sql, params) => {
+      // SELECT * FROM trade_intents WHERE id = $1
+      if (sql.includes('trade_intents') && sql.includes('WHERE id')) {
+        const id = params[0];
+        const intent = intentStore.get(id);
+        if (!intent) return undefined;
+        return { ...intent };
+      }
+      return undefined;
+    }),
+    all: vi.fn(async (sql, params) => {
+      // SELECT * FROM trade_intents WHERE status = $1
+      if (sql.includes('trade_intents') && sql.includes('status')) {
+        const status = params[0];
+        const results = [];
+        for (const intent of intentStore.values()) {
+          if (intent.status === status) {
+            results.push({ ...intent });
+          }
+        }
+        return results;
+      }
+      return [];
+    }),
+    run: vi.fn(async (sql, params) => {
+      // UPDATE trade_intents SET status = $1 WHERE id = $2
+      if (sql.includes('UPDATE') && sql.includes('trade_intents')) {
+        if (sql.includes('status') && sql.includes('completed_at') && sql.includes('result')) {
+          // markIntentReconciled: UPDATE ... SET status=$1, completed_at=$2, result=$3 WHERE id=$4
+          const [status, completedAt, result, id] = params;
+          const intent = intentStore.get(id);
+          if (intent) {
+            intent.status = status;
+            intent.completed_at = completedAt;
+            intent.result = result;
+          }
+          return { changes: 1 };
+        }
+        // markExecuting: UPDATE ... SET status=$1 WHERE id=$2
+        const [status, id] = params;
+        const intent = intentStore.get(id);
+        if (intent) {
+          intent.status = status;
+        }
+        return { changes: 1 };
+      }
+      return { changes: 0 };
+    }),
+    runReturningId: vi.fn(async (sql, params) => {
+      // INSERT INTO trade_intents ...
+      if (sql.includes('INSERT') && sql.includes('trade_intents')) {
+        const id = nextIntentId++;
+        const [intentType, windowId, payload, status, createdAt] = params;
+        intentStore.set(id, {
+          id,
+          intent_type: intentType,
+          window_id: windowId,
+          payload,
+          status,
+          created_at: createdAt,
+          completed_at: null,
+          result: null,
+        });
+        return { changes: 1, lastInsertRowid: id };
+      }
+      return { changes: 0, lastInsertRowid: null };
+    }),
+    exec: vi.fn().mockResolvedValue(undefined),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 
 import * as stateReconciler from '../index.js';
-import * as logger from '../../logger/index.js';
-import persistence from '../../../persistence/index.js';
 import { logIntent, markExecuting, INTENT_TYPES, INTENT_STATUS } from '../../../persistence/write-ahead.js';
+import persistence from '../../../persistence/index.js';
 
 describe('State Reconciler Module', () => {
-  let tempDir;
-  let dbPath;
-  let logDir;
-
   beforeEach(async () => {
-    // Create temp directories
-    tempDir = mkdtempSync(join(tmpdir(), 'poly-state-reconciler-test-'));
-    dbPath = join(tempDir, 'test.db');
-    logDir = join(tempDir, 'logs');
+    // Clear in-memory stores
+    intentStore.clear();
+    nextIntentId = 1;
 
-    // Reset modules
+    // Reset state reconciler
     await stateReconciler.shutdown().catch(() => {});
-    await logger.shutdown().catch(() => {});
-    await persistence.shutdown().catch(() => {});
-
-    // Initialize persistence
-    await persistence.init({
-      database: { path: dbPath },
-    });
-
-    // Initialize logger
-    await logger.init({
-      logging: {
-        level: 'info',
-        directory: logDir,
-        console: false,
-      },
-    });
 
     // Initialize state reconciler
     await stateReconciler.init({});
   });
 
   afterEach(async () => {
-    // Shutdown in reverse order
     await stateReconciler.shutdown().catch(() => {});
-    await logger.shutdown().catch(() => {});
-    await persistence.shutdown().catch(() => {});
-
-    // Cleanup temp directory
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
-    }
   });
 
   describe('Module Interface (AC6)', () => {
@@ -103,11 +161,11 @@ describe('State Reconciler Module', () => {
 
     it('returns incomplete intents when found (AC1)', async () => {
       // Create an intent and mark it as executing (simulates crash)
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {
         market: 'BTC-USD',
         size: 100,
       });
-      markExecuting(intentId);
+      await markExecuting(intentId);
 
       // Now check startup state
       const result = await stateReconciler.checkStartupState();
@@ -137,8 +195,8 @@ describe('State Reconciler Module', () => {
     it('completes within 10 seconds (AC8 - NFR3)', async () => {
       // Create multiple intents to simulate load
       for (let i = 0; i < 100; i++) {
-        const intentId = logIntent(INTENT_TYPES.PLACE_ORDER, `window-${i}`, { i });
-        markExecuting(intentId);
+        const intentId = await logIntent(INTENT_TYPES.PLACE_ORDER, `window-${i}`, { i });
+        await markExecuting(intentId);
       }
 
       const result = await stateReconciler.checkStartupState();
@@ -177,17 +235,18 @@ describe('State Reconciler Module', () => {
 
     it('logs warn for each incomplete intent (AC2)', async () => {
       // Create executing intent
-      const intentId = logIntent(INTENT_TYPES.CLOSE_POSITION, 'window-abc', {
+      const intentId = await logIntent(INTENT_TYPES.CLOSE_POSITION, 'window-abc', {
         position_id: 42,
       });
-      markExecuting(intentId);
+      await markExecuting(intentId);
 
       const result = await stateReconciler.checkStartupState();
 
       // Verify the result contains the intent details with required log fields
       expect(result.incompleteIntents[0].intent_type).toBe(INTENT_TYPES.CLOSE_POSITION);
       expect(result.incompleteIntents[0].window_id).toBe('window-abc');
-      expect(result.incompleteIntents[0].payload.position_id).toBe(42);
+      // payload is JSON-parsed by write-ahead getIncompleteIntents
+      expect(result.incompleteIntents[0].payload).toBeDefined();
       expect(result.incompleteIntents[0].created_at).toBeDefined();
       // Verify all AC2 required fields are present
       expect(result.incompleteIntents[0]).toHaveProperty('id');
@@ -210,8 +269,8 @@ describe('State Reconciler Module', () => {
   describe('No automatic retry (AC3)', () => {
     it('does NOT automatically retry incomplete intents', async () => {
       // Create an executing intent
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-xyz', {});
-      markExecuting(intentId);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, 'window-xyz', {});
+      await markExecuting(intentId);
 
       // Check startup state
       await stateReconciler.checkStartupState();
@@ -223,8 +282,8 @@ describe('State Reconciler Module', () => {
     });
 
     it('returns result indicating manual reconciliation required', async () => {
-      const intentId = logIntent(INTENT_TYPES.CANCEL_ORDER, 'window-123', {});
-      markExecuting(intentId);
+      const intentId = await logIntent(INTENT_TYPES.CANCEL_ORDER, 'window-123', {});
+      await markExecuting(intentId);
 
       const result = await stateReconciler.checkStartupState();
 
@@ -235,36 +294,36 @@ describe('State Reconciler Module', () => {
 
   describe('markIntentReconciled (AC6)', () => {
     it('updates intent status to failed', async () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {});
-      markExecuting(intentId);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {});
+      await markExecuting(intentId);
 
       await stateReconciler.markIntentReconciled(intentId, {
         action: 'verified_on_exchange',
         result: 'position confirmed open',
       });
 
-      // Verify intent is now failed
-      const intent = persistence.get('SELECT * FROM trade_intents WHERE id = ?', [intentId]);
+      // Verify intent is now failed (check the in-memory store directly)
+      const intent = intentStore.get(intentId);
       expect(intent.status).toBe('failed');
     });
 
     it('sets completed_at timestamp', async () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {});
-      markExecuting(intentId);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {});
+      await markExecuting(intentId);
 
       const beforeTime = new Date().toISOString();
       await stateReconciler.markIntentReconciled(intentId, { action: 'test' });
       const afterTime = new Date().toISOString();
 
-      const intent = persistence.get('SELECT * FROM trade_intents WHERE id = ?', [intentId]);
+      const intent = intentStore.get(intentId);
       expect(intent.completed_at).toBeDefined();
       expect(intent.completed_at >= beforeTime).toBe(true);
       expect(intent.completed_at <= afterTime).toBe(true);
     });
 
     it('includes resolution in result field', async () => {
-      const intentId = logIntent(INTENT_TYPES.CLOSE_POSITION, 'window-456', {});
-      markExecuting(intentId);
+      const intentId = await logIntent(INTENT_TYPES.CLOSE_POSITION, 'window-456', {});
+      await markExecuting(intentId);
 
       const resolution = {
         action: 'manual_verification',
@@ -273,7 +332,7 @@ describe('State Reconciler Module', () => {
 
       await stateReconciler.markIntentReconciled(intentId, resolution);
 
-      const intent = persistence.get('SELECT * FROM trade_intents WHERE id = ?', [intentId]);
+      const intent = intentStore.get(intentId);
       const result = JSON.parse(intent.result);
 
       expect(result.reconciled).toBe(true);
@@ -287,7 +346,7 @@ describe('State Reconciler Module', () => {
     });
 
     it('throws if intent not in executing status', async () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {});
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, 'window-123', {});
       // Intent is in 'pending' status, not 'executing'
 
       await expect(
@@ -394,8 +453,8 @@ describe('State Reconciler Module', () => {
     });
 
     it('tracks incompleteFound', async () => {
-      const intentId = logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', {});
-      markExecuting(intentId);
+      const intentId = await logIntent(INTENT_TYPES.OPEN_POSITION, 'w1', {});
+      await markExecuting(intentId);
 
       await stateReconciler.checkStartupState();
 

@@ -1,5 +1,5 @@
 /**
- * Position Manager Module
+ * Position Manager Module (V3 Stage 4: DB as single source of truth)
  *
  * Public interface for position lifecycle management.
  * Follows the standard module interface: init(config), getState(), shutdown()
@@ -9,13 +9,15 @@
  * - Query positions by ID or status
  * - Update position prices for unrealized P&L calculation
  *
+ * All reads go directly to PostgreSQL (no in-memory cache).
+ *
  * @module modules/position-manager
  */
 
 import { child } from '../logger/index.js';
 import { PositionManagerError, PositionManagerErrorCodes } from './types.js';
 import * as logic from './logic.js';
-import { getStats, clearCache, calculateTotalExposure, getLastReconciliation } from './state.js';
+import { getStats, clearState, calculateTotalExposure, getLastReconciliation } from './state.js';
 
 // Module state
 let log = null;
@@ -39,8 +41,7 @@ export async function init(cfg) {
 
   log.info('module_init_start');
 
-  // Load positions from database into cache
-  await logic.loadPositionsFromDb(log);
+  // No cache to load - DB is single source of truth
 
   initialized = true;
   log.info('module_initialized');
@@ -71,9 +72,9 @@ export async function addPosition(params) {
  * Get a single position by ID
  *
  * @param {number} positionId - Position ID
- * @returns {Object|undefined} Position details including unrealized_pnl or undefined
+ * @returns {Promise<Object|undefined>} Position details including unrealized_pnl or undefined
  */
-export function getPosition(positionId) {
+export async function getPosition(positionId) {
   ensureInitialized();
   return logic.getPosition(positionId);
 }
@@ -81,9 +82,9 @@ export function getPosition(positionId) {
 /**
  * Get all open positions
  *
- * @returns {Object[]} Array of open positions with unrealized_pnl
+ * @returns {Promise<Object[]>} Array of open positions with unrealized_pnl
  */
-export function getPositions() {
+export async function getPositions() {
   ensureInitialized();
   return logic.getPositions();
 }
@@ -108,10 +109,10 @@ export async function closePosition(positionId, params = {}) {
  *
  * @param {number} positionId - Position ID
  * @param {number} newPrice - New current price
- * @returns {Object} Updated position with unrealized_pnl
+ * @returns {Promise<Object>} Updated position with unrealized_pnl
  * @throws {PositionManagerError} If position not found
  */
-export function updatePrice(positionId, newPrice) {
+export async function updatePrice(positionId, newPrice) {
   ensureInitialized();
   return logic.updatePrice(positionId, newPrice, log);
 }
@@ -133,9 +134,9 @@ export async function reconcile(polymarketClient) {
 /**
  * Get current total exposure across all open positions
  *
- * @returns {number} Total exposure (sum of size * entry_price for all open positions)
+ * @returns {Promise<number>} Total exposure (sum of size * entry_price for all open positions)
  */
-export function getCurrentExposure() {
+export async function getCurrentExposure() {
   ensureInitialized();
   return calculateTotalExposure();
 }
@@ -143,20 +144,23 @@ export function getCurrentExposure() {
 /**
  * Get current module state
  *
- * @returns {Object} Current state including initialization status, stats, limits, and reconciliation
+ * @returns {Promise<Object>} Current state including initialization status, stats, limits, and reconciliation
  */
-export function getState() {
+export async function getState() {
+  const stats = initialized ? await getStats() : { positions: { open: 0, closed: 0 }, stats: { totalOpened: 0, totalClosed: 0, totalPnl: 0 } };
+
   const state = {
     initialized,
-    ...getStats(),
+    ...stats,
   };
 
   // Add limits info if config available
   if (config?.risk) {
+    const currentExposure = initialized ? await calculateTotalExposure() : 0;
     state.limits = {
       maxPositionSize: config.risk.maxPositionSize,
       maxExposure: config.risk.maxExposure,
-      currentExposure: calculateTotalExposure(),
+      currentExposure,
       positionLimitPerMarket: config.risk.positionLimitPerMarket,
     };
   }
@@ -180,8 +184,8 @@ export async function shutdown() {
     log.info('module_shutdown_start');
   }
 
-  // Clear the cache
-  clearCache();
+  // Clear state (reconciliation data)
+  clearState();
 
   config = null;
   initialized = false;

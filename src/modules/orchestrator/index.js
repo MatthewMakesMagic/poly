@@ -386,21 +386,6 @@ async function initializeModules(cfg) {
         }
       }
 
-      // Story 8-9: Initialize safeguards from existing positions after position-manager loads
-      if (entry.name === 'safeguards') {
-        const positionManagerModule = getModule('position-manager');
-        if (positionManagerModule && typeof positionManagerModule.getPositions === 'function') {
-          const openPositions = positionManagerModule.getPositions();
-          if (moduleInstance.initializeFromPositions) {
-            const initializedCount = moduleInstance.initializeFromPositions(openPositions);
-            log.info('safeguards_initialized_from_positions', {
-              positions_count: openPositions.length,
-              entries_initialized: initializedCount,
-            });
-          }
-        }
-      }
-
       log.info('module_init_complete', { module: entry.name });
     } catch (err) {
       log.error('module_init_failed', {

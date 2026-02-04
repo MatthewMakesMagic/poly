@@ -1,21 +1,15 @@
 /**
- * Order Manager State
+ * Order Manager State (V3 Stage 4: DB as single source of truth)
  *
- * In-memory order tracking for fast access.
- * Synchronized with database for persistence.
+ * All order queries go directly to PostgreSQL.
+ * Session-level stats kept in memory for monitoring.
  */
 
+import persistence from '../../persistence/index.js';
 import { OrderStatus } from './types.js';
 
 /**
- * In-memory order cache
- * Key: order_id, Value: order object
- * @type {Map<string, Object>}
- */
-const orderCache = new Map();
-
-/**
- * Module statistics
+ * Session-level statistics (monitoring only, not trading state)
  */
 const stats = {
   ordersPlaced: 0,
@@ -30,89 +24,57 @@ const stats = {
 };
 
 /**
- * Add an order to the cache
- * @param {Object} order - Order object
- * @param {boolean} [isNewOrder=true] - Whether this is a newly placed order (affects stats)
- */
-export function cacheOrder(order, isNewOrder = true) {
-  orderCache.set(order.order_id, { ...order });
-  if (isNewOrder) {
-    stats.ordersPlaced++;
-    stats.lastOrderTime = new Date().toISOString();
-  }
-}
-
-/**
- * Get an order from the cache
+ * Get an order from the DB
  * @param {string} orderId - Order ID
- * @returns {Object|undefined} Order object or undefined
+ * @returns {Promise<Object|undefined>} Order object or undefined
  */
-export function getCachedOrder(orderId) {
-  const order = orderCache.get(orderId);
-  return order ? { ...order } : undefined;
+export async function getOrder(orderId) {
+  return persistence.get('SELECT * FROM orders WHERE order_id = $1', [orderId]);
 }
 
 /**
- * Update an order in the cache
- * @param {string} orderId - Order ID
- * @param {Object} updates - Fields to update
- * @returns {Object|undefined} Updated order or undefined if not found
+ * Get open orders from DB
+ * @returns {Promise<Object[]>} Array of open orders
  */
-export function updateCachedOrder(orderId, updates) {
-  const order = orderCache.get(orderId);
-  if (!order) {
-    return undefined;
-  }
-
-  const updated = { ...order, ...updates };
-  orderCache.set(orderId, updated);
-
-  // Update stats based on status change
-  if (updates.status === OrderStatus.FILLED) {
-    stats.ordersFilled++;
-  } else if (updates.status === OrderStatus.CANCELLED) {
-    stats.ordersCancelled++;
-  } else if (updates.status === OrderStatus.REJECTED) {
-    stats.ordersRejected++;
-  }
-
-  return { ...updated };
-}
-
-/**
- * Get all cached orders matching a filter
- * @param {Function} filterFn - Filter function
- * @returns {Object[]} Array of matching orders
- */
-export function getCachedOrders(filterFn) {
-  const orders = [];
-  for (const order of orderCache.values()) {
-    if (!filterFn || filterFn(order)) {
-      orders.push({ ...order });
-    }
-  }
-  return orders;
-}
-
-/**
- * Get open orders from cache
- * @returns {Object[]} Array of open orders
- */
-export function getCachedOpenOrders() {
-  return getCachedOrders(
-    (order) =>
-      order.status === OrderStatus.OPEN ||
-      order.status === OrderStatus.PARTIALLY_FILLED
+export async function getOpenOrders() {
+  return persistence.all(
+    `SELECT * FROM orders WHERE status IN ($1, $2)`,
+    [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
   );
 }
 
 /**
- * Get orders by window ID from cache
+ * Get orders by window ID from DB
  * @param {string} windowId - Window ID
- * @returns {Object[]} Array of orders for the window
+ * @returns {Promise<Object[]>} Array of orders for the window
  */
-export function getCachedOrdersByWindow(windowId) {
-  return getCachedOrders((order) => order.window_id === windowId);
+export async function getOrdersByWindow(windowId) {
+  return persistence.all(
+    'SELECT * FROM orders WHERE window_id = $1',
+    [windowId]
+  );
+}
+
+/**
+ * Record a new order placement in stats
+ */
+export function recordOrderPlaced() {
+  stats.ordersPlaced++;
+  stats.lastOrderTime = new Date().toISOString();
+}
+
+/**
+ * Record status change in stats
+ * @param {string} newStatus - New order status
+ */
+export function recordStatusChange(newStatus) {
+  if (newStatus === OrderStatus.FILLED) {
+    stats.ordersFilled++;
+  } else if (newStatus === OrderStatus.CANCELLED) {
+    stats.ordersCancelled++;
+  } else if (newStatus === OrderStatus.REJECTED) {
+    stats.ordersRejected++;
+  }
 }
 
 /**
@@ -144,7 +106,6 @@ export function recordPartialFill() {
  * @returns {Object} State statistics
  */
 export function getStats() {
-  const cachedOrderCount = orderCache.size;
   const avgLatencyMs =
     stats.ordersPlaced > 0
       ? Math.round(stats.totalLatencyMs / stats.ordersPlaced)
@@ -155,7 +116,6 @@ export function getStats() {
       : 0;
 
   return {
-    cachedOrderCount,
     ordersPlaced: stats.ordersPlaced,
     ordersFilled: stats.ordersFilled,
     ordersCancelled: stats.ordersCancelled,
@@ -168,11 +128,9 @@ export function getStats() {
 }
 
 /**
- * Clear all cached orders
- * Used during shutdown or testing
+ * Clear stats (for shutdown or testing)
  */
-export function clearCache() {
-  orderCache.clear();
+export function clearStats() {
   stats.ordersPlaced = 0;
   stats.ordersFilled = 0;
   stats.ordersCancelled = 0;
@@ -182,19 +140,4 @@ export function clearCache() {
   stats.cancelLatencyMs = 0;
   stats.cancelCount = 0;
   stats.lastOrderTime = null;
-}
-
-/**
- * Load orders into cache from database
- * Does not increment stats since these are historical orders, not new placements.
- * @param {Object[]} orders - Array of orders from database
- */
-export function loadOrdersIntoCache(orders) {
-  if (!orders || !Array.isArray(orders)) {
-    return;
-  }
-  for (const order of orders) {
-    // Use cacheOrder with isNewOrder=false to avoid inflating stats
-    cacheOrder(order, false);
-  }
 }

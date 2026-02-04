@@ -199,8 +199,12 @@ describe('StrategyEvaluator Module', () => {
       expect(signals[1].window_id).toBe('window-2');
     });
 
-    it('only allows 1 entry per window', () => {
-      // First evaluation - should enter
+    // V3 Stage 4: Duplicate window entry prevention moved to DB-level safeguards module.
+    // The strategy evaluator now always evaluates windows independently;
+    // duplicate prevention is handled by position-manager/safeguards.js using
+    // the window_entries table in PostgreSQL.
+    it('evaluates same window on subsequent calls (duplicate prevention is DB-level)', () => {
+      // First evaluation - should generate signal
       const signals1 = strategyEvaluator.evaluateEntryConditions({
         spot_price: 100000,
         windows: [{
@@ -213,18 +217,19 @@ describe('StrategyEvaluator Module', () => {
 
       expect(signals1).toHaveLength(1);
 
-      // Second evaluation on same window - should NOT enter
+      // Second evaluation on same window - also generates signal
+      // (duplicate prevention is now at the safeguards/DB level, not evaluator level)
       const signals2 = strategyEvaluator.evaluateEntryConditions({
         spot_price: 100000,
         windows: [{
           window_id: 'same-window',
           market_id: 'btc-up',
-          market_price: 0.85, // Even higher price
+          market_price: 0.85,
           time_remaining_ms: 500000,
         }],
       });
 
-      expect(signals2).toHaveLength(0);
+      expect(signals2).toHaveLength(1);
     });
 
     it('different windows can each generate signals', () => {

@@ -9,8 +9,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ExecutionLoop } from '../../src/modules/orchestrator/execution-loop.js';
-import * as safeguards from '../../src/modules/position-manager/safeguards.js';
 
 // Mock the logger for safeguards module
 vi.mock('../../src/modules/logger/index.js', () => ({
@@ -21,6 +19,119 @@ vi.mock('../../src/modules/logger/index.js', () => ({
     debug: vi.fn(),
   })),
 }));
+
+// V3 Stage 4: Mock persistence for DB-backed safeguards
+// Simulates window_entries table in-memory for test isolation
+const windowEntries = new Map(); // key: `${windowId}::${strategyId}` -> { id, window_id, strategy_id, status, symbol, confirmed_at, reserved_at }
+let nextEntryId = 1;
+
+vi.mock('../../src/persistence/index.js', () => ({
+  default: {
+    run: vi.fn(async (sql, params) => {
+      // DELETE stale reservations
+      if (sql.includes('DELETE FROM window_entries') && sql.includes('reserved')) {
+        if (sql.includes('reserved_at')) {
+          // Cleanup stale reservations - no-op in tests (no stale reservations)
+          return { changes: 0 };
+        }
+        // Delete by window_id + strategy_id with status='reserved'
+        const key = `${params[0]}::${params[1]}`;
+        const entry = windowEntries.get(key);
+        if (entry && entry.status === 'reserved') {
+          windowEntries.delete(key);
+          return { changes: 1 };
+        }
+        return { changes: 0 };
+      }
+      // DELETE by window_id + strategy_id (removeEntry)
+      if (sql.includes('DELETE FROM window_entries') && !sql.includes('reserved')) {
+        const key = `${params[0]}::${params[1]}`;
+        if (windowEntries.has(key)) {
+          windowEntries.delete(key);
+          return { changes: 1 };
+        }
+        return { changes: 0 };
+      }
+      // DELETE all (resetState)
+      if (sql === 'DELETE FROM window_entries') {
+        windowEntries.clear();
+        return { changes: 0 };
+      }
+      // INSERT (reserveEntry or recordEntry)
+      if (sql.includes('INSERT INTO window_entries')) {
+        const windowId = params[0];
+        const strategyId = params[1];
+        const key = `${windowId}::${strategyId}`;
+        if (windowEntries.has(key)) {
+          // ON CONFLICT handling
+          if (sql.includes('DO NOTHING')) {
+            return { changes: 0 };
+          }
+          // DO UPDATE (recordEntry - upsert to confirmed)
+          const entry = windowEntries.get(key);
+          entry.status = 'confirmed';
+          entry.symbol = params[2] || entry.symbol;
+          entry.confirmed_at = params[3] || new Date().toISOString();
+          return { changes: 1 };
+        }
+        const entry = {
+          id: nextEntryId++,
+          window_id: windowId,
+          strategy_id: strategyId,
+          status: sql.includes("'reserved'") ? 'reserved' : 'confirmed',
+          symbol: params[2] || null,
+          confirmed_at: sql.includes("'confirmed'") ? (params[3] || new Date().toISOString()) : null,
+          reserved_at: new Date().toISOString(),
+        };
+        windowEntries.set(key, entry);
+        return { changes: 1 };
+      }
+      // UPDATE (confirmEntry)
+      if (sql.includes('UPDATE window_entries')) {
+        const windowId = params[2];
+        const strategyId = params[3];
+        const key = `${windowId}::${strategyId}`;
+        const entry = windowEntries.get(key);
+        if (entry && entry.status === 'reserved') {
+          entry.status = 'confirmed';
+          entry.symbol = params[0] || entry.symbol;
+          entry.confirmed_at = params[1] || new Date().toISOString();
+          return { changes: 1 };
+        }
+        return { changes: 0 };
+      }
+      return { changes: 0 };
+    }),
+    get: vi.fn(async (sql, params) => {
+      // Check entry existence
+      if (sql.includes('SELECT') && sql.includes('window_entries') && sql.includes('window_id')) {
+        if (sql.includes('COUNT')) {
+          let count = 0;
+          for (const entry of windowEntries.values()) {
+            if (sql.includes('confirmed') && entry.status === 'confirmed') count++;
+            else if (sql.includes('reserved') && entry.status === 'reserved') count++;
+          }
+          return { count };
+        }
+        // Lookup by window_id + strategy_id
+        if (params && params.length >= 2) {
+          const key = `${params[0]}::${params[1]}`;
+          return windowEntries.get(key) || null;
+        }
+        return null;
+      }
+      // Rate limiting query - confirmed_at lookup by symbol
+      if (sql.includes('confirmed_at') && sql.includes('ORDER BY')) {
+        return null; // No rate limiting in tests
+      }
+      return null;
+    }),
+    all: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+import { ExecutionLoop } from '../../src/modules/orchestrator/execution-loop.js';
+import * as safeguards from '../../src/modules/position-manager/safeguards.js';
 
 // Mock logger for execution loop
 const createMockLogger = () => ({
@@ -108,6 +219,10 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
     mockLogger = createMockLogger();
     mockOnError = vi.fn();
 
+    // Reset in-memory DB state
+    windowEntries.clear();
+    nextEntryId = 1;
+
     // Initialize real safeguards module
     safeguards.init({
       safeguards: {
@@ -156,10 +271,10 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       expect(mockModules['order-manager'].placeOrder).toHaveBeenCalled();
 
       // Verify entry is now confirmed
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(true);
 
       // Second attempt to same window/strategy should be blocked
-      const result = safeguards.canEnterPosition({
+      const result = await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'oracle-edge',
         symbol: 'BTC',
@@ -194,7 +309,7 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       expect(mockModules['order-manager'].placeOrder).not.toHaveBeenCalled();
 
       // Verify entry is confirmed (prevents duplicate paper signals)
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'paper-strategy')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'paper-strategy')).toBe(true);
     });
   });
 
@@ -228,7 +343,7 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       expect(mockModules['order-manager'].placeOrder).toHaveBeenCalledTimes(1);
 
       // Entry should be confirmed
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(true);
     });
   });
 
@@ -262,11 +377,11 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       expect(mockModules['order-manager'].placeOrder).toHaveBeenCalledTimes(2);
 
       // Both entries should be confirmed
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(true);
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'simple-threshold')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'simple-threshold')).toBe(true);
 
       // But same strategy should now be blocked
-      const result = safeguards.canEnterPosition({
+      const result = await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'oracle-edge',
         symbol: 'BTC',
@@ -275,44 +390,40 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
     });
   });
 
-  describe('AC 8.4: System restart with open positions loads entries correctly', () => {
-    it('initializes entries from existing open positions', () => {
-      // Simulate existing positions from a restart
-      const existingPositions = [
-        { window_id: 'btc-15m-window-1', strategy_id: 'oracle-edge' },
-        { window_id: 'eth-15m-window-2', strategy_id: 'simple-threshold' },
-        { window_id: 'btc-15m-window-3' }, // No strategy_id - uses default
-      ];
-
-      // Initialize from positions (simulating startup hydration)
-      const count = safeguards.initializeFromPositions(existingPositions);
-      expect(count).toBe(3);
+  describe('AC 8.4: System restart with open positions loads entries from DB', () => {
+    it('blocks re-entry when window_entries exist in DB (simulating restart)', async () => {
+      // V3 Stage 4: initializeFromPositions was removed.
+      // On restart, the DB already has window_entries from previous run.
+      // Simulate this by using recordEntry (which upserts as confirmed directly).
+      await safeguards.recordEntry('btc-15m-window-1', 'BTC', 'oracle-edge');
+      await safeguards.recordEntry('eth-15m-window-2', 'ETH', 'simple-threshold');
+      await safeguards.recordEntry('btc-15m-window-3', 'BTC', 'default');
 
       // All positions should block re-entry
-      expect(safeguards.canEnterPosition({
+      expect((await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'oracle-edge',
         symbol: 'BTC',
-      }, []).allowed).toBe(false);
+      }, [])).allowed).toBe(false);
 
-      expect(safeguards.canEnterPosition({
+      expect((await safeguards.canEnterPosition({
         window_id: 'eth-15m-window-2',
         strategy_id: 'simple-threshold',
         symbol: 'ETH',
-      }, []).allowed).toBe(false);
+      }, [])).allowed).toBe(false);
 
-      expect(safeguards.canEnterPosition({
+      expect((await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-3',
         strategy_id: 'default',
         symbol: 'BTC',
-      }, []).allowed).toBe(false);
+      }, [])).allowed).toBe(false);
 
       // But different strategies for same windows should be allowed
-      expect(safeguards.canEnterPosition({
+      expect((await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'simple-threshold',
         symbol: 'BTC',
-      }, []).allowed).toBe(true);
+      }, [])).allowed).toBe(true);
     });
   });
 
@@ -344,10 +455,10 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       loop.stop();
 
       // Entry should NOT be confirmed (failure released it)
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(false);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(false);
 
       // Should allow retry
-      const result = safeguards.canEnterPosition({
+      const result = await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'oracle-edge',
         symbol: 'BTC',
@@ -386,7 +497,7 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       loop.stop();
 
       // Entry should NOT be confirmed (rejection released it)
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(false);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'oracle-edge')).toBe(false);
 
       // Verify release was logged
       const releaseLogs = mockLogger.info.mock.calls.filter(
@@ -397,26 +508,26 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
   });
 
   describe('Position close removes entry', () => {
-    it('allows re-entry after position is closed', () => {
-      // Enter a position
-      safeguards.confirmEntry('btc-15m-window-1', 'oracle-edge', 'BTC');
+    it('allows re-entry after position is closed', async () => {
+      // Enter a position (use recordEntry which upserts as confirmed directly)
+      await safeguards.recordEntry('btc-15m-window-1', 'BTC', 'oracle-edge');
 
       // Should be blocked
-      expect(safeguards.canEnterPosition({
+      expect((await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'oracle-edge',
         symbol: 'BTC',
-      }, []).allowed).toBe(false);
+      }, [])).allowed).toBe(false);
 
       // Simulate position close
-      safeguards.removeEntry('btc-15m-window-1', 'oracle-edge');
+      await safeguards.removeEntry('btc-15m-window-1', 'oracle-edge');
 
       // Should be allowed now
-      expect(safeguards.canEnterPosition({
+      expect((await safeguards.canEnterPosition({
         window_id: 'btc-15m-window-1',
         strategy_id: 'oracle-edge',
         symbol: 'BTC',
-      }, []).allowed).toBe(true);
+      }, [])).allowed).toBe(true);
     });
   });
 
@@ -455,7 +566,7 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       loop.stop();
 
       // Should use 'default' strategy_id
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'default')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'default')).toBe(true);
     });
 
     it('uses composed strategy name when strategy_id not in signal', async () => {
@@ -493,7 +604,7 @@ describe('Safeguards Flow Integration Tests (Story 8-9)', () => {
       loop.stop();
 
       // Should use composed strategy name
-      expect(safeguards.hasEnteredWindow('btc-15m-window-1', 'my-composed-strategy')).toBe(true);
+      expect(await safeguards.hasEnteredWindow('btc-15m-window-1', 'my-composed-strategy')).toBe(true);
     });
   });
 });

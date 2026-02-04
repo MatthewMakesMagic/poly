@@ -1,13 +1,12 @@
 /**
- * Safety Module State Management
+ * Safety Module State Management (V3 Stage 4: DB persistence)
  *
  * In-memory state for the safety module.
  * Maintains cached daily performance record for fast access.
- * Manages auto-stop state for drawdown limit enforcement.
+ * Auto-stop state persisted to PostgreSQL instead of filesystem.
  */
 
-import fs from 'fs';
-import path from 'path';
+import persistence from '../../persistence/index.js';
 
 // Cached daily performance record
 let cachedRecord = null;
@@ -28,7 +27,6 @@ let warnedLevels = new Set();
 
 /**
  * Get the cached daily performance record
- * @returns {Object|null} Cached record or null
  */
 export function getCachedRecord() {
   return cachedRecord;
@@ -36,7 +34,6 @@ export function getCachedRecord() {
 
 /**
  * Get the cached date
- * @returns {string|null} Cached date (YYYY-MM-DD) or null
  */
 export function getCachedDate() {
   return cachedDate;
@@ -44,8 +41,6 @@ export function getCachedDate() {
 
 /**
  * Set the cached daily performance record
- * @param {Object} record - Daily performance record from database
- * @param {string} date - Date string (YYYY-MM-DD)
  */
 export function setCachedRecord(record, date) {
   cachedRecord = record;
@@ -54,8 +49,6 @@ export function setCachedRecord(record, date) {
 
 /**
  * Update fields in the cached record
- * @param {Object} updates - Fields to update
- * @returns {Object} Updated cached record
  */
 export function updateCachedRecord(updates) {
   if (!cachedRecord) {
@@ -66,7 +59,7 @@ export function updateCachedRecord(updates) {
 }
 
 /**
- * Clear the cache (e.g., on shutdown or date change)
+ * Clear the cache
  */
 export function clearCache() {
   cachedRecord = null;
@@ -75,7 +68,6 @@ export function clearCache() {
 
 /**
  * Store module configuration
- * @param {Object} config - Module configuration
  */
 export function setConfig(config) {
   moduleConfig = config;
@@ -83,7 +75,6 @@ export function setConfig(config) {
 
 /**
  * Get module configuration
- * @returns {Object|null} Module configuration
  */
 export function getConfig() {
   return moduleConfig;
@@ -91,7 +82,6 @@ export function getConfig() {
 
 /**
  * Get the starting capital from config
- * @returns {number} Starting capital value
  */
 export function getStartingCapital() {
   return moduleConfig?.safety?.startingCapital || 1000;
@@ -99,7 +89,6 @@ export function getStartingCapital() {
 
 /**
  * Get the daily drawdown limit from config
- * @returns {number} Drawdown limit as decimal (e.g., 0.05 for 5%)
  */
 export function getDrawdownLimit() {
   return moduleConfig?.risk?.dailyDrawdownLimit || 0.05;
@@ -107,23 +96,13 @@ export function getDrawdownLimit() {
 
 /**
  * Get the drawdown warning threshold from config
- * @returns {number} Warning threshold as decimal (e.g., 0.03 for 3%)
  */
 export function getDrawdownWarningThreshold() {
   return moduleConfig?.safety?.drawdownWarningPct || 0.03;
 }
 
 /**
- * Get the auto-stop state file path from config
- * @returns {string} Path to auto-stop state file
- */
-export function getAutoStopStateFilePath() {
-  return moduleConfig?.safety?.autoStopStateFile || './data/auto-stop-state.json';
-}
-
-/**
  * Get current auto-stop state
- * @returns {Object} Auto-stop state
  */
 export function getAutoStopState() {
   return { ...autoStopState };
@@ -131,7 +110,6 @@ export function getAutoStopState() {
 
 /**
  * Check if auto-stop is currently active
- * @returns {boolean} True if auto-stopped
  */
 export function isAutoStopped() {
   return autoStopState.autoStopped;
@@ -139,8 +117,6 @@ export function isAutoStopped() {
 
 /**
  * Set auto-stop state
- * @param {boolean} stopped - Whether auto-stop is active
- * @param {string|null} reason - Reason for auto-stop (if stopped=true)
  */
 export function setAutoStopped(stopped, reason = null) {
   autoStopState.autoStopped = stopped;
@@ -149,78 +125,70 @@ export function setAutoStopped(stopped, reason = null) {
 }
 
 /**
- * Persist auto-stop state to file
- * @param {Object} [log] - Optional logger instance
+ * Persist auto-stop state to database
  */
-export function persistAutoStopState(log) {
-  const filePath = getAutoStopStateFilePath();
+export async function persistAutoStopState(log) {
   const today = new Date().toISOString().split('T')[0];
 
   try {
-    // Ensure directory exists
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    const data = {
-      ...autoStopState,
-      date: today,
-      persistedAt: new Date().toISOString(),
-    };
-
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    await persistence.run(
+      `UPDATE auto_stop_state
+       SET auto_stopped = $1, auto_stopped_at = $2, auto_stop_reason = $3, date = $4, updated_at = NOW()
+       WHERE id = 1`,
+      [autoStopState.autoStopped, autoStopState.autoStoppedAt, autoStopState.autoStopReason, today]
+    );
 
     if (log) {
-      log.info('auto_stop_state_persisted', { path: filePath, date: today });
+      log.info('auto_stop_state_persisted', { date: today });
     }
   } catch (err) {
     if (log) {
-      log.warn('auto_stop_state_persist_failed', { path: filePath, error: err.message });
+      log.warn('auto_stop_state_persist_failed', { error: err.message });
     }
   }
 }
 
 /**
- * Load auto-stop state from file (if exists and current day)
- * @param {Object} [log] - Optional logger instance
- * @returns {Object|null} Loaded state or null if not found/stale
+ * Load auto-stop state from database (if exists and current day)
  */
-export function loadAutoStopState(log) {
-  const filePath = getAutoStopStateFilePath();
+export async function loadAutoStopState(log) {
   const today = new Date().toISOString().split('T')[0];
 
   try {
-    if (!fs.existsSync(filePath)) {
+    const data = await persistence.get(
+      `SELECT * FROM auto_stop_state WHERE id = 1`
+    );
+
+    if (!data) {
       return null;
     }
-
-    const rawData = fs.readFileSync(filePath, 'utf-8');
-    const data = JSON.parse(rawData);
 
     // Only load if from today (auto-stop resets on new day)
     if (data.date === today) {
       autoStopState = {
-        autoStopped: data.autoStopped,
-        autoStoppedAt: data.autoStoppedAt,
-        autoStopReason: data.autoStopReason,
+        autoStopped: data.auto_stopped,
+        autoStoppedAt: data.auto_stopped_at,
+        autoStopReason: data.auto_stop_reason,
       };
 
       if (log) {
         log.info('auto_stop_state_loaded', {
-          path: filePath,
           date: today,
-          autoStopped: data.autoStopped,
+          autoStopped: data.auto_stopped,
         });
       }
 
-      return data;
+      return {
+        autoStopped: data.auto_stopped,
+        autoStoppedAt: data.auto_stopped_at,
+        autoStopReason: data.auto_stop_reason,
+        date: data.date,
+      };
     }
 
     // State is from a previous day - ignore
     if (log) {
       log.info('auto_stop_state_stale', {
-        path: filePath,
         stateDate: data.date,
         today,
       });
@@ -228,7 +196,7 @@ export function loadAutoStopState(log) {
     return null;
   } catch (err) {
     if (log) {
-      log.warn('auto_stop_state_load_failed', { path: filePath, error: err.message });
+      log.warn('auto_stop_state_load_failed', { error: err.message });
     }
     return null;
   }
@@ -247,41 +215,35 @@ export function clearAutoStopState() {
 }
 
 /**
- * Delete auto-stop state file
- * @param {Object} [log] - Optional logger instance
+ * Reset auto-stop state in database
  */
-export function deleteAutoStopStateFile(log) {
-  const filePath = getAutoStopStateFilePath();
-
+export async function resetAutoStopStateInDb(log) {
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      if (log) {
-        log.info('auto_stop_state_file_deleted', { path: filePath });
-      }
+    await persistence.run(
+      `UPDATE auto_stop_state
+       SET auto_stopped = FALSE, auto_stopped_at = NULL, auto_stop_reason = NULL, updated_at = NOW()
+       WHERE id = 1`
+    );
+    if (log) {
+      log.info('auto_stop_state_db_reset');
     }
   } catch (err) {
     if (log) {
-      log.warn('auto_stop_state_file_delete_failed', { path: filePath, error: err.message });
+      log.warn('auto_stop_state_db_reset_failed', { error: err.message });
     }
   }
 }
 
 /**
  * Check if we've already warned at this drawdown level
- * Uses 0.5% buckets to avoid excessive warnings
- * @param {number} currentDrawdownPct - Current drawdown percentage
- * @returns {boolean} True if already warned at this level
  */
 export function hasWarnedAtLevel(currentDrawdownPct) {
-  // Round to nearest 0.5% bucket
   const bucket = Math.floor(currentDrawdownPct * 200) / 200;
   return warnedLevels.has(bucket);
 }
 
 /**
  * Mark that we've warned at this drawdown level
- * @param {number} currentDrawdownPct - Current drawdown percentage
  */
 export function markWarnedAtLevel(currentDrawdownPct) {
   const bucket = Math.floor(currentDrawdownPct * 200) / 200;
@@ -289,7 +251,7 @@ export function markWarnedAtLevel(currentDrawdownPct) {
 }
 
 /**
- * Clear warning levels (e.g., on new day or reset)
+ * Clear warning levels
  */
 export function clearWarnedLevels() {
   warnedLevels.clear();
@@ -297,7 +259,6 @@ export function clearWarnedLevels() {
 
 /**
  * Get module state snapshot
- * @returns {Object} Current state
  */
 export function getStateSnapshot() {
   return {

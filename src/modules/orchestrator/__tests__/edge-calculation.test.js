@@ -23,15 +23,15 @@ vi.mock('../../logger/index.js', () => ({
   shutdown: vi.fn(),
 }));
 
-// Mock persistence
+// Mock persistence (V3: async PostgreSQL API)
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    init: vi.fn(),
-    get: vi.fn(() => null),
-    all: vi.fn(() => []),
-    run: vi.fn(() => ({ lastInsertRowid: 1, changes: 1 })),
-    exec: vi.fn(),
-    shutdown: vi.fn(),
+    init: vi.fn().mockResolvedValue(undefined),
+    get: vi.fn().mockResolvedValue(null),
+    all: vi.fn().mockResolvedValue([]),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    exec: vi.fn().mockResolvedValue(undefined),
+    shutdown: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

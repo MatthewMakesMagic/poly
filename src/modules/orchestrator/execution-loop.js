@@ -351,8 +351,8 @@ export class ExecutionLoop {
 
           // Story 8-7/8-9: Check safeguards before processing entry
           if (this.modules.safeguards) {
-            const openPositions = this.modules['position-manager']?.getPositions?.() || [];
-            const safeguardCheck = this.modules.safeguards.canEnterPosition(signal, openPositions);
+            const openPositions = await this.modules['position-manager']?.getPositions?.() || [];
+            const safeguardCheck = await this.modules.safeguards.canEnterPosition(signal, openPositions);
 
             if (!safeguardCheck.allowed) {
               this.log.info('entry_blocked_by_safeguards', {
@@ -393,7 +393,7 @@ export class ExecutionLoop {
                 // Story 8-9: PAPER mode uses reserve/confirm flow to prevent duplicate paper signals
                 let reserved = false;
                 if (this.modules.safeguards) {
-                  reserved = this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
+                  reserved = await this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
                   if (!reserved) {
                     this.log.info('paper_mode_reservation_blocked', {
                       window_id: signal.window_id,
@@ -447,7 +447,7 @@ export class ExecutionLoop {
 
                 // Story 8-9: Confirm the entry in paper mode
                 if (this.modules.safeguards && reserved) {
-                  this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                  await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
                 }
                 continue; // Skip to next signal - NO ORDER EXECUTION
               }
@@ -457,7 +457,7 @@ export class ExecutionLoop {
                 // Story 8-9: Reserve entry BEFORE order placement
                 let reserved = false;
                 if (this.modules.safeguards) {
-                  reserved = this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
+                  reserved = await this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
                   if (!reserved) {
                     this.log.info('entry_reservation_blocked', {
                       window_id: signal.window_id,
@@ -521,11 +521,11 @@ export class ExecutionLoop {
 
                     // Story 8-9: Confirm entry after successful order
                     if (this.modules.safeguards && reserved) {
-                      this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                      await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
                     }
                   } else if (this.modules.safeguards && reserved) {
                     // Order rejected - release the reservation
-                    this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                    await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
                     this.log.info('entry_released_order_rejected', {
                       window_id: signal.window_id,
                       strategy_id: strategyId,
@@ -560,7 +560,7 @@ export class ExecutionLoop {
                 } catch (orderErr) {
                   // Story 8-9: Release entry on order failure
                   if (this.modules.safeguards && reserved) {
-                    this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                    await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
                     this.log.info('entry_released_order_failed', {
                       window_id: signal.window_id,
                       strategy_id: strategyId,
@@ -673,7 +673,7 @@ export class ExecutionLoop {
         const positionManager = this.modules['position-manager'];
 
         // Get all open positions
-        const openPositions = positionManager.getPositions();
+        const openPositions = await positionManager.getPositions();
 
         if (openPositions.length > 0) {
           // Get current price for each position
@@ -713,7 +713,7 @@ export class ExecutionLoop {
               // Story 8-9: Remove entry from safeguards to allow future re-entry
               if (this.modules.safeguards && result.window_id) {
                 const strategyId = result.strategy_id || 'default';
-                this.modules.safeguards.removeEntry(result.window_id, strategyId);
+                await this.modules.safeguards.removeEntry(result.window_id, strategyId);
                 this.log.debug('entry_removed_on_position_close', {
                   window_id: result.window_id,
                   strategy_id: strategyId,
@@ -860,7 +860,7 @@ export class ExecutionLoop {
         const positionManager = this.modules['position-manager'];
 
         // Get all open positions (positions not already closed by stop-loss)
-        const openPositions = positionManager.getPositions();
+        const openPositions = await positionManager.getPositions();
 
         if (openPositions.length > 0) {
           // Get current price for each position
@@ -900,7 +900,7 @@ export class ExecutionLoop {
               // Story 8-9: Remove entry from safeguards to allow future re-entry
               if (this.modules.safeguards && result.window_id) {
                 const strategyId = result.strategy_id || 'default';
-                this.modules.safeguards.removeEntry(result.window_id, strategyId);
+                await this.modules.safeguards.removeEntry(result.window_id, strategyId);
                 this.log.debug('entry_removed_on_position_close', {
                   window_id: result.window_id,
                   strategy_id: strategyId,
@@ -1013,7 +1013,7 @@ export class ExecutionLoop {
         const positionManager = this.modules['position-manager'];
 
         // Get all open positions (positions not already closed by stop-loss/take-profit)
-        const openPositions = positionManager.getPositions();
+        const openPositions = await positionManager.getPositions();
 
         if (openPositions.length > 0) {
           // Get window data (resolution info) for each window

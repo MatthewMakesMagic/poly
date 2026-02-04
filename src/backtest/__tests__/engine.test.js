@@ -1,59 +1,67 @@
 /**
  * Tests for backtest engine
+ *
+ * V3: persistence/database.js now uses PostgreSQL (async).
+ * The data-loader and engine use getDb()/prepare()/all() which are SQLite-only.
+ * We mock the data-loader to provide test data directly.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { open, close, run } from '../../persistence/database.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+
+// --- Test tick data ---
+const testTicks = [
+  { id: 1, timestamp: '2026-01-25T10:00:00Z', topic: 'binance', symbol: 'BTC', price: 50000, raw_payload: null },
+  { id: 2, timestamp: '2026-01-25T10:00:00Z', topic: 'chainlink', symbol: 'BTC', price: 49900, raw_payload: null },
+  { id: 3, timestamp: '2026-01-25T10:00:05Z', topic: 'binance', symbol: 'BTC', price: 49950, raw_payload: null },
+  { id: 4, timestamp: '2026-01-25T10:00:05Z', topic: 'chainlink', symbol: 'BTC', price: 49900, raw_payload: null },
+  { id: 5, timestamp: '2026-01-25T10:00:10Z', topic: 'binance', symbol: 'BTC', price: 49950, raw_payload: null },
+  { id: 6, timestamp: '2026-01-25T10:00:10Z', topic: 'chainlink', symbol: 'BTC', price: 49940, raw_payload: null },
+  { id: 7, timestamp: '2026-01-25T10:00:15Z', topic: 'binance', symbol: 'BTC', price: 50000, raw_payload: null },
+  { id: 8, timestamp: '2026-01-25T10:00:15Z', topic: 'chainlink', symbol: 'BTC', price: 49990, raw_payload: null },
+];
+
+// Mock logger
+vi.mock('../../modules/logger/index.js', () => ({
+  child: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
+  init: vi.fn(),
+  shutdown: vi.fn(),
+}));
+
+// Mock the data-loader to provide test data without database
+vi.mock('../data-loader.js', () => ({
+  loadTicksBatched: function* (options) {
+    const { startDate, endDate, symbols } = options;
+    // Filter ticks by date range and optional symbols
+    let filtered = testTicks.filter(t =>
+      t.timestamp >= startDate && t.timestamp <= endDate
+    );
+    if (symbols && symbols.length > 0) {
+      filtered = filtered.filter(t => symbols.includes(t.symbol));
+    }
+    if (filtered.length > 0) {
+      yield filtered;
+    }
+  },
+  getTickCount: (options) => {
+    const { startDate, endDate, symbols } = options;
+    let filtered = testTicks.filter(t =>
+      t.timestamp >= startDate && t.timestamp <= endDate
+    );
+    if (symbols && symbols.length > 0) {
+      filtered = filtered.filter(t => symbols.includes(t.symbol));
+    }
+    return filtered.length;
+  },
+}));
+
 import { runBacktest, createThresholdStrategy } from '../engine.js';
 
 describe('backtest engine', () => {
-  beforeAll(() => {
-    // Open in-memory database for testing
-    open(':memory:');
-
-    // Create rtds_ticks table
-    run(`
-      CREATE TABLE rtds_ticks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT NOT NULL,
-        topic TEXT NOT NULL,
-        symbol TEXT NOT NULL,
-        price REAL NOT NULL,
-        raw_payload TEXT
-      )
-    `);
-
-    // Insert test data with price movements
-    // Start: spot = 50000, oracle = 49990 (spread = 0.02%)
-    // Then: spot drops to 49900 (spread narrows)
-    // Then: oracle catches up to 49900 (spread = 0)
-    const testData = [
-      // Initial state - spot leads oracle
-      { timestamp: '2026-01-25T10:00:00Z', topic: 'binance', symbol: 'BTC', price: 50000 },
-      { timestamp: '2026-01-25T10:00:00Z', topic: 'chainlink', symbol: 'BTC', price: 49900 },
-      // Spot drops
-      { timestamp: '2026-01-25T10:00:05Z', topic: 'binance', symbol: 'BTC', price: 49950 },
-      { timestamp: '2026-01-25T10:00:05Z', topic: 'chainlink', symbol: 'BTC', price: 49900 },
-      // Oracle catches up
-      { timestamp: '2026-01-25T10:00:10Z', topic: 'binance', symbol: 'BTC', price: 49950 },
-      { timestamp: '2026-01-25T10:00:10Z', topic: 'chainlink', symbol: 'BTC', price: 49940 },
-      // Final state
-      { timestamp: '2026-01-25T10:00:15Z', topic: 'binance', symbol: 'BTC', price: 50000 },
-      { timestamp: '2026-01-25T10:00:15Z', topic: 'chainlink', symbol: 'BTC', price: 49990 },
-    ];
-
-    for (const row of testData) {
-      run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
-        [row.timestamp, row.topic, row.symbol, row.price]
-      );
-    }
-  });
-
-  afterAll(() => {
-    close();
-  });
-
   describe('runBacktest', () => {
     it('requires startDate and endDate', async () => {
       await expect(runBacktest({ strategy: () => ({}) })).rejects.toThrow('startDate and endDate are required');

@@ -73,7 +73,7 @@ export async function checkStartupState() {
   const startTime = Date.now();
 
   // Query for incomplete intents (status='executing')
-  const incompleteIntents = getIncompleteIntentsFromDb();
+  const incompleteIntents = await getIncompleteIntentsFromDb();
 
   // Build result object
   const result = buildReconciliationResult(incompleteIntents, startTime);
@@ -122,7 +122,7 @@ export async function checkStartupState() {
  * @returns {Promise<Array<Object>>} List of incomplete intents
  */
 export async function getIncompleteIntents() {
-  return getIncompleteIntentsFromDb();
+  return await getIncompleteIntentsFromDb();
 }
 
 /**
@@ -146,8 +146,8 @@ export async function markIntentReconciled(intentId, resolution) {
   }
 
   // Get the intent to validate it exists and is in 'executing' status
-  const intent = persistence.get(
-    'SELECT * FROM trade_intents WHERE id = ?',
+  const intent = await persistence.get(
+    'SELECT * FROM trade_intents WHERE id = $1',
     [intentId]
   );
 
@@ -175,8 +175,8 @@ export async function markIntentReconciled(intentId, resolution) {
     reconciled_at: completedAt,
   });
 
-  persistence.run(
-    'UPDATE trade_intents SET status = ?, completed_at = ?, result = ? WHERE id = ?',
+  await persistence.run(
+    'UPDATE trade_intents SET status = $1, completed_at = $2, result = $3 WHERE id = $4',
     ['failed', completedAt, resultJson, intentId]
   );
 

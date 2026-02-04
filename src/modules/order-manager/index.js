@@ -1,5 +1,5 @@
 /**
- * Order Manager Module
+ * Order Manager Module (V3 Stage 4: DB as single source of truth)
  *
  * Public interface for order lifecycle management.
  * Follows the standard module interface: init(config), getState(), shutdown()
@@ -15,7 +15,7 @@
 import { child } from '../logger/index.js';
 import { OrderManagerError, OrderManagerErrorCodes } from './types.js';
 import * as logic from './logic.js';
-import { getStats, clearCache } from './state.js';
+import { getStats, clearStats } from './state.js';
 
 // Module state
 let log = null;
@@ -38,9 +38,6 @@ export async function init(cfg) {
   config = cfg;
 
   log.info('module_init_start');
-
-  // Load recent orders into cache
-  logic.loadRecentOrders(log);
 
   initialized = true;
   log.info('module_initialized');
@@ -71,10 +68,10 @@ export async function placeOrder(params) {
  * @param {string} orderId - Order ID
  * @param {string} newStatus - New status
  * @param {Object} [updates={}] - Additional fields to update
- * @returns {Object} Updated order
+ * @returns {Promise<Object>} Updated order
  * @throws {OrderManagerError} If order not found or invalid transition
  */
-export function updateOrderStatus(orderId, newStatus, updates = {}) {
+export async function updateOrderStatus(orderId, newStatus, updates = {}) {
   ensureInitialized();
   return logic.updateOrderStatus(orderId, newStatus, updates, log);
 }
@@ -83,9 +80,9 @@ export function updateOrderStatus(orderId, newStatus, updates = {}) {
  * Get a single order by ID
  *
  * @param {string} orderId - Order ID
- * @returns {Object|undefined} Order details or undefined
+ * @returns {Promise<Object|undefined>} Order details or undefined
  */
-export function getOrder(orderId) {
+export async function getOrder(orderId) {
   ensureInitialized();
   return logic.getOrder(orderId);
 }
@@ -93,9 +90,9 @@ export function getOrder(orderId) {
 /**
  * Get all open orders
  *
- * @returns {Object[]} Array of open orders (status: open or partially_filled)
+ * @returns {Promise<Object[]>} Array of open orders (status: open or partially_filled)
  */
-export function getOpenOrders() {
+export async function getOpenOrders() {
   ensureInitialized();
   return logic.getOpenOrders();
 }
@@ -104,9 +101,9 @@ export function getOpenOrders() {
  * Get orders by window ID
  *
  * @param {string} windowId - Window ID
- * @returns {Object[]} Array of orders for the window
+ * @returns {Promise<Object[]>} Array of orders for the window
  */
-export function getOrdersByWindow(windowId) {
+export async function getOrdersByWindow(windowId) {
   ensureInitialized();
   return logic.getOrdersByWindow(windowId);
 }
@@ -135,10 +132,10 @@ export async function cancelOrder(orderId) {
  * @param {string} orderId - Order ID
  * @param {number} fillSize - Size of this fill
  * @param {number} fillPrice - Price of this fill
- * @returns {Object} Updated order
+ * @returns {Promise<Object>} Updated order
  * @throws {OrderManagerError} If order not found or invalid state
  */
-export function handlePartialFill(orderId, fillSize, fillPrice) {
+export async function handlePartialFill(orderId, fillSize, fillPrice) {
   ensureInitialized();
   return logic.handlePartialFill(orderId, fillSize, fillPrice, log);
 }
@@ -146,9 +143,9 @@ export function handlePartialFill(orderId, fillSize, fillPrice) {
 /**
  * Get all partially filled orders
  *
- * @returns {Object[]} Array of partially filled orders
+ * @returns {Promise<Object[]>} Array of partially filled orders
  */
-export function getPartiallyFilledOrders() {
+export async function getPartiallyFilledOrders() {
   ensureInitialized();
   return logic.getPartiallyFilledOrders();
 }
@@ -175,8 +172,8 @@ export async function shutdown() {
     log.info('module_shutdown_start');
   }
 
-  // Clear the cache
-  clearCache();
+  // Clear session stats
+  clearStats();
 
   config = null;
   initialized = false;

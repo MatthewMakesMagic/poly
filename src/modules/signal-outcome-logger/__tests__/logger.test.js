@@ -27,14 +27,14 @@ const createMockLogger = () => ({
   debug: vi.fn(),
 });
 
-// Mock database
+// Mock database (V3: all methods return promises)
 const createMockDb = () => {
   const rows = [];
   let nextId = 1;
 
   return {
     rows,
-    run: vi.fn((sql, params) => {
+    run: vi.fn(async (sql, params) => {
       if (sql.includes('INSERT')) {
         const id = nextId++;
         rows.push({
@@ -69,7 +69,7 @@ const createMockDb = () => {
       }
       return { lastInsertRowid: nextId - 1 };
     }),
-    get: vi.fn((sql, params) => {
+    get: vi.fn(async (sql, params) => {
       if (sql.includes('SELECT * FROM oracle_edge_signals WHERE window_id')) {
         return rows.find(r => r.window_id === params[0]) || null;
       }
@@ -91,7 +91,7 @@ const createMockDb = () => {
       }
       return null;
     }),
-    all: vi.fn((sql, params) => {
+    all: vi.fn(async (sql, params) => {
       if (sql.includes('ORDER BY timestamp DESC')) {
         const limit = params?.[0] || 50;
         return rows.slice(0, limit);
@@ -417,8 +417,8 @@ describe('SignalOutcomeLogger', () => {
   });
 
   describe('getStats', () => {
-    test('returns stats structure', () => {
-      const stats = logger.getStats();
+    test('returns stats structure', async () => {
+      const stats = await logger.getStats();
 
       expect(stats).toHaveProperty('total_signals');
       expect(stats).toHaveProperty('signals_with_outcome');
@@ -428,19 +428,17 @@ describe('SignalOutcomeLogger', () => {
       expect(stats).toHaveProperty('avg_confidence');
     });
 
-    test('returns zero stats when empty', () => {
-      const stats = logger.getStats();
+    test('returns zero stats when empty', async () => {
+      const stats = await logger.getStats();
 
       expect(stats.total_signals).toBe(0);
       expect(stats.win_rate).toBe(0);
     });
 
-    test('handles database error gracefully', () => {
-      mockDb.get.mockImplementation(() => {
-        throw new Error('Database error');
-      });
+    test('handles database error gracefully', async () => {
+      mockDb.get.mockRejectedValue(new Error('Database error'));
 
-      const stats = logger.getStats();
+      const stats = await logger.getStats();
 
       expect(stats.total_signals).toBe(0);
       expect(mockLog.error).toHaveBeenCalled();
@@ -448,42 +446,40 @@ describe('SignalOutcomeLogger', () => {
   });
 
   describe('getStatsByBucket', () => {
-    test('returns array for time_to_expiry bucket', () => {
-      const stats = logger.getStatsByBucket(BucketType.TIME_TO_EXPIRY);
+    test('returns array for time_to_expiry bucket', async () => {
+      const stats = await logger.getStatsByBucket(BucketType.TIME_TO_EXPIRY);
 
       expect(Array.isArray(stats)).toBe(true);
     });
 
-    test('returns array for staleness bucket', () => {
-      const stats = logger.getStatsByBucket(BucketType.STALENESS);
+    test('returns array for staleness bucket', async () => {
+      const stats = await logger.getStatsByBucket(BucketType.STALENESS);
 
       expect(Array.isArray(stats)).toBe(true);
     });
 
-    test('returns array for confidence bucket', () => {
-      const stats = logger.getStatsByBucket(BucketType.CONFIDENCE);
+    test('returns array for confidence bucket', async () => {
+      const stats = await logger.getStatsByBucket(BucketType.CONFIDENCE);
 
       expect(Array.isArray(stats)).toBe(true);
     });
 
-    test('returns array for symbol bucket', () => {
-      const stats = logger.getStatsByBucket(BucketType.SYMBOL);
+    test('returns array for symbol bucket', async () => {
+      const stats = await logger.getStatsByBucket(BucketType.SYMBOL);
 
       expect(Array.isArray(stats)).toBe(true);
     });
 
-    test('returns empty array for unknown bucket type', () => {
-      const stats = logger.getStatsByBucket('unknown');
+    test('returns empty array for unknown bucket type', async () => {
+      const stats = await logger.getStatsByBucket('unknown');
 
       expect(stats).toEqual([]);
     });
 
-    test('handles database error gracefully', () => {
-      mockDb.all.mockImplementation(() => {
-        throw new Error('Database error');
-      });
+    test('handles database error gracefully', async () => {
+      mockDb.all.mockRejectedValue(new Error('Database error'));
 
-      const stats = logger.getStatsByBucket(BucketType.SYMBOL);
+      const stats = await logger.getStatsByBucket(BucketType.SYMBOL);
 
       expect(stats).toEqual([]);
       expect(mockLog.error).toHaveBeenCalled();
@@ -491,14 +487,14 @@ describe('SignalOutcomeLogger', () => {
   });
 
   describe('getRecentSignals', () => {
-    test('returns array of signals', () => {
-      const signals = logger.getRecentSignals(10);
+    test('returns array of signals', async () => {
+      const signals = await logger.getRecentSignals(10);
 
       expect(Array.isArray(signals)).toBe(true);
     });
 
-    test('respects limit parameter', () => {
-      logger.getRecentSignals(25);
+    test('respects limit parameter', async () => {
+      await logger.getRecentSignals(25);
 
       expect(mockDb.all).toHaveBeenCalledWith(
         expect.stringContaining('LIMIT'),
@@ -506,8 +502,8 @@ describe('SignalOutcomeLogger', () => {
       );
     });
 
-    test('defaults to 50 limit', () => {
-      logger.getRecentSignals();
+    test('defaults to 50 limit', async () => {
+      await logger.getRecentSignals();
 
       expect(mockDb.all).toHaveBeenCalledWith(
         expect.stringContaining('LIMIT'),
@@ -515,19 +511,17 @@ describe('SignalOutcomeLogger', () => {
       );
     });
 
-    test('handles database error gracefully', () => {
-      mockDb.all.mockImplementation(() => {
-        throw new Error('Database error');
-      });
+    test('handles database error gracefully', async () => {
+      mockDb.all.mockRejectedValue(new Error('Database error'));
 
-      const signals = logger.getRecentSignals(10);
+      const signals = await logger.getRecentSignals(10);
 
       expect(signals).toEqual([]);
       expect(mockLog.error).toHaveBeenCalled();
     });
 
-    test('clamps negative limit to minimum', () => {
-      logger.getRecentSignals(-10);
+    test('clamps negative limit to minimum', async () => {
+      await logger.getRecentSignals(-10);
 
       expect(mockDb.all).toHaveBeenCalledWith(
         expect.stringContaining('LIMIT'),
@@ -536,8 +530,8 @@ describe('SignalOutcomeLogger', () => {
       expect(mockLog.debug).toHaveBeenCalledWith('limit_clamped', expect.any(Object));
     });
 
-    test('clamps excessive limit to maximum', () => {
-      logger.getRecentSignals(5000);
+    test('clamps excessive limit to maximum', async () => {
+      await logger.getRecentSignals(5000);
 
       expect(mockDb.all).toHaveBeenCalledWith(
         expect.stringContaining('LIMIT'),
@@ -546,8 +540,8 @@ describe('SignalOutcomeLogger', () => {
       expect(mockLog.debug).toHaveBeenCalledWith('limit_clamped', expect.any(Object));
     });
 
-    test('handles non-number limit gracefully', () => {
-      logger.getRecentSignals('invalid');
+    test('handles non-number limit gracefully', async () => {
+      await logger.getRecentSignals('invalid');
 
       expect(mockDb.all).toHaveBeenCalledWith(
         expect.stringContaining('LIMIT'),

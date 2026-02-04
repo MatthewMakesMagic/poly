@@ -15,8 +15,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ExecutionLoop } from '../../src/modules/orchestrator/execution-loop.js';
-import * as safeguards from '../../src/modules/position-manager/safeguards.js';
 
 // Mock the logger for safeguards module
 vi.mock('../../src/modules/logger/index.js', () => ({
@@ -27,6 +25,102 @@ vi.mock('../../src/modules/logger/index.js', () => ({
     debug: vi.fn(),
   })),
 }));
+
+// V3 Stage 4: Mock persistence for DB-backed safeguards
+const windowEntries = new Map();
+let nextEntryId = 1;
+
+vi.mock('../../src/persistence/index.js', () => ({
+  default: {
+    run: vi.fn(async (sql, params) => {
+      if (sql.includes('DELETE FROM window_entries') && sql.includes('reserved_at')) {
+        return { changes: 0 };
+      }
+      if (sql.includes('DELETE FROM window_entries') && sql.includes("status = 'reserved'")) {
+        const key = `${params[0]}::${params[1]}`;
+        const entry = windowEntries.get(key);
+        if (entry && entry.status === 'reserved') {
+          windowEntries.delete(key);
+          return { changes: 1 };
+        }
+        return { changes: 0 };
+      }
+      if (sql.includes('DELETE FROM window_entries')) {
+        const key = `${params[0]}::${params[1]}`;
+        if (windowEntries.has(key)) {
+          windowEntries.delete(key);
+          return { changes: 1 };
+        }
+        return { changes: 0 };
+      }
+      if (sql.includes('INSERT INTO window_entries')) {
+        const windowId = params[0];
+        const strategyId = params[1];
+        const key = `${windowId}::${strategyId}`;
+        if (windowEntries.has(key)) {
+          if (sql.includes('DO NOTHING')) {
+            return { changes: 0 };
+          }
+          const entry = windowEntries.get(key);
+          entry.status = 'confirmed';
+          entry.symbol = params[2] || entry.symbol;
+          entry.confirmed_at = params[3] || new Date().toISOString();
+          return { changes: 1 };
+        }
+        const entry = {
+          id: nextEntryId++,
+          window_id: windowId,
+          strategy_id: strategyId,
+          status: sql.includes("'reserved'") ? 'reserved' : 'confirmed',
+          symbol: params[2] || null,
+          confirmed_at: sql.includes("'confirmed'") ? (params[3] || new Date().toISOString()) : null,
+          reserved_at: new Date().toISOString(),
+        };
+        windowEntries.set(key, entry);
+        return { changes: 1 };
+      }
+      if (sql.includes('UPDATE window_entries')) {
+        const windowId = params[2];
+        const strategyId = params[3];
+        const key = `${windowId}::${strategyId}`;
+        const entry = windowEntries.get(key);
+        if (entry && entry.status === 'reserved') {
+          entry.status = 'confirmed';
+          entry.symbol = params[0] || entry.symbol;
+          entry.confirmed_at = params[1] || new Date().toISOString();
+          return { changes: 1 };
+        }
+        return { changes: 0 };
+      }
+      return { changes: 0 };
+    }),
+    get: vi.fn(async (sql, params) => {
+      if (sql.includes('window_entries') && sql.includes('window_id')) {
+        if (sql.includes('COUNT')) {
+          let count = 0;
+          for (const entry of windowEntries.values()) {
+            if (sql.includes('confirmed') && entry.status === 'confirmed') count++;
+            else if (sql.includes('reserved') && entry.status === 'reserved') count++;
+          }
+          return { count };
+        }
+        if (params && params.length >= 2) {
+          const key = `${params[0]}::${params[1]}`;
+          return windowEntries.get(key) || null;
+        }
+        return null;
+      }
+      if (sql.includes('confirmed_at') && sql.includes('ORDER BY')) {
+        return null;
+      }
+      return null;
+    }),
+    all: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+import { ExecutionLoop } from '../../src/modules/orchestrator/execution-loop.js';
+import * as safeguards from '../../src/modules/position-manager/safeguards.js';
 
 // =============================================================================
 // Test Fixtures - Realistic data structures matching production
@@ -165,6 +259,8 @@ describe('AC1: Data Contract Tests', () => {
     mockOnError = vi.fn();
 
     // Initialize real safeguards module
+    windowEntries.clear();
+    nextEntryId = 1;
     safeguards.init({
       safeguards: {
         max_concurrent_positions: 8,
@@ -280,7 +376,7 @@ describe('AC1: Data Contract Tests', () => {
     expect(signal.symbol).toBe('BTC'); // Must be uppercase
 
     // Verify safeguards actually received the signal
-    expect(safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(true);
+    expect(await safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(true);
   });
 
   it('window structure includes required crypto field', async () => {
@@ -361,6 +457,8 @@ describe('AC2: Flow Tests', () => {
     mockOnError = vi.fn();
     callOrder = [];
 
+    windowEntries.clear();
+    nextEntryId = 1;
     safeguards.init({
       safeguards: {
         max_concurrent_positions: 8,
@@ -606,6 +704,8 @@ describe('AC3: Multi-Crypto Tests', () => {
     mockLogger = createMockLogger();
     mockOnError = vi.fn();
 
+    windowEntries.clear();
+    nextEntryId = 1;
     safeguards.init({
       safeguards: {
         max_concurrent_positions: 8,
@@ -914,6 +1014,8 @@ describe('AC4: Safeguard Invocation Tests', () => {
     mockLogger = createMockLogger();
     mockOnError = vi.fn();
 
+    windowEntries.clear();
+    nextEntryId = 1;
     safeguards.init({
       safeguards: {
         max_concurrent_positions: 8,
@@ -999,7 +1101,7 @@ describe('AC4: Safeguard Invocation Tests', () => {
     expect(mockModules['order-manager'].placeOrder).toHaveBeenCalledTimes(1);
 
     // Entry should be confirmed for the window
-    expect(safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(true);
+    expect(await safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(true);
   });
 
   it('confirmEntry called after successful order', async () => {
@@ -1069,7 +1171,7 @@ describe('AC4: Safeguard Invocation Tests', () => {
     expect(releaseSpy).toHaveBeenCalledWith(btcWindow.id, 'oracle-edge');
 
     // Entry should NOT be confirmed (it was released)
-    expect(safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(false);
+    expect(await safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(false);
   });
 
   it('Strategy-aware tracking works correctly (same window, different strategies allowed)', async () => {
@@ -1103,8 +1205,8 @@ describe('AC4: Safeguard Invocation Tests', () => {
     expect(mockModules['order-manager'].placeOrder).toHaveBeenCalledTimes(2);
 
     // Both entries should be confirmed
-    expect(safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(true);
-    expect(safeguards.hasEnteredWindow(btcWindow.id, 'simple-threshold')).toBe(true);
+    expect(await safeguards.hasEnteredWindow(btcWindow.id, 'oracle-edge')).toBe(true);
+    expect(await safeguards.hasEnteredWindow(btcWindow.id, 'simple-threshold')).toBe(true);
   });
 
   it('Duplicate entries to same {window_id, strategy_id} are blocked', async () => {
@@ -1167,6 +1269,8 @@ describe('AC5: Mode Tests', () => {
     mockLogger = createMockLogger();
     mockOnError = vi.fn();
 
+    windowEntries.clear();
+    nextEntryId = 1;
     safeguards.init({
       safeguards: {
         max_concurrent_positions: 8,
@@ -1396,6 +1500,8 @@ describe('Edge Cases and Regression Tests', () => {
     mockLogger = createMockLogger();
     mockOnError = vi.fn();
 
+    windowEntries.clear();
+    nextEntryId = 1;
     safeguards.init({
       safeguards: {
         max_concurrent_positions: 8,

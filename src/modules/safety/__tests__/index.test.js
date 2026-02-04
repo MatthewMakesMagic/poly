@@ -20,9 +20,9 @@ vi.mock('../../logger/index.js', () => ({
 // Mock persistence
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
     get: vi.fn(),
-    all: vi.fn().mockReturnValue([]),
+    all: vi.fn().mockResolvedValue([]),
   },
 }));
 

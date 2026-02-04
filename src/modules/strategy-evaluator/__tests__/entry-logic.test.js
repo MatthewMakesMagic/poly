@@ -135,8 +135,9 @@ describe('entry-logic', () => {
         expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_TIME);
       });
 
-      it('returns null when window already entered', () => {
-        // First entry - should succeed
+      it('generates signal for same window (duplicate prevention handled by safeguards)', () => {
+        // V3 Stage 4: Duplicate window prevention moved to DB-backed safeguards module
+        // entry-logic now always generates signals if conditions met
         const result1 = evaluateEntry({
           window_id: 'test-window',
           market_id: 'btc-up',
@@ -148,19 +149,18 @@ describe('entry-logic', () => {
 
         expect(result1.signal).not.toBeNull();
 
-        // Second entry on same window - should fail
+        // Second entry on same window - now generates signal (safeguards handle dedup)
         const result2 = evaluateEntry({
           window_id: 'test-window',
           market_id: 'btc-up',
           spot_price: 100000,
-          market_price: 0.85,        // Even higher price
+          market_price: 0.85,
           time_remaining_ms: 500000,
           thresholds: defaultThresholds,
         });
 
-        expect(result2.signal).toBeNull();
-        expect(result2.result.signal_generated).toBe(false);
-        expect(result2.result.reason).toBe(NoSignalReason.ALREADY_ENTERED_WINDOW);
+        expect(result2.signal).not.toBeNull();
+        expect(result2.result.signal_generated).toBe(true);
       });
     });
 
@@ -190,8 +190,8 @@ describe('entry-logic', () => {
         expect(result2.signal.window_id).toBe('window-b');
       });
 
-      it('blocks re-entry even with different market_id', () => {
-        // Enter with btc-up
+      it('generates signals for same window with different market_id (dedup handled by safeguards)', () => {
+        // V3 Stage 4: Duplicate window prevention moved to DB-backed safeguards module
         const result1 = evaluateEntry({
           window_id: 'same-window',
           market_id: 'btc-up',
@@ -203,7 +203,7 @@ describe('entry-logic', () => {
 
         expect(result1.signal).not.toBeNull();
 
-        // Try to enter same window with btc-down
+        // Same window with btc-down - now generates signal (safeguards handle dedup)
         const result2 = evaluateEntry({
           window_id: 'same-window',
           market_id: 'btc-down',
@@ -213,8 +213,7 @@ describe('entry-logic', () => {
           thresholds: defaultThresholds,
         });
 
-        expect(result2.signal).toBeNull();
-        expect(result2.result.reason).toBe(NoSignalReason.ALREADY_ENTERED_WINDOW);
+        expect(result2.signal).not.toBeNull();
       });
     });
 
@@ -248,7 +247,7 @@ describe('entry-logic', () => {
         expect(result.signal.confidence).toBeCloseTo(0.701, 3);
       });
 
-      it('evaluates time constraint first (before window check)', () => {
+      it('evaluates time constraint first (before price check)', () => {
         const result = evaluateEntry({
           window_id: 'test-window',
           market_id: 'btc-up',
@@ -258,12 +257,12 @@ describe('entry-logic', () => {
           thresholds: defaultThresholds,
         });
 
-        // Should fail on time before checking window
+        // Should fail on time before checking price
         expect(result.result.reason).toBe(NoSignalReason.INSUFFICIENT_TIME);
       });
 
-      it('evaluates window check before price check', () => {
-        // First enter the window
+      it('evaluates price check on repeated window (no more window check in entry-logic)', () => {
+        // V3 Stage 4: Window dedup moved to safeguards module
         evaluateEntry({
           window_id: 'test-window',
           market_id: 'btc-up',
@@ -273,7 +272,7 @@ describe('entry-logic', () => {
           thresholds: defaultThresholds,
         });
 
-        // Now try again with low price
+        // Now try again with low price - should fail on price check
         const result = evaluateEntry({
           window_id: 'test-window',
           market_id: 'btc-up',
@@ -283,8 +282,8 @@ describe('entry-logic', () => {
           thresholds: defaultThresholds,
         });
 
-        // Should fail on already entered before checking price
-        expect(result.result.reason).toBe(NoSignalReason.ALREADY_ENTERED_WINDOW);
+        // Should fail on price check (no more window check in entry-logic)
+        expect(result.result.reason).toBe(NoSignalReason.BELOW_THRESHOLD);
       });
 
       it('handles very low price', () => {

@@ -1,10 +1,10 @@
 /**
- * Position Manager Business Logic
+ * Position Manager Business Logic (V3 Stage 4: DB as single source of truth)
  *
  * Core position lifecycle management:
  * - Position creation with write-ahead logging
  * - Position tracking and price updates
- * - Database persistence
+ * - All reads go directly to PostgreSQL (no in-memory cache)
  */
 
 import persistence from '../../persistence/index.js';
@@ -16,11 +16,8 @@ import {
   Side,
 } from './types.js';
 import {
-  cachePosition,
-  getCachedPosition,
-  updateCachedPosition,
-  getCachedOpenPositions,
-  loadPositionsIntoCache,
+  getPosition as getPositionFromDb,
+  getOpenPositions,
   calculateTotalExposure,
   countPositionsByMarket,
   setLastReconciliation,
@@ -88,6 +85,7 @@ export function calculateUnrealizedPnl(position) {
 
 /**
  * Check if a new position would exceed configured limits
+ * Now async because calculateTotalExposure and countPositionsByMarket query the DB.
  *
  * @param {Object} params - Position parameters
  * @param {number} params.size - Position size
@@ -97,9 +95,9 @@ export function calculateUnrealizedPnl(position) {
  * @param {number} riskConfig.maxPositionSize - Maximum size per single position
  * @param {number} riskConfig.maxExposure - Maximum total exposure
  * @param {number} riskConfig.positionLimitPerMarket - Maximum positions per market
- * @returns {{ allowed: boolean, reason?: string, limit?: string }}
+ * @returns {Promise<{ allowed: boolean, reason?: string, limit?: string }>}
  */
-export function checkLimits(params, riskConfig) {
+export async function checkLimits(params, riskConfig) {
   const { size, entryPrice, marketId } = params;
   const { maxPositionSize, maxExposure, positionLimitPerMarket } = riskConfig;
 
@@ -113,7 +111,7 @@ export function checkLimits(params, riskConfig) {
   }
 
   // Check 2: Total exposure limit
-  const currentExposure = calculateTotalExposure();
+  const currentExposure = await calculateTotalExposure();
   const newPositionExposure = size * entryPrice;
   const newTotalExposure = currentExposure + newPositionExposure;
   if (newTotalExposure > maxExposure) {
@@ -125,7 +123,7 @@ export function checkLimits(params, riskConfig) {
   }
 
   // Check 3: Positions per market limit
-  const marketPositions = countPositionsByMarket(marketId);
+  const marketPositions = await countPositionsByMarket(marketId);
   if (marketPositions >= positionLimitPerMarket) {
     return {
       allowed: false,
@@ -160,7 +158,7 @@ export async function addPosition(params, log, riskConfig = null) {
 
   // 2. Check limits if riskConfig provided
   if (riskConfig) {
-    const limitCheck = checkLimits(params, riskConfig);
+    const limitCheck = await checkLimits(params, riskConfig);
     if (!limitCheck.allowed) {
       throw new PositionManagerError(
         PositionManagerErrorCodes.POSITION_LIMIT_EXCEEDED,
@@ -199,12 +197,13 @@ export async function addPosition(params, log, riskConfig = null) {
   try {
     const openedAt = new Date().toISOString();
 
-    // 5. Insert to database
-    const result = persistence.run(
+    // 5. Insert to database using PostgreSQL parameterized queries
+    const result = await persistence.runReturningId(
       `INSERT INTO positions (
         window_id, market_id, token_id, side, size, entry_price,
         current_price, status, strategy_id, opened_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id`,
       [
         windowId,
         marketId,
@@ -240,10 +239,7 @@ export async function addPosition(params, log, riskConfig = null) {
       exchange_verified_at: null,
     };
 
-    // 7. Cache the position
-    cachePosition(positionRecord);
-
-    // 8. Mark intent completed
+    // 7. Mark intent completed
     writeAhead.markCompleted(intentId, { positionId });
 
     log.info('position_created', {
@@ -299,27 +295,13 @@ export async function addPosition(params, log, riskConfig = null) {
 
 /**
  * Get a position by ID with unrealized P&L
+ * Now async - queries DB directly via state.
  *
  * @param {number} positionId - Position ID
- * @returns {Object|undefined} Position with unrealized_pnl or undefined
+ * @returns {Promise<Object|undefined>} Position with unrealized_pnl or undefined
  */
-export function getPosition(positionId) {
-  // Try cache first
-  let position = getCachedPosition(positionId);
-
-  if (!position) {
-    // Fall back to database
-    const dbPosition = persistence.get(
-      'SELECT * FROM positions WHERE id = ?',
-      [positionId]
-    );
-
-    if (dbPosition) {
-      // Add to cache
-      cachePosition(dbPosition);
-      position = dbPosition;
-    }
-  }
+export async function getPosition(positionId) {
+  const position = await getPositionFromDb(positionId);
 
   if (!position) {
     return undefined;
@@ -334,17 +316,13 @@ export function getPosition(positionId) {
 
 /**
  * Get all open positions
+ * Now async - queries DB directly via state.
  *
- * Returns positions from cache. Cache is populated on init and updated
- * when positions are added/updated. For guaranteed consistency with DB,
- * use loadPositionsFromDb() first.
- *
- * @returns {Object[]} Array of open positions with unrealized_pnl
+ * @returns {Promise<Object[]>} Array of open positions with unrealized_pnl
  */
-export function getPositions() {
-  // Return from cache with unrealized P&L
-  // Cache is the source of truth for current session
-  return getCachedOpenPositions().map((position) => ({
+export async function getPositions() {
+  const openPositions = await getOpenPositions();
+  return openPositions.map((position) => ({
     ...position,
     unrealized_pnl: calculateUnrealizedPnl(position),
   }));
@@ -352,14 +330,15 @@ export function getPositions() {
 
 /**
  * Update the current price for a position
+ * Now async - reads from DB and writes update back.
  *
  * @param {number} positionId - Position ID
  * @param {number} newPrice - New current price (must be a non-negative number)
  * @param {Object} log - Logger instance
- * @returns {Object} Updated position with unrealized_pnl
+ * @returns {Promise<Object>} Updated position with unrealized_pnl
  * @throws {PositionManagerError} If position not found or price invalid
  */
-export function updatePrice(positionId, newPrice, log) {
+export async function updatePrice(positionId, newPrice, log) {
   // Validate newPrice
   if (typeof newPrice !== 'number' || newPrice < 0 || !Number.isFinite(newPrice)) {
     throw new PositionManagerError(
@@ -369,9 +348,13 @@ export function updatePrice(positionId, newPrice, log) {
     );
   }
 
-  const position = getCachedPosition(positionId);
+  // Update in DB and get the updated row back
+  const updated = await persistence.get(
+    `UPDATE positions SET current_price = $1 WHERE id = $2 RETURNING *`,
+    [newPrice, positionId]
+  );
 
-  if (!position) {
+  if (!updated) {
     throw new PositionManagerError(
       PositionManagerErrorCodes.NOT_FOUND,
       `Position not found: ${positionId}`,
@@ -379,12 +362,9 @@ export function updatePrice(positionId, newPrice, log) {
     );
   }
 
-  // Update in cache (in-memory update, persisted periodically)
-  const updated = updateCachedPosition(positionId, { current_price: newPrice });
-
   log.info('position_price_updated', {
     positionId,
-    previousPrice: position.current_price,
+    previousPrice: updated.current_price !== newPrice ? updated.current_price : undefined,
     newPrice,
     unrealizedPnl: calculateUnrealizedPnl(updated),
   });
@@ -393,23 +373,6 @@ export function updatePrice(positionId, newPrice, log) {
     ...updated,
     unrealized_pnl: calculateUnrealizedPnl(updated),
   };
-}
-
-/**
- * Load positions from database into cache on module init
- *
- * @param {Object} log - Logger instance
- * @returns {Promise<void>}
- */
-export async function loadPositionsFromDb(log) {
-  // Load open positions into cache
-  const openPositions = await persistence.all(
-    'SELECT * FROM positions WHERE status = ?',
-    [PositionStatus.OPEN]
-  );
-
-  loadPositionsIntoCache(openPositions);
-  log.info('positions_loaded_to_cache', { count: openPositions.length });
 }
 
 /**
@@ -425,7 +388,9 @@ export async function loadPositionsFromDb(log) {
  */
 export async function closePosition(positionId, params, log) {
   const { emergency = false, closePrice } = params;
-  const position = getCachedPosition(positionId);
+
+  // Get position from DB
+  const position = await getPositionFromDb(positionId);
 
   // Validate position exists
   if (!position) {
@@ -505,10 +470,10 @@ export async function closePosition(positionId, params, log) {
     const pnl = priceDiff * position.size * direction;
 
     // 3. Update database
-    const updateResult = persistence.run(
+    const updateResult = await persistence.run(
       `UPDATE positions
-       SET status = ?, close_price = ?, closed_at = ?, pnl = ?
-       WHERE id = ?`,
+       SET status = $1, close_price = $2, closed_at = $3, pnl = $4
+       WHERE id = $5`,
       [PositionStatus.CLOSED, actualClosePrice, closedAt, pnl, positionId]
     );
 
@@ -521,14 +486,6 @@ export async function closePosition(positionId, params, log) {
       );
     }
 
-    // 4. Update cache with specific fields only
-    updateCachedPosition(positionId, {
-      status: PositionStatus.CLOSED,
-      close_price: actualClosePrice,
-      closed_at: closedAt,
-      pnl,
-    });
-
     // Build closed position for return value
     const closedPosition = {
       ...position,
@@ -538,7 +495,7 @@ export async function closePosition(positionId, params, log) {
       pnl,
     };
 
-    // 5. Mark intent completed
+    // 4. Mark intent completed
     writeAhead.markCompleted(intentId, { positionId, closePrice: actualClosePrice, pnl });
 
     log.info('position_closed', {
@@ -548,7 +505,7 @@ export async function closePosition(positionId, params, log) {
       emergency,
     });
 
-    // 6. Notify safety module about realized P&L (fire-and-forget)
+    // 5. Notify safety module about realized P&L (fire-and-forget)
     try {
       safety.recordRealizedPnl(pnl);
     } catch (err) {
@@ -604,10 +561,9 @@ export async function reconcile(polymarketClient, log) {
     );
   }
 
-  // Query database directly for open positions to ensure fresh data
-  // Don't rely on cache which may be stale
-  const openPositions = persistence.all(
-    'SELECT * FROM positions WHERE status = ?',
+  // Query database directly for open positions
+  const openPositions = await persistence.all(
+    'SELECT * FROM positions WHERE status = $1',
     [PositionStatus.OPEN]
   );
 
@@ -629,11 +585,10 @@ export async function reconcile(polymarketClient, log) {
       const tolerance = Math.max(relativeTolerance, 0.0001);
       if (Math.abs(exchangeBalance - position.size) < tolerance) {
         // Match - update verification timestamp
-        persistence.run(
-          'UPDATE positions SET exchange_verified_at = ? WHERE id = ?',
+        await persistence.run(
+          'UPDATE positions SET exchange_verified_at = $1 WHERE id = $2',
           [now, position.id]
         );
-        updateCachedPosition(position.id, { exchange_verified_at: now });
         verified++;
       } else {
         // Divergence detected

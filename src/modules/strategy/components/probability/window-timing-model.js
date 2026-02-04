@@ -407,29 +407,34 @@ export function getVolatility(symbol, windowDurationMs = null) {
     }
   }
 
-  // Recalculate with appropriate lookback
-  const sigma = calculateRealizedVolatility(symbol, lookbackMs);
+  // V3 Stage 2: calculateRealizedVolatility is now async (uses PostgreSQL).
+  // Since getVolatility is called synchronously from calculateProbability,
+  // we fire-and-forget the async recalculation and use fallback for now.
+  // The cache will be populated on the next call after the async completes.
+  calculateRealizedVolatility(symbol, lookbackMs)
+    .then((sigma) => {
+      if (sigma !== null && typeof sigma === 'number') {
+        volatilityCache[symbol] = {
+          sigma,
+          lastCalculated: new Date().toISOString(),
+          dataPoints: sigma > 0 ? 100 : 0,
+          lookbackMs,
+        };
 
-  if (sigma !== null) {
-    volatilityCache[symbol] = {
-      sigma,
-      lastCalculated: new Date().toISOString(),
-      dataPoints: sigma > 0 ? 100 : 0,
-      lookbackMs,
-    };
-
-    log.debug('volatility_selected', {
-      symbol,
-      sigma,
-      window_duration_ms: windowDurationMs,
-      lookback_ms: lookbackMs,
-      type: useShortTerm ? 'short_term' : 'long_term',
+        log.debug('volatility_selected', {
+          symbol,
+          sigma,
+          window_duration_ms: windowDurationMs,
+          lookback_ms: lookbackMs,
+          type: useShortTerm ? 'short_term' : 'long_term',
+        });
+      }
+    })
+    .catch((err) => {
+      log.warn('volatility_async_update_failed', { symbol, error: err.message });
     });
 
-    return sigma;
-  }
-
-  // Fallback
+  // Return fallback while async recalculation is in progress
   return config.volatility.fallbackVol;
 }
 

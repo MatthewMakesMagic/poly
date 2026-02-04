@@ -1,8 +1,9 @@
 /**
- * Position Manager Logic Tests
+ * Position Manager Logic Tests (V3 Stage 4: DB as single source of truth)
  *
  * Tests the business logic for position management.
  * Uses vitest with mocked dependencies.
+ * All state queries now go through DB via persistence mock.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -10,9 +11,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Mock dependencies
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-    get: vi.fn(),
-    all: vi.fn().mockReturnValue([]),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    runReturningId: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    get: vi.fn().mockResolvedValue(undefined),
+    all: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -26,21 +28,20 @@ vi.mock('../../../persistence/write-ahead.js', () => ({
 
 // Import after mocks
 import { calculateUnrealizedPnl, checkLimits } from '../logic.js';
-import {
-  clearCache,
-  cachePosition,
-  calculateTotalExposure,
-  countPositionsByMarket,
-} from '../state.js';
+import persistence from '../../../persistence/index.js';
 
 describe('Position Manager Logic', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    clearCache();
+    // Reset default mock implementations
+    persistence.get.mockResolvedValue(undefined);
+    persistence.all.mockResolvedValue([]);
+    persistence.run.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
+    persistence.runReturningId.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
   });
 
   afterEach(() => {
-    clearCache();
+    vi.clearAllMocks();
   });
 
   describe('calculateUnrealizedPnl()', () => {
@@ -181,10 +182,10 @@ describe('Position Manager Logic', () => {
       positionLimitPerMarket: 1,
     };
 
-    it('rejects position exceeding maxPositionSize', () => {
+    it('rejects position exceeding maxPositionSize', async () => {
       const params = { size: 150, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(false);
       expect(result.limit).toBe('maxPositionSize');
@@ -192,212 +193,182 @@ describe('Position Manager Logic', () => {
       expect(result.reason).toContain('100');
     });
 
-    it('allows position within maxPositionSize', () => {
+    it('allows position within maxPositionSize', async () => {
+      // Mock DB: no existing exposure
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
+
       const params = { size: 50, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(true);
     });
 
-    it('allows position at exactly maxPositionSize', () => {
+    it('allows position at exactly maxPositionSize', async () => {
+      // Mock DB: no existing exposure
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
+
       const params = { size: 100, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(true);
     });
 
-    it('rejects position exceeding maxExposure', () => {
-      // First add a position to create existing exposure
-      cachePosition({
-        id: 1,
-        market_id: 'market-other',
-        size: 400,
-        entry_price: 1.0,
-        status: 'open',
-      });
+    it('rejects position exceeding maxExposure', async () => {
+      // Mock DB: existing exposure of 400
+      persistence.get.mockResolvedValueOnce({ total: 400 }); // calculateTotalExposure
 
       // New position size is within limit (100), but exposure would exceed max
-      // Current exposure: 400 * 1.0 = 400
+      // Current exposure: 400
       // New position would add 100 * 1.5 = 150 exposure, total = 400 + 150 = 550 > 500
       const params = { size: 100, entryPrice: 1.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(false);
       expect(result.limit).toBe('maxExposure');
     });
 
-    it('allows position within maxExposure', () => {
-      // First add a position to create existing exposure
-      cachePosition({
-        id: 1,
-        market_id: 'market-other',
-        size: 100,
-        entry_price: 1.0,
-        status: 'open',
-      });
+    it('allows position within maxExposure', async () => {
+      // Mock DB: existing exposure of 100
+      persistence.get.mockResolvedValueOnce({ total: 100 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
 
       // New position would add 50 * 0.5 = 25 exposure, total = 100 + 25 = 125 < 500
       const params = { size: 50, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(true);
     });
 
-    it('rejects position exceeding positionLimitPerMarket', () => {
-      // Add existing position in the same market
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 50,
-        entry_price: 0.5,
-        status: 'open',
-      });
+    it('rejects position exceeding positionLimitPerMarket', async () => {
+      // Mock DB: no exposure issue, but 1 existing position in market
+      persistence.get.mockResolvedValueOnce({ total: 25 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 1 }); // countPositionsByMarket
 
       const params = { size: 30, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(false);
       expect(result.limit).toBe('positionLimitPerMarket');
       expect(result.reason).toContain('market-1');
     });
 
-    it('allows position in different market even if other market has position', () => {
-      // Add existing position in different market
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 50,
-        entry_price: 0.5,
-        status: 'open',
-      });
+    it('allows position in different market even if other market has position', async () => {
+      // Mock DB: no exposure issue, no positions in market-2
+      persistence.get.mockResolvedValueOnce({ total: 25 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket for market-2
 
       const params = { size: 30, entryPrice: 0.5, marketId: 'market-2' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(true);
     });
 
-    it('allows multiple positions when positionLimitPerMarket > 1', () => {
+    it('allows multiple positions when positionLimitPerMarket > 1', async () => {
       const config = { ...defaultRiskConfig, positionLimitPerMarket: 3 };
 
-      // Add existing position
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 30,
-        entry_price: 0.5,
-        status: 'open',
-      });
+      // Mock DB: 1 existing position in market
+      persistence.get.mockResolvedValueOnce({ total: 15 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 1 }); // countPositionsByMarket
 
       const params = { size: 30, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, config);
+      const result = await checkLimits(params, config);
 
       expect(result.allowed).toBe(true);
     });
 
-    it('ignores closed positions when counting market positions', () => {
-      // Add closed position in same market
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 50,
-        entry_price: 0.5,
-        status: 'closed',
-      });
+    it('ignores closed positions when counting market positions', async () => {
+      // Mock DB: no open positions in market (closed ones are not counted by SQL)
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket (only counts open)
 
       const params = { size: 30, entryPrice: 0.5, marketId: 'market-1' };
 
-      const result = checkLimits(params, defaultRiskConfig);
+      const result = await checkLimits(params, defaultRiskConfig);
 
       expect(result.allowed).toBe(true);
     });
   });
 
-  describe('calculateTotalExposure()', () => {
-    it('returns 0 when no positions exist', () => {
-      expect(calculateTotalExposure()).toBe(0);
+  describe('calculateTotalExposure() via checkLimits', () => {
+    const riskConfig = {
+      maxPositionSize: 10000,
+      maxExposure: 10000,
+      positionLimitPerMarket: 10,
+    };
+
+    it('returns 0 when no positions exist', async () => {
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
+
+      const params = { size: 1, entryPrice: 0.5, marketId: 'market-1' };
+      const result = await checkLimits(params, riskConfig);
+      expect(result.allowed).toBe(true);
     });
 
-    it('calculates exposure for single open position', () => {
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 100,
-        entry_price: 0.5,
-        status: 'open',
-      });
+    it('calculates exposure for open positions from DB', async () => {
+      // DB returns total exposure of 50 (100 * 0.5)
+      persistence.get.mockResolvedValueOnce({ total: 50 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
 
-      // 100 * 0.5 = 50
-      expect(calculateTotalExposure()).toBe(50);
+      const params = { size: 100, entryPrice: 0.5, marketId: 'market-1' };
+      const result = await checkLimits(params, riskConfig);
+      expect(result.allowed).toBe(true);
     });
 
-    it('sums exposure for multiple open positions', () => {
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 100,
-        entry_price: 0.5,
-        status: 'open',
-      });
-      cachePosition({
-        id: 2,
-        market_id: 'market-2',
-        size: 200,
-        entry_price: 0.25,
-        status: 'open',
-      });
+    it('sums exposure for multiple open positions from DB', async () => {
+      // DB returns total exposure of 100 (100*0.5 + 200*0.25)
+      persistence.get.mockResolvedValueOnce({ total: 100 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
 
-      // 100 * 0.5 + 200 * 0.25 = 50 + 50 = 100
-      expect(calculateTotalExposure()).toBe(100);
-    });
-
-    it('ignores closed positions', () => {
-      cachePosition({
-        id: 1,
-        market_id: 'market-1',
-        size: 100,
-        entry_price: 0.5,
-        status: 'open',
-      });
-      cachePosition({
-        id: 2,
-        market_id: 'market-2',
-        size: 200,
-        entry_price: 0.5,
-        status: 'closed',
-      });
-
-      // Only counts open: 100 * 0.5 = 50
-      expect(calculateTotalExposure()).toBe(50);
+      const params = { size: 100, entryPrice: 0.5, marketId: 'market-1' };
+      const result = await checkLimits(params, riskConfig);
+      expect(result.allowed).toBe(true);
     });
   });
 
-  describe('countPositionsByMarket()', () => {
-    it('returns 0 when no positions exist', () => {
-      expect(countPositionsByMarket('market-1')).toBe(0);
+  describe('countPositionsByMarket() via checkLimits', () => {
+    const riskConfig = {
+      maxPositionSize: 10000,
+      maxExposure: 10000,
+      positionLimitPerMarket: 2,
+    };
+
+    it('returns 0 when no positions exist', async () => {
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 0 }); // countPositionsByMarket
+
+      const params = { size: 10, entryPrice: 0.5, marketId: 'market-1' };
+      const result = await checkLimits(params, riskConfig);
+      expect(result.allowed).toBe(true);
     });
 
-    it('counts positions for specific market', () => {
-      cachePosition({ id: 1, market_id: 'market-1', status: 'open', size: 10, entry_price: 0.5 });
-      cachePosition({ id: 2, market_id: 'market-1', status: 'open', size: 20, entry_price: 0.5 });
-      cachePosition({ id: 3, market_id: 'market-2', status: 'open', size: 30, entry_price: 0.5 });
+    it('counts positions for specific market from DB', async () => {
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 2 }); // countPositionsByMarket = 2 (at limit)
 
-      expect(countPositionsByMarket('market-1')).toBe(2);
-      expect(countPositionsByMarket('market-2')).toBe(1);
+      const params = { size: 30, entryPrice: 0.5, marketId: 'market-1' };
+      const result = await checkLimits(params, riskConfig);
+      expect(result.allowed).toBe(false);
+      expect(result.limit).toBe('positionLimitPerMarket');
     });
 
-    it('ignores closed positions', () => {
-      cachePosition({ id: 1, market_id: 'market-1', status: 'open', size: 10, entry_price: 0.5 });
-      cachePosition({ id: 2, market_id: 'market-1', status: 'closed', size: 20, entry_price: 0.5 });
+    it('ignores closed positions in DB count', async () => {
+      // DB WHERE clause only counts open, so closed are already excluded
+      persistence.get.mockResolvedValueOnce({ total: 0 }); // calculateTotalExposure
+      persistence.get.mockResolvedValueOnce({ count: 1 }); // countPositionsByMarket (only open)
 
-      expect(countPositionsByMarket('market-1')).toBe(1);
+      const params = { size: 10, entryPrice: 0.5, marketId: 'market-1' };
+      const result = await checkLimits(params, riskConfig);
+      expect(result.allowed).toBe(true);
     });
   });
 });

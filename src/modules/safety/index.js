@@ -50,7 +50,6 @@ let orderManagerRef = null;
  * @param {Object} config.safety - Safety-specific configuration
  * @param {number} config.safety.startingCapital - Starting capital for the day
  * @param {number} [config.safety.drawdownWarningPct] - Warning threshold (default: 0.03)
- * @param {string} [config.safety.autoStopStateFile] - Path to auto-stop state file
  * @param {Object} config.risk - Risk configuration
  * @param {number} config.risk.dailyDrawdownLimit - Daily drawdown limit (default: 0.05)
  * @returns {Promise<void>}
@@ -74,8 +73,8 @@ export async function init(config) {
   // Initialize today's record (creates if doesn't exist)
   getOrCreateTodayRecord(log);
 
-  // Load persisted auto-stop state (if exists and current day)
-  const persistedState = loadAutoStopState(log);
+  // Load persisted auto-stop state from database (if exists and current day)
+  const persistedState = await loadAutoStopState(log);
   if (persistedState && persistedState.autoStopped) {
     log.warn('auto_stop_restored', {
       event: 'auto_stop_active_on_startup',
@@ -210,9 +209,9 @@ export function isAutoStopped() {
  * @param {boolean} options.confirm - Must be true to confirm reset
  * @throws {SafetyError} If confirm is not true
  */
-export function resetAutoStop(options = {}) {
+export async function resetAutoStop(options = {}) {
   ensureInitialized();
-  doResetAutoStop(options, log);
+  await doResetAutoStop(options, log);
 }
 
 /**

@@ -1,27 +1,12 @@
 /**
- * Position Manager State
+ * Position Manager State (V3 Stage 4: DB as single source of truth)
  *
- * In-memory position tracking for fast access.
- * Synchronized with database for persistence.
+ * All position queries go directly to PostgreSQL.
+ * No in-memory cache.
  */
 
+import persistence from '../../persistence/index.js';
 import { PositionStatus } from './types.js';
-
-/**
- * In-memory position cache
- * Key: position id (number), Value: position object
- * @type {Map<number, Object>}
- */
-const positionCache = new Map();
-
-/**
- * Module statistics
- */
-const stats = {
-  totalOpened: 0,
-  totalClosed: 0,
-  totalPnl: 0,
-};
 
 /**
  * Last reconciliation result
@@ -30,170 +15,75 @@ const stats = {
 let lastReconciliation = null;
 
 /**
- * Add a position to the cache
- * @param {Object} position - Position object
- * @param {boolean} [isNew=true] - Whether this is a newly opened position (affects stats)
- */
-export function cachePosition(position, isNew = true) {
-  positionCache.set(position.id, { ...position });
-  // Only increment totalOpened for new positions, not when loading from DB
-  if (isNew && position.status === PositionStatus.OPEN) {
-    stats.totalOpened++;
-  }
-}
-
-/**
- * Get a position from the cache
+ * Get a position by ID from DB
  * @param {number} positionId - Position ID
- * @returns {Object|undefined} Position object or undefined
+ * @returns {Promise<Object|undefined>} Position object or undefined
  */
-export function getCachedPosition(positionId) {
-  const position = positionCache.get(positionId);
-  return position ? { ...position } : undefined;
+export async function getPosition(positionId) {
+  return persistence.get('SELECT * FROM positions WHERE id = $1', [positionId]);
 }
 
 /**
- * Update a position in the cache
- * Only specified fields in updates are applied - full position objects should not be passed.
- * @param {number} positionId - Position ID
- * @param {Object} updates - Specific fields to update (not a full position object)
- * @returns {Object|undefined} Updated position or undefined if not found
+ * Get open positions from DB
+ * @returns {Promise<Object[]>} Array of open positions
  */
-export function updateCachedPosition(positionId, updates) {
-  const position = positionCache.get(positionId);
-  if (!position) {
-    return undefined;
-  }
-
-  // Only apply known position fields to avoid corrupting the cached position
-  const allowedFields = [
-    'current_price',
-    'status',
-    'closed_at',
-    'close_price',
-    'pnl',
-    'exchange_verified_at',
-  ];
-
-  const safeUpdates = {};
-  for (const field of allowedFields) {
-    if (updates[field] !== undefined) {
-      safeUpdates[field] = updates[field];
-    }
-  }
-
-  const updated = { ...position, ...safeUpdates };
-  positionCache.set(positionId, updated);
-
-  // Update stats based on status change
-  if (safeUpdates.status === PositionStatus.CLOSED && position.status !== PositionStatus.CLOSED) {
-    stats.totalClosed++;
-    if (safeUpdates.pnl !== undefined) {
-      stats.totalPnl += safeUpdates.pnl;
-    }
-  }
-
-  return { ...updated };
-}
-
-/**
- * Get all cached positions matching a filter
- * @param {Function} [filterFn] - Filter function
- * @returns {Object[]} Array of matching positions
- */
-export function getCachedPositions(filterFn) {
-  const positions = [];
-  for (const position of positionCache.values()) {
-    if (!filterFn || filterFn(position)) {
-      positions.push({ ...position });
-    }
-  }
-  return positions;
-}
-
-/**
- * Get open positions from cache
- * @returns {Object[]} Array of open positions
- */
-export function getCachedOpenPositions() {
-  return getCachedPositions((position) => position.status === PositionStatus.OPEN);
-}
-
-/**
- * Get current state statistics
- * @returns {Object} State statistics
- */
-export function getStats() {
-  const openCount = getCachedOpenPositions().length;
-  const closedCount = getCachedPositions(
-    (p) => p.status === PositionStatus.CLOSED
-  ).length;
-
-  return {
-    positions: {
-      open: openCount,
-      closed: closedCount,
-    },
-    stats: {
-      totalOpened: stats.totalOpened,
-      totalClosed: stats.totalClosed,
-      totalPnl: stats.totalPnl,
-    },
-  };
-}
-
-/**
- * Clear all cached positions
- * Used during shutdown or testing
- */
-export function clearCache() {
-  positionCache.clear();
-  stats.totalOpened = 0;
-  stats.totalClosed = 0;
-  stats.totalPnl = 0;
-  lastReconciliation = null;
-}
-
-/**
- * Load positions into cache from database
- * Positions loaded this way are not counted as "new" for stats
- * @param {Object[]} positions - Array of positions from database
- */
-export function loadPositionsIntoCache(positions) {
-  for (const position of positions) {
-    // Use cachePosition with isNew=false to avoid incrementing stats
-    cachePosition(position, false);
-  }
+export async function getOpenPositions() {
+  return persistence.all(
+    'SELECT * FROM positions WHERE status = $1',
+    [PositionStatus.OPEN]
+  );
 }
 
 /**
  * Calculate total exposure across all open positions
- * Exposure is the sum of (size * entry_price) for all open positions
- * @returns {number} Total exposure
+ * @returns {Promise<number>} Total exposure
  */
-export function calculateTotalExposure() {
-  let totalExposure = 0;
-  for (const position of positionCache.values()) {
-    if (position.status === PositionStatus.OPEN) {
-      totalExposure += position.size * position.entry_price;
-    }
-  }
-  return totalExposure;
+export async function calculateTotalExposure() {
+  const result = await persistence.get(
+    `SELECT COALESCE(SUM(size * entry_price), 0) as total FROM positions WHERE status = $1`,
+    [PositionStatus.OPEN]
+  );
+  return Number(result?.total || 0);
 }
 
 /**
  * Count open positions for a specific market
  * @param {string} marketId - Market ID
- * @returns {number} Number of open positions in the market
+ * @returns {Promise<number>} Number of open positions in the market
  */
-export function countPositionsByMarket(marketId) {
-  let count = 0;
-  for (const position of positionCache.values()) {
-    if (position.status === PositionStatus.OPEN && position.market_id === marketId) {
-      count++;
-    }
-  }
-  return count;
+export async function countPositionsByMarket(marketId) {
+  const result = await persistence.get(
+    `SELECT COUNT(*) as count FROM positions WHERE status = $1 AND market_id = $2`,
+    [PositionStatus.OPEN, marketId]
+  );
+  return Number(result?.count || 0);
+}
+
+/**
+ * Get current state statistics from DB
+ * @returns {Promise<Object>} State statistics
+ */
+export async function getStats() {
+  const result = await persistence.get(
+    `SELECT
+       COUNT(*) FILTER (WHERE status = 'open') as open_count,
+       COUNT(*) FILTER (WHERE status = 'closed') as closed_count,
+       COUNT(*) as total_count,
+       COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) as total_pnl
+     FROM positions`
+  );
+
+  return {
+    positions: {
+      open: Number(result?.open_count || 0),
+      closed: Number(result?.closed_count || 0),
+    },
+    stats: {
+      totalOpened: Number(result?.total_count || 0),
+      totalClosed: Number(result?.closed_count || 0),
+      totalPnl: Number(result?.total_pnl || 0),
+    },
+  };
 }
 
 /**
@@ -210,4 +100,11 @@ export function setLastReconciliation(result) {
  */
 export function getLastReconciliation() {
   return lastReconciliation ? { ...lastReconciliation } : null;
+}
+
+/**
+ * Clear state (for shutdown/testing)
+ */
+export function clearState() {
+  lastReconciliation = null;
 }
