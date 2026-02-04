@@ -1,21 +1,19 @@
 /**
  * Tests for Tick Logger Cleanup Functionality
+ *
+ * Integration tests requiring a PostgreSQL database.
+ * Skipped when DATABASE_URL is not set.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { unlinkSync, existsSync } from 'fs';
 
 import * as tickLogger from '../index.js';
 import * as logger from '../../logger/index.js';
 import persistence from '../../../persistence/index.js';
 import * as rtdsClient from '../../../clients/rtds/index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_DB_PATH = join(__dirname, 'test-cleanup.db');
-
-describe('Tick Logger Cleanup', () => {
+// Skip all tests if no PostgreSQL database is available
+describe.skipIf(!process.env.DATABASE_URL)('Tick Logger Cleanup', () => {
   beforeEach(async () => {
     vi.useFakeTimers();
 
@@ -23,8 +21,9 @@ describe('Tick Logger Cleanup', () => {
       logging: { level: 'error', console: false, directory: '/tmp/test-logs' },
     });
 
+    // Initialize persistence with PostgreSQL
     await persistence.init({
-      database: { path: TEST_DB_PATH },
+      database: { url: process.env.DATABASE_URL, pool: { min: 1, max: 2 } },
     });
 
     vi.spyOn(rtdsClient, 'subscribe').mockImplementation(() => () => {});
@@ -33,16 +32,10 @@ describe('Tick Logger Cleanup', () => {
   afterEach(async () => {
     vi.useRealTimers();
     await tickLogger.shutdown();
+    // Clean up test data before shutting down persistence
+    await persistence.run('DELETE FROM rtds_ticks');
     await persistence.shutdown();
     await logger.shutdown();
-
-    if (existsSync(TEST_DB_PATH)) {
-      try {
-        unlinkSync(TEST_DB_PATH);
-      } catch {
-        // Ignore
-      }
-    }
 
     vi.restoreAllMocks();
   });
@@ -53,22 +46,22 @@ describe('Tick Logger Cleanup', () => {
 
       // Insert tick 4 days ago (should be deleted with 3-day retention)
       const oldTimestamp = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [oldTimestamp, 'test', 'btc', 100]
       );
 
       // Insert tick 2 days ago (should be kept with 3-day retention)
       const recentTimestamp = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [recentTimestamp, 'test', 'eth', 200]
       );
 
       const deleted = await tickLogger.cleanupOldTicks(3);
       expect(deleted).toBe(1);
 
-      const remaining = persistence.all('SELECT * FROM rtds_ticks');
+      const remaining = await persistence.all('SELECT * FROM rtds_ticks');
       expect(remaining).toHaveLength(1);
       expect(remaining[0].symbol).toBe('eth');
     });
@@ -78,8 +71,8 @@ describe('Tick Logger Cleanup', () => {
 
       // Insert tick 6 days ago
       const oldTimestamp = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [oldTimestamp, 'test', 'btc', 100]
       );
 
@@ -93,8 +86,8 @@ describe('Tick Logger Cleanup', () => {
 
       // Insert recent tick
       const recentTimestamp = new Date().toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [recentTimestamp, 'test', 'btc', 100]
       );
 
@@ -108,29 +101,29 @@ describe('Tick Logger Cleanup', () => {
       // Pre-insert old tick before init
       // Need to manually insert since persistence is already initialized
       const oldTimestamp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [oldTimestamp, 'test', 'btc', 100]
       );
 
       await tickLogger.init({ tickLogger: { cleanupOnInit: true, retentionDays: 7 } });
 
       // Old tick should have been cleaned up
-      const remaining = persistence.all('SELECT * FROM rtds_ticks');
+      const remaining = await persistence.all('SELECT * FROM rtds_ticks');
       expect(remaining).toHaveLength(0);
     });
 
     it('skips cleanup on init when cleanupOnInit is false', async () => {
       const oldTimestamp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [oldTimestamp, 'test', 'btc', 100]
       );
 
       await tickLogger.init({ tickLogger: { cleanupOnInit: false } });
 
       // Old tick should still exist
-      const remaining = persistence.all('SELECT * FROM rtds_ticks');
+      const remaining = await persistence.all('SELECT * FROM rtds_ticks');
       expect(remaining).toHaveLength(1);
     });
   });
@@ -197,15 +190,15 @@ describe('Tick Logger Cleanup', () => {
 
       // Insert tick exactly 7 days ago
       const exactBoundary = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [exactBoundary, 'test', 'btc', 100]
       );
 
       // Insert tick 1ms before boundary (should be deleted)
       const justOlder = new Date(now - 7 * 24 * 60 * 60 * 1000 - 1).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [justOlder, 'test', 'eth', 200]
       );
 
@@ -219,8 +212,8 @@ describe('Tick Logger Cleanup', () => {
       // Insert 100 old ticks
       const oldTimestamp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
       for (let i = 0; i < 100; i++) {
-        persistence.run(
-          'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+        await persistence.run(
+          'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
           [oldTimestamp, 'test', 'btc', i]
         );
       }

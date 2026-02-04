@@ -10,13 +10,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Mock dependencies
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-    get: vi.fn(),
-    all: vi.fn().mockReturnValue([]),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    get: vi.fn().mockResolvedValue(undefined),
+    all: vi.fn().mockResolvedValue([]),
   },
-  run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-  get: vi.fn(),
-  all: vi.fn().mockReturnValue([]),
+  run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+  get: vi.fn().mockResolvedValue(undefined),
+  all: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../../persistence/write-ahead.js', () => ({
@@ -460,20 +460,20 @@ describe('Order Manager Module', () => {
         marketId: 'market-1',
       });
 
-      const order = orderManager.getOrder('order-123');
+      const order = await orderManager.getOrder('order-123');
       expect(order).toBeDefined();
       expect(order.order_id).toBe('order-123');
       expect(order.token_id).toBe('token-1');
     });
 
     it('falls back to database if not in cache', async () => {
-      persistence.get.mockReturnValueOnce({
+      persistence.get.mockResolvedValueOnce({
         order_id: 'order-db-1',
         token_id: 'token-1',
         status: 'filled',
       });
 
-      const order = orderManager.getOrder('order-db-1');
+      const order = await orderManager.getOrder('order-db-1');
       expect(order).toBeDefined();
       expect(order.order_id).toBe('order-db-1');
       expect(persistence.get).toHaveBeenCalledWith(
@@ -483,9 +483,9 @@ describe('Order Manager Module', () => {
     });
 
     it('returns undefined for non-existent order', async () => {
-      persistence.get.mockReturnValueOnce(undefined);
+      persistence.get.mockResolvedValueOnce(undefined);
 
-      const order = orderManager.getOrder('non-existent');
+      const order = await orderManager.getOrder('non-existent');
       expect(order).toBeUndefined();
     });
   });
@@ -504,12 +504,12 @@ describe('Order Manager Module', () => {
     });
 
     it('returns open orders from database', async () => {
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'order-1', status: 'open' },
         { order_id: 'order-2', status: 'partially_filled' },
       ]);
 
-      const orders = orderManager.getOpenOrders();
+      const orders = await orderManager.getOpenOrders();
       expect(orders).toHaveLength(2);
       expect(persistence.all).toHaveBeenCalledWith(
         expect.stringContaining('SELECT * FROM orders'),
@@ -530,11 +530,11 @@ describe('Order Manager Module', () => {
       });
 
       // Mock database to return the placed order
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'order-123', status: 'open' },
       ]);
 
-      const openOrders = orderManager.getOpenOrders();
+      const openOrders = await orderManager.getOpenOrders();
       expect(openOrders.length).toBeGreaterThanOrEqual(1);
       expect(openOrders.every((o) => ['open', 'partially_filled'].includes(o.status))).toBe(true);
     });
@@ -546,12 +546,12 @@ describe('Order Manager Module', () => {
     });
 
     it('returns orders for a specific window', async () => {
-      persistence.all.mockReturnValueOnce([
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'order-1', window_id: 'window-1' },
         { order_id: 'order-2', window_id: 'window-1' },
       ]);
 
-      const orders = orderManager.getOrdersByWindow('window-1');
+      const orders = await orderManager.getOrdersByWindow('window-1');
       expect(orders).toHaveLength(2);
       expect(orders.every((o) => o.window_id === 'window-1')).toBe(true);
     });

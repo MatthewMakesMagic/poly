@@ -59,7 +59,7 @@ export class QualityGateEvaluator {
   async calculateRollingAccuracy(windowSize = this.config.rollingWindowSize) {
     try {
       // Query signals with outcomes, ordered by most recent
-      const result = this.db.get(`
+      const result = await this.db.get(`
         SELECT
           COUNT(*) as total,
           SUM(signal_correct) as wins,
@@ -69,8 +69,8 @@ export class QualityGateEvaluator {
           FROM oracle_edge_signals
           WHERE settlement_outcome IS NOT NULL
           ORDER BY timestamp DESC
-          LIMIT ?
-        )
+          LIMIT $1
+        ) sub
       `, [windowSize]);
 
       if (!result || result.total === 0) {
@@ -113,7 +113,7 @@ export class QualityGateEvaluator {
       const overall = await this.calculateRollingAccuracy(windowSize);
 
       // Accuracy by time to expiry bucket
-      const byTime = this.db.all(`
+      const byTime = await this.db.all(`
         SELECT
           CASE
             WHEN time_to_expiry_ms <= 10000 THEN '0-10s'
@@ -128,13 +128,13 @@ export class QualityGateEvaluator {
           FROM oracle_edge_signals
           WHERE settlement_outcome IS NOT NULL
           ORDER BY timestamp DESC
-          LIMIT ?
-        )
+          LIMIT $1
+        ) sub
         GROUP BY bucket
       `, [windowSize]);
 
       // Accuracy by staleness bucket
-      const byStaleness = this.db.all(`
+      const byStaleness = await this.db.all(`
         SELECT
           CASE
             WHEN oracle_staleness_ms < 30000 THEN '15-30s'
@@ -149,13 +149,13 @@ export class QualityGateEvaluator {
           FROM oracle_edge_signals
           WHERE settlement_outcome IS NOT NULL
           ORDER BY timestamp DESC
-          LIMIT ?
-        )
+          LIMIT $1
+        ) sub
         GROUP BY bucket
       `, [windowSize]);
 
       // Accuracy by spread bucket (using ui_price - market_token_price as proxy)
-      const bySpread = this.db.all(`
+      const bySpread = await this.db.all(`
         SELECT
           CASE
             WHEN ABS(ui_price - market_token_price) < 0.001 THEN '0-0.1%'
@@ -172,8 +172,8 @@ export class QualityGateEvaluator {
             AND ui_price IS NOT NULL
             AND market_token_price IS NOT NULL
           ORDER BY timestamp DESC
-          LIMIT ?
-        )
+          LIMIT $1
+        ) sub
         GROUP BY bucket
       `, [windowSize]);
 
@@ -283,10 +283,10 @@ export class QualityGateEvaluator {
     }
 
     try {
-      // Check if oracle_updates table exists
-      const tableExists = this.db.get(`
-        SELECT name FROM sqlite_master
-        WHERE type='table' AND name='oracle_updates'
+      // Check if oracle_updates table exists (PostgreSQL)
+      const tableExists = await this.db.get(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'oracle_updates'
       `);
 
       if (!tableExists) {
@@ -301,24 +301,24 @@ export class QualityGateEvaluator {
       }
 
       // Recent update frequency (last hour)
-      const recentStats = this.db.get(`
+      const recentStats = await this.db.get(`
         SELECT
           COUNT(*) as count,
           AVG(time_since_previous_ms) as avg_interval
         FROM oracle_updates
-        WHERE timestamp > datetime('now', '-1 hour')
-        AND symbol = ?
+        WHERE timestamp > NOW() - INTERVAL '1 hour'
+        AND symbol = $1
       `, [normalizedSymbol]);
 
       // Historical update frequency (last 24 hours excluding recent)
-      const historicalStats = this.db.get(`
+      const historicalStats = await this.db.get(`
         SELECT
           COUNT(*) as count,
           AVG(time_since_previous_ms) as avg_interval
         FROM oracle_updates
-        WHERE timestamp > datetime('now', '-24 hour')
-        AND timestamp < datetime('now', '-1 hour')
-        AND symbol = ?
+        WHERE timestamp > NOW() - INTERVAL '24 hours'
+        AND timestamp < NOW() - INTERVAL '1 hour'
+        AND symbol = $1
       `, [normalizedSymbol]);
 
       // Skip if insufficient data

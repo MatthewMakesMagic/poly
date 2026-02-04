@@ -95,9 +95,12 @@ export async function init(cfg = {}) {
   }
 
   // Setup flush interval
+  // V3: flushBuffer is async, fire-and-forget with error logging
   if (config.flushIntervalMs > 0) {
     flushIntervalId = setInterval(() => {
-      flushBuffer();
+      flushBuffer().catch(err => {
+        log.error('interval_flush_failed', { error: err.message });
+      });
     }, config.flushIntervalMs);
 
     // Allow process to exit even if interval is running
@@ -118,6 +121,9 @@ export async function init(cfg = {}) {
 
 /**
  * Handle incoming oracle tick
+ *
+ * V3: Calls async flushBuffer as fire-and-forget.
+ *
  * @param {Object} tick - Normalized tick { timestamp, topic, symbol, price }
  */
 function handleOracleTick(tick) {
@@ -141,17 +147,23 @@ function handleOracleTick(tick) {
       time_since_previous_ms: updateRecord.time_since_previous_ms,
     });
 
-    // Flush if buffer size reached
+    // V3: flushBuffer is async, fire-and-forget with error logging
     if (updateBuffer.length >= config.bufferSize) {
-      flushBuffer();
+      flushBuffer().catch(err => {
+        log.error('tick_triggered_flush_failed', { error: err.message });
+      });
     }
   }
 }
 
 /**
  * Flush buffered update records to database
+ *
+ * V3 Philosophy: Uses async PostgreSQL transaction API.
+ *
+ * @returns {Promise<void>}
  */
-function flushBuffer() {
+async function flushBuffer() {
   if (updateBuffer.length === 0) {
     return;
   }
@@ -163,12 +175,13 @@ function flushBuffer() {
   try {
     const insertSQL = `
       INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6)
     `;
 
-    persistence.transaction(() => {
+    // V3: Use async transaction with client object
+    await persistence.transaction(async (client) => {
       for (const record of records) {
-        persistence.run(insertSQL, [
+        await client.run(insertSQL, [
           record.timestamp,
           record.symbol,
           record.price,
@@ -199,11 +212,13 @@ function flushBuffer() {
  * Get pattern statistics for a symbol
  * Uses efficient database aggregation to avoid loading all rows into memory.
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {string} symbol - Cryptocurrency symbol (btc, eth, sol, xrp)
- * @returns {Object} Statistics object
+ * @returns {Promise<Object>} Statistics object
  * @throws {OracleTrackerError} If not initialized or invalid symbol
  */
-export function getStats(symbol) {
+export async function getStats(symbol) {
   ensureInitialized();
 
   if (!SUPPORTED_SYMBOLS.includes(symbol)) {
@@ -215,15 +230,15 @@ export function getStats(symbol) {
   }
 
   try {
-    // Single query for all aggregate statistics
-    const aggResult = persistence.get(
+    // V3: Await async persistence.get()
+    const aggResult = await persistence.get(
       `SELECT
         COUNT(*) as count,
         AVG(time_since_previous_ms) as avg_ms,
         AVG(ABS(deviation_from_previous_pct)) as mean_pct,
         MIN(ABS(deviation_from_previous_pct)) as min_pct,
         MAX(ABS(deviation_from_previous_pct)) as max_pct
-      FROM oracle_updates WHERE symbol = ?`,
+      FROM oracle_updates WHERE symbol = $1`,
       [symbol]
     );
 
@@ -232,13 +247,13 @@ export function getStats(symbol) {
     // Calculate deviation threshold using efficient method
     let deviationThreshold = null;
     if (updateCount > 0) {
-      // Get median via offset query (more efficient than loading all rows)
-      const medianResult = persistence.get(
+      // V3: Await async persistence.get()
+      const medianResult = await persistence.get(
         `SELECT ABS(deviation_from_previous_pct) as median_pct
          FROM oracle_updates
-         WHERE symbol = ?
+         WHERE symbol = $1
          ORDER BY ABS(deviation_from_previous_pct)
-         LIMIT 1 OFFSET ?`,
+         LIMIT 1 OFFSET $2`,
         [symbol, Math.floor(updateCount / 2)]
       );
 
@@ -251,8 +266,8 @@ export function getStats(symbol) {
       };
     }
 
-    // Get update frequency by volatility
-    const updatesByVolatility = getUpdatesByVolatility(symbol);
+    // V3: Await async getUpdatesByVolatility()
+    const updatesByVolatility = await getUpdatesByVolatility(symbol);
 
     // Calculate frequency stats
     const avgMs = aggResult?.avg_ms || null;
@@ -281,12 +296,15 @@ export function getStats(symbol) {
 /**
  * Get updates grouped by volatility bucket
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {string} symbol - Cryptocurrency symbol
- * @returns {Object} Volatility buckets with counts and avg intervals
+ * @returns {Promise<Object>} Volatility buckets with counts and avg intervals
  */
-function getUpdatesByVolatility(symbol) {
-  const updates = persistence.all(
-    'SELECT ABS(deviation_from_previous_pct) as abs_deviation, time_since_previous_ms FROM oracle_updates WHERE symbol = ?',
+async function getUpdatesByVolatility(symbol) {
+  // V3: Await async persistence.all()
+  const updates = await persistence.all(
+    'SELECT ABS(deviation_from_previous_pct) as abs_deviation, time_since_previous_ms FROM oracle_updates WHERE symbol = $1',
     [symbol]
   );
 
@@ -328,10 +346,12 @@ function getUpdatesByVolatility(symbol) {
 /**
  * Get average update frequency for a symbol
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {string} symbol - Cryptocurrency symbol
- * @returns {Object|null} Frequency stats or null if no data
+ * @returns {Promise<Object|null>} Frequency stats or null if no data
  */
-export function getAverageUpdateFrequency(symbol) {
+export async function getAverageUpdateFrequency(symbol) {
   ensureInitialized();
 
   if (!SUPPORTED_SYMBOLS.includes(symbol)) {
@@ -342,8 +362,9 @@ export function getAverageUpdateFrequency(symbol) {
     );
   }
 
-  const result = persistence.get(
-    'SELECT AVG(time_since_previous_ms) as avg_ms FROM oracle_updates WHERE symbol = ?',
+  // V3: Await async persistence.get()
+  const result = await persistence.get(
+    'SELECT AVG(time_since_previous_ms) as avg_ms FROM oracle_updates WHERE symbol = $1',
     [symbol]
   );
 
@@ -365,10 +386,12 @@ export function getAverageUpdateFrequency(symbol) {
  * Get deviation threshold statistics for a symbol
  * Uses database aggregation for efficiency with large datasets.
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {string} symbol - Cryptocurrency symbol
- * @returns {Object|null} Deviation stats or null if no data
+ * @returns {Promise<Object|null>} Deviation stats or null if no data
  */
-export function getDeviationThreshold(symbol) {
+export async function getDeviationThreshold(symbol) {
   ensureInitialized();
 
   if (!SUPPORTED_SYMBOLS.includes(symbol)) {
@@ -379,14 +402,14 @@ export function getDeviationThreshold(symbol) {
     );
   }
 
-  // Use database aggregation for min, max, mean, count to avoid loading all rows
-  const aggResult = persistence.get(
+  // V3: Await async persistence.get()
+  const aggResult = await persistence.get(
     `SELECT
       COUNT(*) as sample_size,
       AVG(ABS(deviation_from_previous_pct)) as mean_pct,
       MIN(ABS(deviation_from_previous_pct)) as min_pct,
       MAX(ABS(deviation_from_previous_pct)) as max_pct
-    FROM oracle_updates WHERE symbol = ?`,
+    FROM oracle_updates WHERE symbol = $1`,
     [symbol]
   );
 
@@ -394,14 +417,13 @@ export function getDeviationThreshold(symbol) {
     return null;
   }
 
-  // For median, we still need to query but limit to a reasonable sample
-  // Use NTILE approximation for large datasets
-  const medianResult = persistence.get(
+  // V3: Await async persistence.get()
+  const medianResult = await persistence.get(
     `SELECT ABS(deviation_from_previous_pct) as median_pct
      FROM oracle_updates
-     WHERE symbol = ?
+     WHERE symbol = $1
      ORDER BY ABS(deviation_from_previous_pct)
-     LIMIT 1 OFFSET ?`,
+     LIMIT 1 OFFSET $2`,
     [symbol, Math.floor(aggResult.sample_size / 2)]
   );
 
@@ -417,11 +439,13 @@ export function getDeviationThreshold(symbol) {
 /**
  * Get recent update records for a symbol
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {string} symbol - Cryptocurrency symbol
  * @param {number} [limit=100] - Maximum records to return (1-10000)
- * @returns {Object[]} Array of recent update records
+ * @returns {Promise<Object[]>} Array of recent update records
  */
-export function getRecentUpdates(symbol, limit = 100) {
+export async function getRecentUpdates(symbol, limit = 100) {
   ensureInitialized();
 
   if (!SUPPORTED_SYMBOLS.includes(symbol)) {
@@ -435,14 +459,18 @@ export function getRecentUpdates(symbol, limit = 100) {
   // Validate and clamp limit to reasonable bounds
   const validatedLimit = Math.max(1, Math.min(10000, Math.floor(Number(limit) || 100)));
 
+  // V3: Await async persistence.all()
   return persistence.all(
-    'SELECT * FROM oracle_updates WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?',
+    'SELECT * FROM oracle_updates WHERE symbol = $1 ORDER BY timestamp DESC LIMIT $2',
     [symbol, validatedLimit]
   );
 }
 
 /**
- * Get current module state
+ * Get current module state (synchronous, in-memory only)
+ *
+ * V3 Philosophy: getState() returns fast in-memory state only.
+ * Use getStats(symbol) for database queries.
  *
  * @returns {Object} Current state
  */
@@ -451,35 +479,18 @@ export function getState() {
     return {
       initialized: false,
       tracking: {},
-      stats: {},
       buffer: { pending_records: 0 },
       config: null,
     };
   }
 
-  // Get tracking state from tracker
+  // Get tracking state from tracker (in-memory)
   const trackingStates = tracker.getAllTrackingStates();
 
-  // Get stats for each symbol (cached for performance)
-  const symbolStats = {};
-  for (const symbol of SUPPORTED_SYMBOLS) {
-    try {
-      const symbolStat = getStats(symbol);
-      symbolStats[symbol] = {
-        avg_update_frequency_ms: symbolStat.avg_update_frequency?.avg_ms || null,
-        avg_update_frequency_seconds: symbolStat.avg_update_frequency?.avg_seconds || null,
-        updates_per_minute: symbolStat.avg_update_frequency?.updates_per_minute || null,
-        deviation_threshold: symbolStat.deviation_threshold,
-      };
-    } catch {
-      symbolStats[symbol] = null;
-    }
-  }
-
+  // V3: Don't query database in getState() - use getStats(symbol) for DB queries
   return {
     initialized: true,
     tracking: trackingStates,
-    stats: symbolStats,
     buffer: {
       pending_records: updateBuffer.length,
     },
@@ -496,6 +507,8 @@ export function getState() {
 
 /**
  * Shutdown the module gracefully
+ *
+ * V3 Philosophy: Properly await async flushBuffer().
  *
  * @returns {Promise<void>}
  */
@@ -520,9 +533,9 @@ export async function shutdown() {
   }
   unsubscribers = [];
 
-  // Flush remaining records
+  // V3: Await async flushBuffer()
   if (updateBuffer.length > 0) {
-    flushBuffer();
+    await flushBuffer();
   }
 
   // Clear tracker

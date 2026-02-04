@@ -297,7 +297,7 @@ describe('SignalOutcomeLogger Integration', () => {
       }));
       await logger.updateOutcome('test-3', { final_oracle_price: 0.52 });
 
-      const stats = logger.getStats();
+      const stats = await logger.getStats();
 
       expect(stats.total_signals).toBe(3);
       expect(stats.signals_with_outcome).toBe(3);
@@ -315,7 +315,7 @@ describe('SignalOutcomeLogger Integration', () => {
       // Only settle one
       await logger.updateOutcome('pending-1', { final_oracle_price: 0.48 });
 
-      const stats = logger.getStats();
+      const stats = await logger.getStats();
 
       expect(stats.total_signals).toBe(2);
       expect(stats.signals_with_outcome).toBe(1);
@@ -335,7 +335,7 @@ describe('SignalOutcomeLogger Integration', () => {
       await logger.logSignal(createTestSignal({ window_id: 'eth-1', symbol: 'eth' }));
       await logger.updateOutcome('eth-1', { final_oracle_price: 0.52 });
 
-      const buckets = logger.getStatsByBucket(BucketType.SYMBOL);
+      const buckets = await logger.getStatsByBucket(BucketType.SYMBOL);
 
       const btcBucket = buckets.find(b => b.bucket === 'btc');
       const ethBucket = buckets.find(b => b.bucket === 'eth');
@@ -366,7 +366,7 @@ describe('SignalOutcomeLogger Integration', () => {
       }));
       await logger.updateOutcome('time-3', { final_oracle_price: 0.48 });
 
-      const buckets = logger.getStatsByBucket(BucketType.TIME_TO_EXPIRY);
+      const buckets = await logger.getStatsByBucket(BucketType.TIME_TO_EXPIRY);
 
       expect(buckets.some(b => b.bucket === '0-10s')).toBe(true);
       expect(buckets.some(b => b.bucket === '10-20s')).toBe(true);
@@ -423,7 +423,7 @@ describe('SignalOutcomeLogger Integration', () => {
         generated_at: new Date(now).toISOString(),
       }));
 
-      const recent = logger.getRecentSignals(10);
+      const recent = await logger.getRecentSignals(10);
 
       expect(recent.length).toBe(2);
       expect(recent[0].window_id).toBe('new');
@@ -435,7 +435,7 @@ describe('SignalOutcomeLogger Integration', () => {
         await logger.logSignal(createTestSignal({ window_id: `signal-${i}` }));
       }
 
-      const recent = logger.getRecentSignals(5);
+      const recent = await logger.getRecentSignals(5);
 
       expect(recent.length).toBe(5);
     });

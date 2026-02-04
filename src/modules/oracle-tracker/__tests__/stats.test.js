@@ -4,24 +4,18 @@
  * Tests for statistics calculation: volatility buckets, median/mean calculations
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { unlinkSync, existsSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Import modules
 import * as oracleTracker from '../index.js';
 import * as logger from '../../logger/index.js';
 import persistence from '../../../persistence/index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_DB_PATH = join(__dirname, 'test-oracle-stats.db');
-
 // Mock RTDS client
-import { vi } from 'vitest';
 import * as rtdsClient from '../../../clients/rtds/index.js';
 
-describe('Oracle Tracker Statistics', () => {
+// Skip all tests if no DATABASE_URL is available (PostgreSQL required for integration tests)
+describe.skipIf(!process.env.DATABASE_URL)('Oracle Tracker Statistics', () => {
   beforeEach(async () => {
     vi.spyOn(rtdsClient, 'subscribe').mockImplementation(() => () => {});
 
@@ -30,7 +24,7 @@ describe('Oracle Tracker Statistics', () => {
     });
 
     await persistence.init({
-      database: { path: TEST_DB_PATH },
+      database: { url: process.env.DATABASE_URL, pool: { min: 1, max: 2 } },
     });
 
     await oracleTracker.init({ oracleTracker: { flushIntervalMs: 0 } });
@@ -38,51 +32,44 @@ describe('Oracle Tracker Statistics', () => {
 
   afterEach(async () => {
     await oracleTracker.shutdown();
+    await persistence.run('DELETE FROM oracle_updates');
     await persistence.shutdown();
     await logger.shutdown();
-
-    if (existsSync(TEST_DB_PATH)) {
-      try {
-        unlinkSync(TEST_DB_PATH);
-      } catch {
-        // Ignore
-      }
-    }
 
     vi.restoreAllMocks();
   });
 
   describe('volatility buckets', () => {
-    it('categorizes updates into volatility buckets', () => {
+    it('categorizes updates into volatility buckets', async () => {
       // Small bucket: 0-0.1%
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50050, 50000, 0.0005, 10000]
       );
 
       // Medium bucket: 0.1-0.5%
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50050, 0.003, 12000]
       );
 
       // Large bucket: 0.5-1%
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:20.000Z', 'btc', 50600, 50200, 0.008, 15000]
       );
 
       // Extreme bucket: >1%
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:30.000Z', 'btc', 51500, 50600, 0.018, 8000]
       );
 
-      const stats = oracleTracker.getStats('btc');
+      const stats = await oracleTracker.getStats('btc');
 
       expect(stats.update_frequency_by_volatility.small.count).toBe(1);
       expect(stats.update_frequency_by_volatility.medium.count).toBe(1);
@@ -90,34 +77,34 @@ describe('Oracle Tracker Statistics', () => {
       expect(stats.update_frequency_by_volatility.extreme.count).toBe(1);
     });
 
-    it('calculates average interval per volatility bucket', () => {
+    it('calculates average interval per volatility bucket', async () => {
       // Two medium volatility updates with different intervals
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50200, 50000, 0.004, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50400, 50200, 0.004, 20000]
       );
 
-      const stats = oracleTracker.getStats('btc');
+      const stats = await oracleTracker.getStats('btc');
 
       expect(stats.update_frequency_by_volatility.medium.count).toBe(2);
       expect(stats.update_frequency_by_volatility.medium.avg_interval_ms).toBe(15000);
     });
 
-    it('handles empty buckets correctly', () => {
+    it('handles empty buckets correctly', async () => {
       // Only insert data for one bucket
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50050, 50000, 0.0005, 10000]
       );
 
-      const stats = oracleTracker.getStats('btc');
+      const stats = await oracleTracker.getStats('btc');
 
       expect(stats.update_frequency_by_volatility.small.count).toBe(1);
       expect(stats.update_frequency_by_volatility.medium.count).toBe(0);
@@ -128,65 +115,65 @@ describe('Oracle Tracker Statistics', () => {
   });
 
   describe('deviation threshold calculations', () => {
-    it('calculates median correctly for odd number of samples', () => {
-      persistence.run(
+    it('calculates median correctly for odd number of samples', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.001, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50100, 0.003, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:20.000Z', 'btc', 50300, 50200, 0.005, 10000]
       );
 
-      const threshold = oracleTracker.getDeviationThreshold('btc');
+      const threshold = await oracleTracker.getDeviationThreshold('btc');
 
       // Sorted: 0.001, 0.003, 0.005 - median is 0.003
       expect(threshold.median_pct).toBe(0.003);
     });
 
-    it('calculates mean correctly', () => {
-      persistence.run(
+    it('calculates mean correctly', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.001, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50100, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:20.000Z', 'btc', 50300, 50200, 0.003, 10000]
       );
 
-      const threshold = oracleTracker.getDeviationThreshold('btc');
+      const threshold = await oracleTracker.getDeviationThreshold('btc');
 
       // Mean: (0.001 + 0.002 + 0.003) / 3 = 0.002
       expect(threshold.mean_pct).toBeCloseTo(0.002, 6);
     });
 
-    it('uses absolute values for negative deviations', () => {
-      persistence.run(
+    it('uses absolute values for negative deviations', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50000, 50100, -0.002, 10000]
       );
 
-      const threshold = oracleTracker.getDeviationThreshold('btc');
+      const threshold = await oracleTracker.getDeviationThreshold('btc');
 
       // Both should be counted as 0.002 in absolute terms
       expect(threshold.min_pct).toBe(0.002);
@@ -194,24 +181,24 @@ describe('Oracle Tracker Statistics', () => {
       expect(threshold.mean_pct).toBe(0.002);
     });
 
-    it('returns min and max correctly', () => {
-      persistence.run(
+    it('returns min and max correctly', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.001, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50500, 50100, 0.008, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:20.000Z', 'btc', 51000, 50500, 0.01, 10000]
       );
 
-      const threshold = oracleTracker.getDeviationThreshold('btc');
+      const threshold = await oracleTracker.getDeviationThreshold('btc');
 
       expect(threshold.min_pct).toBe(0.001);
       expect(threshold.max_pct).toBe(0.01);
@@ -219,27 +206,27 @@ describe('Oracle Tracker Statistics', () => {
   });
 
   describe('average update frequency', () => {
-    it('calculates updates per minute correctly', () => {
+    it('calculates updates per minute correctly', async () => {
       // Average interval of 15 seconds = 4 updates per minute
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 15000]
       );
 
-      const freq = oracleTracker.getAverageUpdateFrequency('btc');
+      const freq = await oracleTracker.getAverageUpdateFrequency('btc');
 
       expect(freq.updates_per_minute).toBe(4);
     });
 
-    it('handles single update correctly', () => {
-      persistence.run(
+    it('handles single update correctly', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 12345]
       );
 
-      const freq = oracleTracker.getAverageUpdateFrequency('btc');
+      const freq = await oracleTracker.getAverageUpdateFrequency('btc');
 
       expect(freq.avg_ms).toBe(12345);
       expect(freq.avg_seconds).toBe(12.345);
@@ -247,28 +234,28 @@ describe('Oracle Tracker Statistics', () => {
   });
 
   describe('multi-symbol statistics', () => {
-    it('maintains separate stats per symbol', () => {
+    it('maintains separate stats per symbol', async () => {
       // BTC updates
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50100, 0.002, 20000]
       );
 
       // ETH updates
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'eth', 3010, 3000, 0.003, 5000]
       );
 
-      const btcStats = oracleTracker.getStats('btc');
-      const ethStats = oracleTracker.getStats('eth');
+      const btcStats = await oracleTracker.getStats('btc');
+      const ethStats = await oracleTracker.getStats('eth');
 
       expect(btcStats.update_count).toBe(2);
       expect(ethStats.update_count).toBe(1);
@@ -279,15 +266,15 @@ describe('Oracle Tracker Statistics', () => {
   });
 
   describe('edge cases', () => {
-    it('handles single record gracefully', () => {
-      persistence.run(
+    it('handles single record gracefully', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
 
-      const stats = oracleTracker.getStats('btc');
-      const threshold = oracleTracker.getDeviationThreshold('btc');
+      const stats = await oracleTracker.getStats('btc');
+      const threshold = await oracleTracker.getDeviationThreshold('btc');
 
       expect(stats.update_count).toBe(1);
       expect(threshold.sample_size).toBe(1);
@@ -295,14 +282,14 @@ describe('Oracle Tracker Statistics', () => {
       expect(threshold.median_pct).toBe(threshold.mean_pct);
     });
 
-    it('handles zero time_since_previous_ms', () => {
-      persistence.run(
+    it('handles zero time_since_previous_ms', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 0]
       );
 
-      const freq = oracleTracker.getAverageUpdateFrequency('btc');
+      const freq = await oracleTracker.getAverageUpdateFrequency('btc');
 
       expect(freq.avg_ms).toBe(0);
       // updates_per_minute is null when avg_ms is 0 to avoid Infinity

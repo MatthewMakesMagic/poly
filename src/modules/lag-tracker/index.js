@@ -118,9 +118,12 @@ export async function init(cfg = {}) {
   }
 
   // Setup flush interval
+  // V3: flushBuffer is async, fire-and-forget with error logging
   if (config.flushIntervalMs > 0) {
     flushIntervalId = setInterval(() => {
-      flushBuffer();
+      flushBuffer().catch(err => {
+        log.error('interval_flush_failed', { error: err.message });
+      });
     }, config.flushIntervalMs);
 
     // Allow process to exit even if interval is running
@@ -143,8 +146,12 @@ export async function init(cfg = {}) {
 
 /**
  * Flush signal buffer to database
+ *
+ * V3 Philosophy: Uses async PostgreSQL transaction API.
+ *
+ * @returns {Promise<void>}
  */
-function flushBuffer() {
+async function flushBuffer() {
   // Get pending signals from tracker
   const pendingSignals = tracker.getPendingSignals();
 
@@ -168,12 +175,12 @@ function flushBuffer() {
         oracle_price_at_signal, predicted_direction, predicted_tau_ms, correlation_at_tau,
         window_id, outcome_direction, prediction_correct, pnl
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     `;
 
-    persistence.transaction(() => {
+    await persistence.transaction(async (client) => {
       for (const signal of readySignals) {
-        persistence.run(insertSQL, [
+        await client.run(insertSQL, [
           signal.timestamp,
           signal.symbol,
           signal.spot_price,
@@ -359,9 +366,9 @@ export async function shutdown() {
   }
   unsubscribers = [];
 
-  // Flush remaining signals
+  // V3: Await async flushBuffer()
   if (tracker) {
-    flushBuffer();
+    await flushBuffer();
     tracker = null;
   }
 

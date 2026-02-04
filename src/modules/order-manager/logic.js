@@ -215,13 +215,13 @@ export async function placeOrder(params, log) {
     };
 
     // 11. Insert order into database
-    const insertResult = persistence.run(
+    const insertResult = await persistence.run(
       `INSERT INTO orders (
         order_id, intent_id, position_id, window_id, market_id, token_id,
         side, order_type, price, size, filled_size, avg_fill_price,
         status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
         original_edge, original_model_probability, symbol, strategy_id, side_token
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
       [
         orderRecord.order_id,
         orderRecord.intent_id,
@@ -329,9 +329,9 @@ export async function placeOrder(params, log) {
  * @param {string} newStatus - New status
  * @param {Object} [updates={}] - Additional fields to update
  * @param {Object} log - Logger instance
- * @returns {Object} Updated order
+ * @returns {Promise<Object>} Updated order
  */
-export function updateOrderStatus(orderId, newStatus, updates = {}, log) {
+export async function updateOrderStatus(orderId, newStatus, updates = {}, log) {
   // Get current order
   const order = getCachedOrder(orderId);
   if (!order) {
@@ -385,13 +385,14 @@ export function updateOrderStatus(orderId, newStatus, updates = {}, log) {
   }
 
   // Update database - column names are now validated against whitelist
-  const setClauses = Object.keys(updateFields)
-    .map((key) => `${key} = ?`)
+  const keys = Object.keys(updateFields);
+  const setClauses = keys
+    .map((key, i) => `${key} = $${i + 1}`)
     .join(', ');
   const values = [...Object.values(updateFields), orderId];
 
-  const updateResult = persistence.run(
-    `UPDATE orders SET ${setClauses} WHERE order_id = ?`,
+  const updateResult = await persistence.run(
+    `UPDATE orders SET ${setClauses} WHERE order_id = $${keys.length + 1}`,
     values
   );
 
@@ -440,16 +441,16 @@ export function updateOrderStatus(orderId, newStatus, updates = {}, log) {
  * Get a single order by ID
  *
  * @param {string} orderId - Order ID
- * @returns {Object|undefined} Order or undefined
+ * @returns {Promise<Object|undefined>} Order or undefined
  */
-export function getOrder(orderId) {
+export async function getOrder(orderId) {
   // Try cache first
   let order = getCachedOrder(orderId);
 
   if (!order) {
     // Fall back to database
-    const dbOrder = persistence.get(
-      'SELECT * FROM orders WHERE order_id = ?',
+    const dbOrder = await persistence.get(
+      'SELECT * FROM orders WHERE order_id = $1',
       [orderId]
     );
 
@@ -466,12 +467,12 @@ export function getOrder(orderId) {
 /**
  * Get all open orders
  *
- * @returns {Object[]} Array of open orders
+ * @returns {Promise<Object[]>} Array of open orders
  */
-export function getOpenOrders() {
+export async function getOpenOrders() {
   // Sync cache from database to ensure consistency
-  const dbOrders = persistence.all(
-    `SELECT * FROM orders WHERE status IN (?, ?)`,
+  const dbOrders = await persistence.all(
+    `SELECT * FROM orders WHERE status IN ($1, $2)`,
     [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
   );
 
@@ -485,12 +486,12 @@ export function getOpenOrders() {
  * Get orders by window ID
  *
  * @param {string} windowId - Window ID
- * @returns {Object[]} Array of orders
+ * @returns {Promise<Object[]>} Array of orders
  */
-export function getOrdersByWindow(windowId) {
+export async function getOrdersByWindow(windowId) {
   // Get from database for accuracy
-  const dbOrders = persistence.all(
-    'SELECT * FROM orders WHERE window_id = ?',
+  const dbOrders = await persistence.all(
+    'SELECT * FROM orders WHERE window_id = $1',
     [windowId]
   );
 
@@ -504,13 +505,14 @@ export function getOrdersByWindow(windowId) {
  * Load recent orders into cache on module init
  *
  * @param {Object} log - Logger instance
+ * @returns {Promise<void>}
  */
-export function loadRecentOrders(log) {
+export async function loadRecentOrders(log) {
   // Load open orders and recent orders (last 24 hours) into cache
-  const recentOrders = persistence.all(
+  const recentOrders = await persistence.all(
     `SELECT * FROM orders
-     WHERE status IN (?, ?)
-     OR submitted_at > datetime('now', '-1 day')
+     WHERE status IN ($1, $2)
+     OR submitted_at > NOW() - INTERVAL '1 day'
      ORDER BY submitted_at DESC`,
     [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
   );
@@ -548,7 +550,7 @@ export async function cancelOrder(orderId, log) {
   }
 
   // 1. Get order and validate it exists
-  const order = getOrder(orderId);
+  const order = await getOrder(orderId);
   if (!order) {
     throw new OrderManagerError(
       OrderManagerErrorCodes.NOT_FOUND,
@@ -591,7 +593,7 @@ export async function cancelOrder(orderId, log) {
     recordCancelLatency(latencyMs);
 
     // 8. Update order status
-    updateOrderStatus(orderId, OrderStatus.CANCELLED, {
+    await updateOrderStatus(orderId, OrderStatus.CANCELLED, {
       cancelled_at: new Date().toISOString(),
     }, log);
 
@@ -641,7 +643,7 @@ export async function cancelOrder(orderId, log) {
  * @returns {Object} Updated order
  * @throws {OrderManagerError} If order not found or invalid state
  */
-export function handlePartialFill(orderId, fillSize, fillPrice, log) {
+export async function handlePartialFill(orderId, fillSize, fillPrice, log) {
   // 0. Validate input parameters
   if (!orderId || typeof orderId !== 'string') {
     throw new OrderManagerError(
@@ -668,7 +670,7 @@ export function handlePartialFill(orderId, fillSize, fillPrice, log) {
   }
 
   // 1. Get order and validate it exists
-  const order = getOrder(orderId);
+  const order = await getOrder(orderId);
   if (!order) {
     throw new OrderManagerError(
       OrderManagerErrorCodes.NOT_FOUND,
@@ -716,7 +718,7 @@ export function handlePartialFill(orderId, fillSize, fillPrice, log) {
   }
 
   // 7. Update order (uses existing updateOrderStatus which handles DB + cache)
-  updateOrderStatus(orderId, newStatus, updates, log);
+  await updateOrderStatus(orderId, newStatus, updates, log);
 
   // 8. Update stats for partial fills
   if (newStatus === OrderStatus.PARTIALLY_FILLED) {
@@ -732,18 +734,18 @@ export function handlePartialFill(orderId, fillSize, fillPrice, log) {
     newStatus,
   });
 
-  return getOrder(orderId);
+  return await getOrder(orderId);
 }
 
 /**
  * Get all partially filled orders
  *
- * @returns {Object[]} Array of partially filled orders
+ * @returns {Promise<Object[]>} Array of partially filled orders
  */
-export function getPartiallyFilledOrders() {
+export async function getPartiallyFilledOrders() {
   // Sync cache from database to ensure consistency
-  const dbOrders = persistence.all(
-    'SELECT * FROM orders WHERE status = ?',
+  const dbOrders = await persistence.all(
+    'SELECT * FROM orders WHERE status = $1',
     [OrderStatus.PARTIALLY_FILLED]
   );
 

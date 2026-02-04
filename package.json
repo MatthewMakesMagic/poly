@@ -18,7 +18,9 @@
     "backtest": "node scripts/backtest.mjs",
     "verify": "node scripts/verify.mjs",
     "verify:edge": "node scripts/verify-edge.mjs",
-    "deploy": "node scripts/deploy.mjs"
+    "deploy": "node scripts/deploy.mjs",
+    "db:manage-partitions": "node scripts/manage-partitions.mjs",
+    "data:replay-batches": "node scripts/replay-failed-batches.mjs"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
@@ -26,6 +28,7 @@
     "better-sqlite3": "^9.6.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.16.0",
+    "node-cron": "^4.2.1",
     "pg": "^8.18.0",
     "simple-statistics": "^7.8.0",
     "uuid": "^9.0.0",

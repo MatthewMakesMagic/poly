@@ -201,14 +201,14 @@ describe('signal-outcome-logger module', () => {
   });
 
   describe('getStats', () => {
-    test('throws when not initialized', () => {
-      expect(() => module.getStats()).toThrow('not initialized');
+    test('rejects when not initialized', async () => {
+      await expect(module.getStats()).rejects.toThrow('not initialized');
     });
 
     test('returns stats when initialized', async () => {
       await module.init({});
 
-      const stats = module.getStats();
+      const stats = await module.getStats();
 
       expect(stats).toHaveProperty('total_signals');
       expect(stats).toHaveProperty('win_rate');
@@ -216,28 +216,28 @@ describe('signal-outcome-logger module', () => {
   });
 
   describe('getStatsByBucket', () => {
-    test('throws when not initialized', () => {
-      expect(() => module.getStatsByBucket('symbol')).toThrow('not initialized');
+    test('rejects when not initialized', async () => {
+      await expect(module.getStatsByBucket('symbol')).rejects.toThrow('not initialized');
     });
 
     test('returns bucket stats when initialized', async () => {
       await module.init({});
 
-      const stats = module.getStatsByBucket('symbol');
+      const stats = await module.getStatsByBucket('symbol');
 
       expect(Array.isArray(stats)).toBe(true);
     });
   });
 
   describe('getRecentSignals', () => {
-    test('throws when not initialized', () => {
-      expect(() => module.getRecentSignals()).toThrow('not initialized');
+    test('rejects when not initialized', async () => {
+      await expect(module.getRecentSignals()).rejects.toThrow('not initialized');
     });
 
     test('returns signals when initialized', async () => {
       await module.init({});
 
-      const signals = module.getRecentSignals(10);
+      const signals = await module.getRecentSignals(10);
 
       expect(Array.isArray(signals)).toBe(true);
     });
@@ -270,7 +270,7 @@ describe('signal-outcome-logger module', () => {
 
       expect(state.initialized).toBe(true);
       expect(state.config).not.toBeNull();
-      expect(state.stats).toBeDefined();
+      expect(state.internal_stats).toBeDefined();
       expect(state.subscriptions).toBeDefined();
     });
 

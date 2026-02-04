@@ -297,9 +297,9 @@ export function calculateProbability(oraclePrice, strike, timeToExpiryMs, symbol
  *
  * @param {string} symbol - Cryptocurrency symbol
  * @param {number} [lookbackMs] - Lookback period in milliseconds
- * @returns {number|null} Annualized volatility or null if insufficient data
+ * @returns {Promise<number|null>} Annualized volatility or null if insufficient data
  */
-export function calculateRealizedVolatility(symbol, lookbackMs = null) {
+export async function calculateRealizedVolatility(symbol, lookbackMs = null) {
   ensureInitialized();
 
   if (!SUPPORTED_SYMBOLS.includes(symbol)) {
@@ -315,9 +315,9 @@ export function calculateRealizedVolatility(symbol, lookbackMs = null) {
 
   try {
     // Query oracle updates from oracle_updates table
-    const updates = persistence.all(
+    const updates = await persistence.all(
       `SELECT price, timestamp FROM oracle_updates
-       WHERE symbol = ? AND timestamp > datetime('now', '-' || ? || ' seconds')
+       WHERE symbol = $1 AND timestamp > NOW() - ($2 * INTERVAL '1 second')
        ORDER BY timestamp ASC`,
       [symbol, lookbackSeconds]
     );

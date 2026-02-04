@@ -9,13 +9,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Mock dependencies
 vi.mock('../../../persistence/index.js', () => ({
   default: {
-    run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-    get: vi.fn(),
-    all: vi.fn().mockReturnValue([]),
+    run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+    get: vi.fn().mockResolvedValue(undefined),
+    all: vi.fn().mockResolvedValue([]),
   },
-  run: vi.fn().mockReturnValue({ lastInsertRowid: 1, changes: 1 }),
-  get: vi.fn(),
-  all: vi.fn().mockReturnValue([]),
+  run: vi.fn().mockResolvedValue({ lastInsertRowid: 1, changes: 1 }),
+  get: vi.fn().mockResolvedValue(undefined),
+  all: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../../persistence/write-ahead.js', () => ({
@@ -266,8 +266,8 @@ describe('Order Manager Logic', () => {
       });
     });
 
-    it('updates status in cache and database', () => {
-      const updated = logic.updateOrderStatus('order-1', OrderStatus.FILLED, {}, mockLog);
+    it('updates status in cache and database', async () => {
+      const updated = await logic.updateOrderStatus('order-1', OrderStatus.FILLED, {}, mockLog);
 
       expect(updated.status).toBe('filled');
 
@@ -280,35 +280,35 @@ describe('Order Manager Logic', () => {
       );
     });
 
-    it('throws for non-existent order', () => {
-      expect(() =>
+    it('throws for non-existent order', async () => {
+      await expect(
         logic.updateOrderStatus('non-existent', OrderStatus.FILLED, {}, mockLog)
-      ).toThrow('Order not found');
+      ).rejects.toThrow('Order not found');
     });
 
-    it('throws for invalid status transition', () => {
+    it('throws for invalid status transition', async () => {
       // open -> pending is not allowed
-      expect(() =>
+      await expect(
         logic.updateOrderStatus('order-1', OrderStatus.PENDING, {}, mockLog)
-      ).toThrow('Invalid status transition');
+      ).rejects.toThrow('Invalid status transition');
     });
 
-    it('sets filled_at timestamp when transitioning to filled', () => {
-      logic.updateOrderStatus('order-1', OrderStatus.FILLED, {}, mockLog);
+    it('sets filled_at timestamp when transitioning to filled', async () => {
+      await logic.updateOrderStatus('order-1', OrderStatus.FILLED, {}, mockLog);
 
       const cached = state.getCachedOrder('order-1');
       expect(cached.filled_at).toBeDefined();
     });
 
-    it('sets cancelled_at timestamp when transitioning to cancelled', () => {
-      logic.updateOrderStatus('order-1', OrderStatus.CANCELLED, {}, mockLog);
+    it('sets cancelled_at timestamp when transitioning to cancelled', async () => {
+      await logic.updateOrderStatus('order-1', OrderStatus.CANCELLED, {}, mockLog);
 
       const cached = state.getCachedOrder('order-1');
       expect(cached.cancelled_at).toBeDefined();
     });
 
-    it('allows setting avg_fill_price on fill', () => {
-      logic.updateOrderStatus(
+    it('allows setting avg_fill_price on fill', async () => {
+      await logic.updateOrderStatus(
         'order-1',
         OrderStatus.FILLED,
         { avg_fill_price: 0.55 },
@@ -319,58 +319,58 @@ describe('Order Manager Logic', () => {
       expect(cached.avg_fill_price).toBe(0.55);
     });
 
-    it('rejects invalid column names to prevent SQL injection', () => {
-      expect(() =>
+    it('rejects invalid column names to prevent SQL injection', async () => {
+      await expect(
         logic.updateOrderStatus(
           'order-1',
           OrderStatus.FILLED,
           { 'malicious_column; DROP TABLE orders;--': 'value' },
           mockLog
         )
-      ).toThrow('Invalid update columns');
+      ).rejects.toThrow('Invalid update columns');
     });
 
-    it('allows valid column names in updates', () => {
+    it('allows valid column names in updates', async () => {
       // Should not throw for valid columns
-      expect(() =>
+      await expect(
         logic.updateOrderStatus(
           'order-1',
           OrderStatus.FILLED,
           { filled_size: 100, avg_fill_price: 0.55 },
           mockLog
         )
-      ).not.toThrow();
+      ).resolves.not.toThrow();
     });
   });
 
   describe('getOrder()', () => {
-    it('returns cached order', () => {
+    it('returns cached order', async () => {
       state.cacheOrder({ order_id: 'cached-1', status: 'open' });
 
-      const order = logic.getOrder('cached-1');
+      const order = await logic.getOrder('cached-1');
       expect(order).toBeDefined();
       expect(order.order_id).toBe('cached-1');
     });
 
-    it('falls back to database', () => {
-      persistence.get.mockReturnValueOnce({
+    it('falls back to database', async () => {
+      persistence.get.mockResolvedValueOnce({
         order_id: 'db-1',
         status: 'filled',
       });
 
-      const order = logic.getOrder('db-1');
+      const order = await logic.getOrder('db-1');
       expect(order).toBeDefined();
       expect(order.order_id).toBe('db-1');
       expect(persistence.get).toHaveBeenCalled();
     });
 
-    it('caches order after database fetch', () => {
-      persistence.get.mockReturnValueOnce({
+    it('caches order after database fetch', async () => {
+      persistence.get.mockResolvedValueOnce({
         order_id: 'db-2',
         status: 'open',
       });
 
-      logic.getOrder('db-2');
+      await logic.getOrder('db-2');
 
       // Should now be in cache
       const cached = state.getCachedOrder('db-2');
@@ -379,20 +379,20 @@ describe('Order Manager Logic', () => {
   });
 
   describe('getOpenOrders()', () => {
-    it('returns open and partially_filled orders', () => {
-      persistence.all.mockReturnValueOnce([
+    it('returns open and partially_filled orders', async () => {
+      persistence.all.mockResolvedValueOnce([
         { order_id: '1', status: 'open' },
         { order_id: '2', status: 'partially_filled' },
       ]);
 
-      const orders = logic.getOpenOrders();
+      const orders = await logic.getOpenOrders();
       expect(orders).toHaveLength(2);
     });
 
-    it('queries with correct status filter', () => {
-      persistence.all.mockReturnValueOnce([]);
+    it('queries with correct status filter', async () => {
+      persistence.all.mockResolvedValueOnce([]);
 
-      logic.getOpenOrders();
+      await logic.getOpenOrders();
 
       expect(persistence.all).toHaveBeenCalledWith(
         expect.stringContaining('status IN'),
@@ -402,39 +402,39 @@ describe('Order Manager Logic', () => {
   });
 
   describe('getOrdersByWindow()', () => {
-    it('queries by window_id', () => {
-      persistence.all.mockReturnValueOnce([
+    it('queries by window_id', async () => {
+      persistence.all.mockResolvedValueOnce([
         { order_id: '1', window_id: 'w1' },
       ]);
 
-      const orders = logic.getOrdersByWindow('w1');
+      const orders = await logic.getOrdersByWindow('w1');
 
       expect(persistence.all).toHaveBeenCalledWith(
-        expect.stringContaining('window_id = ?'),
+        expect.stringContaining('window_id = $1'),
         ['w1']
       );
     });
   });
 
   describe('loadRecentOrders()', () => {
-    it('loads open orders into cache', () => {
-      persistence.all.mockReturnValueOnce([
+    it('loads open orders into cache', async () => {
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'recent-1', status: 'open' },
         { order_id: 'recent-2', status: 'partially_filled' },
       ]);
 
-      logic.loadRecentOrders(mockLog);
+      await logic.loadRecentOrders(mockLog);
 
       expect(state.getCachedOrder('recent-1')).toBeDefined();
       expect(state.getCachedOrder('recent-2')).toBeDefined();
     });
 
-    it('logs count of loaded orders', () => {
-      persistence.all.mockReturnValueOnce([
+    it('logs count of loaded orders', async () => {
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'r1', status: 'open' },
       ]);
 
-      logic.loadRecentOrders(mockLog);
+      await logic.loadRecentOrders(mockLog);
 
       expect(mockLog.info).toHaveBeenCalledWith('orders_loaded_to_cache', { count: 1 });
     });
@@ -657,49 +657,49 @@ describe('Order Manager Logic', () => {
       });
     });
 
-    it('throws for invalid orderId (null)', () => {
-      expect(() =>
+    it('throws for invalid orderId (null)', async () => {
+      await expect(
         logic.handlePartialFill(null, 10, 0.5, mockLog)
-      ).toThrow('orderId is required and must be a string');
+      ).rejects.toThrow('orderId is required and must be a string');
     });
 
-    it('throws for invalid orderId (empty string)', () => {
-      expect(() =>
+    it('throws for invalid orderId (empty string)', async () => {
+      await expect(
         logic.handlePartialFill('', 10, 0.5, mockLog)
-      ).toThrow('orderId is required and must be a string');
+      ).rejects.toThrow('orderId is required and must be a string');
     });
 
-    it('throws for invalid fillSize (zero)', () => {
-      expect(() =>
+    it('throws for invalid fillSize (zero)', async () => {
+      await expect(
         logic.handlePartialFill('partial-order-1', 0, 0.5, mockLog)
-      ).toThrow('fillSize must be a positive number');
+      ).rejects.toThrow('fillSize must be a positive number');
     });
 
-    it('throws for invalid fillSize (negative)', () => {
-      expect(() =>
+    it('throws for invalid fillSize (negative)', async () => {
+      await expect(
         logic.handlePartialFill('partial-order-1', -10, 0.5, mockLog)
-      ).toThrow('fillSize must be a positive number');
+      ).rejects.toThrow('fillSize must be a positive number');
     });
 
-    it('throws for invalid fillPrice (too low)', () => {
-      expect(() =>
+    it('throws for invalid fillPrice (too low)', async () => {
+      await expect(
         logic.handlePartialFill('partial-order-1', 10, 0.001, mockLog)
-      ).toThrow('fillPrice must be a number between 0.01 and 0.99');
+      ).rejects.toThrow('fillPrice must be a number between 0.01 and 0.99');
     });
 
-    it('throws for invalid fillPrice (too high)', () => {
-      expect(() =>
+    it('throws for invalid fillPrice (too high)', async () => {
+      await expect(
         logic.handlePartialFill('partial-order-1', 10, 1.0, mockLog)
-      ).toThrow('fillPrice must be a number between 0.01 and 0.99');
+      ).rejects.toThrow('fillPrice must be a number between 0.01 and 0.99');
     });
 
-    it('throws for non-existent order', () => {
-      expect(() =>
+    it('throws for non-existent order', async () => {
+      await expect(
         logic.handlePartialFill('non-existent', 10, 0.5, mockLog)
-      ).toThrow('Order not found');
+      ).rejects.toThrow('Order not found');
     });
 
-    it('throws for order in terminal state', () => {
+    it('throws for order in terminal state', async () => {
       state.cacheOrder({
         order_id: 'filled-order',
         status: 'filled',
@@ -707,80 +707,80 @@ describe('Order Manager Logic', () => {
         size: 100,
       });
 
-      expect(() =>
+      await expect(
         logic.handlePartialFill('filled-order', 10, 0.5, mockLog)
-      ).toThrow('Cannot fill order in filled state');
+      ).rejects.toThrow('Cannot fill order in filled state');
     });
 
-    it('updates filled_size correctly for first fill', () => {
-      const result = logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+    it('updates filled_size correctly for first fill', async () => {
+      const result = await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
 
       expect(result.filled_size).toBe(25);
     });
 
-    it('updates filled_size cumulatively', () => {
-      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
-      const result = logic.handlePartialFill('partial-order-1', 30, 0.6, mockLog);
+    it('updates filled_size cumulatively', async () => {
+      await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+      const result = await logic.handlePartialFill('partial-order-1', 30, 0.6, mockLog);
 
       expect(result.filled_size).toBe(55);
     });
 
-    it('calculates avg_fill_price for first fill', () => {
-      const result = logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+    it('calculates avg_fill_price for first fill', async () => {
+      const result = await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
 
       expect(result.avg_fill_price).toBe(0.5);
     });
 
-    it('calculates weighted avg_fill_price for multiple fills', () => {
-      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
-      const result = logic.handlePartialFill('partial-order-1', 75, 0.6, mockLog);
+    it('calculates weighted avg_fill_price for multiple fills', async () => {
+      await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+      const result = await logic.handlePartialFill('partial-order-1', 75, 0.6, mockLog);
 
       // Weighted average: (25 * 0.5 + 75 * 0.6) / 100 = (12.5 + 45) / 100 = 0.575
       expect(result.avg_fill_price).toBeCloseTo(0.575);
     });
 
-    it('handles floating-point precision correctly', () => {
+    it('handles floating-point precision correctly', async () => {
       // Use values that could cause floating-point issues
-      logic.handlePartialFill('partial-order-1', 33.33, 0.33, mockLog);
-      const result = logic.handlePartialFill('partial-order-1', 33.33, 0.66, mockLog);
+      await logic.handlePartialFill('partial-order-1', 33.33, 0.33, mockLog);
+      const result = await logic.handlePartialFill('partial-order-1', 33.33, 0.66, mockLog);
 
       // Result should have reasonable precision (8 decimal places max)
       const decimalPlaces = (result.avg_fill_price.toString().split('.')[1] || '').length;
       expect(decimalPlaces).toBeLessThanOrEqual(8);
     });
 
-    it('transitions to partially_filled status', () => {
-      const result = logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+    it('transitions to partially_filled status', async () => {
+      const result = await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
 
       expect(result.status).toBe('partially_filled');
     });
 
-    it('transitions to filled when complete', () => {
-      const result = logic.handlePartialFill('partial-order-1', 100, 0.5, mockLog);
+    it('transitions to filled when complete', async () => {
+      const result = await logic.handlePartialFill('partial-order-1', 100, 0.5, mockLog);
 
       expect(result.status).toBe('filled');
       expect(result.filled_at).toBeDefined();
     });
 
-    it('transitions to filled when fill exceeds size', () => {
-      const result = logic.handlePartialFill('partial-order-1', 120, 0.5, mockLog);
+    it('transitions to filled when fill exceeds size', async () => {
+      const result = await logic.handlePartialFill('partial-order-1', 120, 0.5, mockLog);
 
       expect(result.status).toBe('filled');
     });
 
-    it('allows partial fill from partially_filled state', () => {
+    it('allows partial fill from partially_filled state', async () => {
       // First partial fill
-      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+      await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
 
       // Second partial fill should work
-      const result = logic.handlePartialFill('partial-order-1', 25, 0.6, mockLog);
+      const result = await logic.handlePartialFill('partial-order-1', 25, 0.6, mockLog);
 
       expect(result.filled_size).toBe(50);
       expect(result.status).toBe('partially_filled');
     });
 
-    it('logs partial fill event', () => {
-      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+    it('logs partial fill event', async () => {
+      await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
 
       expect(mockLog.info).toHaveBeenCalledWith(
         'partial_fill_processed',
@@ -795,8 +795,8 @@ describe('Order Manager Logic', () => {
       );
     });
 
-    it('persists updates to database', () => {
-      logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
+    it('persists updates to database', async () => {
+      await logic.handlePartialFill('partial-order-1', 25, 0.5, mockLog);
 
       expect(persistence.run).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE orders SET'),
@@ -806,35 +806,35 @@ describe('Order Manager Logic', () => {
   });
 
   describe('getPartiallyFilledOrders()', () => {
-    it('returns partially filled orders from database', () => {
-      persistence.all.mockReturnValueOnce([
+    it('returns partially filled orders from database', async () => {
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'pf-1', status: 'partially_filled' },
         { order_id: 'pf-2', status: 'partially_filled' },
       ]);
 
-      const orders = logic.getPartiallyFilledOrders();
+      const orders = await logic.getPartiallyFilledOrders();
 
       expect(orders).toHaveLength(2);
       expect(orders[0].status).toBe('partially_filled');
     });
 
-    it('queries with correct status filter', () => {
-      persistence.all.mockReturnValueOnce([]);
+    it('queries with correct status filter', async () => {
+      persistence.all.mockResolvedValueOnce([]);
 
-      logic.getPartiallyFilledOrders();
+      await logic.getPartiallyFilledOrders();
 
       expect(persistence.all).toHaveBeenCalledWith(
-        expect.stringContaining('status = ?'),
+        expect.stringContaining('status = $1'),
         ['partially_filled']
       );
     });
 
-    it('caches orders from database', () => {
-      persistence.all.mockReturnValueOnce([
+    it('caches orders from database', async () => {
+      persistence.all.mockResolvedValueOnce([
         { order_id: 'pf-3', status: 'partially_filled' },
       ]);
 
-      logic.getPartiallyFilledOrders();
+      await logic.getPartiallyFilledOrders();
 
       expect(state.getCachedOrder('pf-3')).toBeDefined();
     });

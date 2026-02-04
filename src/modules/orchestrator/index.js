@@ -36,6 +36,16 @@ import * as windowExpiry from '../window-expiry/index.js';
 import * as tradeEvent from '../trade-event/index.js';
 import * as virtualPositionManager from '../virtual-position-manager/index.js';
 import * as launchConfig from '../launch-config/index.js';
+// Data capture modules (V3 Phase 5)
+import * as tickLogger from '../tick-logger/index.js';
+import * as oracleTracker from '../oracle-tracker/index.js';
+import * as divergenceTracker from '../divergence-tracker/index.js';
+import * as lagTracker from '../lag-tracker/index.js';
+import * as signalOutcomeLogger from '../signal-outcome-logger/index.js';
+import * as qualityGate from '../quality-gate/index.js';
+import * as windowCloseEventRecorder from '../window-close-event-recorder/index.js';
+import * as partitionManager from '../partition-manager/index.js';
+import * as orderBookCollector from '../order-book-collector/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 // Strategy composition integration (Story 7-12)
 import {
@@ -87,6 +97,16 @@ const MODULE_MAP = {
   'take-profit': takeProfit,
   'window-expiry': windowExpiry,
   'trade-event': tradeEvent,
+  // Data capture modules (V3 Phase 5)
+  'tick-logger': tickLogger,
+  'oracle-tracker': oracleTracker,
+  'divergence-tracker': divergenceTracker,
+  'lag-tracker': lagTracker,
+  'signal-outcome-logger': signalOutcomeLogger,
+  'quality-gate': qualityGate,
+  'window-close-event-recorder': windowCloseEventRecorder,
+  'partition-manager': partitionManager,
+  'order-book-collector': orderBookCollector,
 };
 
 // PID file path for kill switch watchdog integration
@@ -288,6 +308,8 @@ export async function init(cfg) {
       modules: state.initializationOrder,
       pid: process.pid,
       activeStrategy: getActiveStrategyName(),
+      tradingMode: cfg.tradingMode,
+      LIVE_TRADING_ENABLED_raw: process.env.LIVE_TRADING_ENABLED,
     });
   } catch (err) {
     state.state = OrchestratorState.ERROR;
@@ -785,7 +807,10 @@ export function start() {
   // Create execution loop if not exists
   if (!executionLoop) {
     executionLoop = new ExecutionLoop({
-      config: config.orchestrator || { tickIntervalMs: 1000 },
+      config: {
+        ...config.orchestrator || { tickIntervalMs: 1000 },
+        tradingMode: config.tradingMode,  // Pass tradingMode from top-level config
+      },
       modules: getAllModules(),
       log: child({ module: 'execution-loop' }),
       onError: handleLoopError,

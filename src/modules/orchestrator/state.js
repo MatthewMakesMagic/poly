@@ -60,6 +60,16 @@ export const MODULE_INIT_ORDER = [
   { name: 'window-expiry', module: null, configKey: null },
   // Monitoring modules (Epic 5)
   { name: 'trade-event', module: null, configKey: null },
+  // Data capture modules (V3 Phase 5)
+  { name: 'tick-logger', module: null, configKey: null },
+  { name: 'oracle-tracker', module: null, configKey: null },
+  { name: 'divergence-tracker', module: null, configKey: null },
+  { name: 'lag-tracker', module: null, configKey: null },
+  { name: 'signal-outcome-logger', module: null, configKey: null },
+  { name: 'quality-gate', module: null, configKey: null },
+  { name: 'window-close-event-recorder', module: null, configKey: null },
+  { name: 'partition-manager', module: null, configKey: null },
+  { name: 'order-book-collector', module: null, configKey: null },
 ];
 
 /**

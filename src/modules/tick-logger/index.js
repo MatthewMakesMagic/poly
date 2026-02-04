@@ -203,9 +203,14 @@ let deadLetterQueue = [];
 
 /**
  * Batch insert ticks to database
+ *
+ * V3 Philosophy: Uses async PostgreSQL transaction API.
+ * Called by buffer.flush() as fire-and-forget (Promise not awaited).
+ *
  * @param {Object[]} ticks - Array of ticks to insert
+ * @returns {Promise<void>}
  */
-function batchInsert(ticks) {
+async function batchInsert(ticks) {
   if (ticks.length === 0) {
     return;
   }
@@ -219,12 +224,13 @@ function batchInsert(ticks) {
   try {
     const insertSQL = `
       INSERT INTO rtds_ticks (timestamp, topic, symbol, price, raw_payload)
-      VALUES (?, ?, ?, ?, ?)
+      VALUES ($1, $2, $3, $4, $5)
     `;
 
-    persistence.transaction(() => {
+    // V3: Use async transaction with client object
+    await persistence.transaction(async (client) => {
       for (const tick of allTicks) {
-        persistence.run(insertSQL, [
+        await client.run(insertSQL, [
           tick.timestamp,
           tick.topic,
           tick.symbol,
@@ -313,6 +319,9 @@ export async function flush() {
 
 /**
  * Cleanup old ticks based on retention policy
+ *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {number} [retentionDays] - Days to retain (uses config if not specified)
  * @returns {Promise<number>} Number of rows deleted
  */
@@ -324,8 +333,9 @@ export async function cleanupOldTicks(retentionDays) {
   const cutoffISO = cutoffDate.toISOString();
 
   try {
-    const result = persistence.run(
-      'DELETE FROM rtds_ticks WHERE timestamp < ?',
+    // V3: Await async persistence.run()
+    const result = await persistence.run(
+      'DELETE FROM rtds_ticks WHERE timestamp < $1',
       [cutoffISO]
     );
 

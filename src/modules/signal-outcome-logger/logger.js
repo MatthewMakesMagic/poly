@@ -77,13 +77,13 @@ export class SignalOutcomeLogger {
         strike = null,
       } = inputs;
 
-      // Use upsert to handle duplicate window_id gracefully
-      const result = this.db.run(`
+      // V3: Await async db.run() - Use upsert to handle duplicate window_id gracefully
+      const result = await this.db.run(`
         INSERT INTO oracle_edge_signals (
           timestamp, window_id, symbol, time_to_expiry_ms, ui_price, oracle_price,
           oracle_staleness_ms, strike, market_token_price, signal_direction,
           confidence, token_id, side, entry_price
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT(window_id) DO UPDATE SET
           timestamp = excluded.timestamp,
           symbol = excluded.symbol,
@@ -171,9 +171,9 @@ export class SignalOutcomeLogger {
     }
 
     try {
-      // Get existing signal record
-      const signalRecord = this.db.get(
-        'SELECT * FROM oracle_edge_signals WHERE window_id = ?',
+      // V3: Await async db.get() - Get existing signal record
+      const signalRecord = await this.db.get(
+        'SELECT * FROM oracle_edge_signals WHERE window_id = $1',
         [windowId]
       );
 
@@ -206,16 +206,16 @@ export class SignalOutcomeLogger {
         this.config.defaultPositionSize
       );
 
-      // Update the record
-      this.db.run(`
+      // V3: Await async db.run() - Update the record
+      await this.db.run(`
         UPDATE oracle_edge_signals
-        SET final_oracle_price = ?,
-            settlement_outcome = ?,
-            signal_correct = ?,
-            exit_price = ?,
-            pnl = ?,
+        SET final_oracle_price = $1,
+            settlement_outcome = $2,
+            signal_correct = $3,
+            exit_price = $4,
+            pnl = $5,
             updated_at = CURRENT_TIMESTAMP
-        WHERE window_id = ?
+        WHERE window_id = $6
       `, [
         final_oracle_price,
         settlementOutcome,
@@ -300,11 +300,14 @@ export class SignalOutcomeLogger {
   /**
    * Get overall signal statistics
    *
-   * @returns {Object} Statistics object
+   * V3 Philosophy: Uses async PostgreSQL API.
+   *
+   * @returns {Promise<Object>} Statistics object
    */
-  getStats() {
+  async getStats() {
     try {
-      const row = this.db.get(`
+      // V3: Await async db.get()
+      const row = await this.db.get(`
         SELECT
           COUNT(*) as total,
           SUM(CASE WHEN settlement_outcome IS NOT NULL THEN 1 ELSE 0 END) as with_outcome,
@@ -352,10 +355,12 @@ export class SignalOutcomeLogger {
   /**
    * Get statistics grouped by bucket type
    *
+   * V3 Philosophy: Uses async PostgreSQL API.
+   *
    * @param {string} bucketType - One of BucketType values
-   * @returns {Array} Array of bucket statistics (empty array for invalid bucket types)
+   * @returns {Promise<Array>} Array of bucket statistics (empty array for invalid bucket types)
    */
-  getStatsByBucket(bucketType) {
+  async getStatsByBucket(bucketType) {
     // Validate bucket type and log warning for invalid inputs
     const validBucketTypes = Object.values(BucketType);
     if (!validBucketTypes.includes(bucketType)) {
@@ -444,7 +449,8 @@ export class SignalOutcomeLogger {
           return [];
       }
 
-      const rows = this.db.all(query);
+      // V3: Await async db.all()
+      const rows = await this.db.all(query);
 
       return rows.map(row => ({
         bucket: row.bucket,
@@ -463,10 +469,12 @@ export class SignalOutcomeLogger {
   /**
    * Get recent signals with outcomes
    *
+   * V3 Philosophy: Uses async PostgreSQL API.
+   *
    * @param {number} limit - Maximum number of signals to return (1-1000)
-   * @returns {Array} Array of recent signal records
+   * @returns {Promise<Array>} Array of recent signal records
    */
-  getRecentSignals(limit = 50) {
+  async getRecentSignals(limit = 50) {
     // Validate and clamp limit to prevent memory issues
     const maxLimit = 1000;
     const minLimit = 1;
@@ -478,11 +486,12 @@ export class SignalOutcomeLogger {
     }
 
     try {
-      const rows = this.db.all(`
+      // V3: Await async db.all()
+      const rows = await this.db.all(`
         SELECT *
         FROM oracle_edge_signals
         ORDER BY timestamp DESC
-        LIMIT ?
+        LIMIT $1
       `, [safeLimit]);
 
       return rows || [];

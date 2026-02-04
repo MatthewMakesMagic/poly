@@ -158,10 +158,12 @@ export async function updateOutcome(windowId, settlementData) {
 /**
  * Get overall signal statistics
  *
- * @returns {Object} Statistics including win rate, PnL, etc.
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
+ * @returns {Promise<Object>} Statistics including win rate, PnL, etc.
  * @throws {SignalOutcomeLoggerError} If not initialized
  */
-export function getStats() {
+export async function getStats() {
   ensureInitialized();
   return logger.getStats();
 }
@@ -169,11 +171,13 @@ export function getStats() {
 /**
  * Get statistics grouped by bucket type
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {string} bucketType - One of 'time_to_expiry', 'staleness', 'confidence', 'symbol'
- * @returns {Array} Array of bucket statistics
+ * @returns {Promise<Array>} Array of bucket statistics
  * @throws {SignalOutcomeLoggerError} If not initialized
  */
-export function getStatsByBucket(bucketType) {
+export async function getStatsByBucket(bucketType) {
   ensureInitialized();
   return logger.getStatsByBucket(bucketType);
 }
@@ -181,11 +185,13 @@ export function getStatsByBucket(bucketType) {
 /**
  * Get recent signals with outcomes
  *
+ * V3 Philosophy: Uses async PostgreSQL API.
+ *
  * @param {number} limit - Maximum number of signals to return
- * @returns {Array} Array of recent signal records
+ * @returns {Promise<Array>} Array of recent signal records
  * @throws {SignalOutcomeLoggerError} If not initialized
  */
-export function getRecentSignals(limit = 50) {
+export async function getRecentSignals(limit = 50) {
   ensureInitialized();
   return logger.getRecentSignals(limit);
 }
@@ -204,19 +210,19 @@ export function subscribeToSettlements(subscribeToSettlements) {
 /**
  * Get current module state
  *
+ * V3 Philosophy: Returns only in-memory state (no DB queries).
+ * Use getStats() for database-derived statistics.
+ *
  * @returns {Object} Current state
  */
 export function getState() {
   if (!initialized || !logger) {
     return {
       initialized: false,
-      stats: {
-        total_signals: 0,
-        signals_with_outcome: 0,
-        pending_outcomes: 0,
-        win_rate: 0,
-        total_pnl: 0,
-        avg_confidence: 0,
+      internal_stats: {
+        signals_logged: 0,
+        outcomes_updated: 0,
+        errors: 0,
       },
       subscriptions: {
         signal_generator: false,
@@ -226,12 +232,11 @@ export function getState() {
     };
   }
 
-  const stats = logger.getStats();
+  // V3: Only return in-memory state, not DB queries
   const internalStats = logger.getInternalStats();
 
   return {
     initialized: true,
-    stats,
     internal_stats: internalStats,
     subscriptions: {
       signal_generator: oracleEdgeSignalModule !== null,

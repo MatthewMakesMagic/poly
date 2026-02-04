@@ -6,9 +6,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { unlinkSync, existsSync } from 'fs';
 
 // Import modules
 import * as oracleTracker from '../index.js';
@@ -17,19 +14,17 @@ import persistence from '../../../persistence/index.js';
 import * as rtdsClient from '../../../clients/rtds/index.js';
 import { TOPICS, SUPPORTED_SYMBOLS } from '../../../clients/rtds/types.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_DB_PATH = join(__dirname, 'test-oracle-tracker.db');
-
-describe('Oracle Tracker Module', () => {
+// Skip all tests if no DATABASE_URL is available (PostgreSQL required for integration tests)
+describe.skipIf(!process.env.DATABASE_URL)('Oracle Tracker Module', () => {
   beforeEach(async () => {
     // Initialize logger
     await logger.init({
       logging: { level: 'error', console: false, directory: '/tmp/test-logs' },
     });
 
-    // Initialize persistence with test database
+    // Initialize persistence with PostgreSQL
     await persistence.init({
-      database: { path: TEST_DB_PATH },
+      database: { url: process.env.DATABASE_URL, pool: { min: 1, max: 2 } },
     });
 
     // Mock RTDS client subscribe
@@ -38,17 +33,9 @@ describe('Oracle Tracker Module', () => {
 
   afterEach(async () => {
     await oracleTracker.shutdown();
+    await persistence.run('DELETE FROM oracle_updates');
     await persistence.shutdown();
     await logger.shutdown();
-
-    // Clean up test database
-    if (existsSync(TEST_DB_PATH)) {
-      try {
-        unlinkSync(TEST_DB_PATH);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
 
     vi.restoreAllMocks();
   });
@@ -165,15 +152,15 @@ describe('Oracle Tracker Module', () => {
     it('throws if not initialized', async () => {
       await oracleTracker.shutdown();
 
-      expect(() => oracleTracker.getStats('btc')).toThrow('Oracle tracker not initialized');
+      await expect(oracleTracker.getStats('btc')).rejects.toThrow('Oracle tracker not initialized');
     });
 
     it('throws for invalid symbol', async () => {
-      expect(() => oracleTracker.getStats('invalid')).toThrow('Invalid symbol');
+      await expect(oracleTracker.getStats('invalid')).rejects.toThrow('Invalid symbol');
     });
 
-    it('returns empty stats when no data', () => {
-      const stats = oracleTracker.getStats('btc');
+    it('returns empty stats when no data', async () => {
+      const stats = await oracleTracker.getStats('btc');
 
       expect(stats.symbol).toBe('btc');
       expect(stats.update_count).toBe(0);
@@ -181,20 +168,20 @@ describe('Oracle Tracker Module', () => {
       expect(stats.deviation_threshold).toBeNull();
     });
 
-    it('returns stats after inserting records', () => {
+    it('returns stats after inserting records', async () => {
       // Insert test records directly
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50100, 0.002, 15000]
       );
 
-      const stats = oracleTracker.getStats('btc');
+      const stats = await oracleTracker.getStats('btc');
 
       expect(stats.update_count).toBe(2);
       expect(stats.avg_update_frequency).not.toBeNull();
@@ -212,30 +199,30 @@ describe('Oracle Tracker Module', () => {
     it('throws if not initialized', async () => {
       await oracleTracker.shutdown();
 
-      expect(() => oracleTracker.getAverageUpdateFrequency('btc')).toThrow('not initialized');
+      await expect(oracleTracker.getAverageUpdateFrequency('btc')).rejects.toThrow('not initialized');
     });
 
-    it('throws for invalid symbol', () => {
-      expect(() => oracleTracker.getAverageUpdateFrequency('invalid')).toThrow('Invalid symbol');
+    it('throws for invalid symbol', async () => {
+      await expect(oracleTracker.getAverageUpdateFrequency('invalid')).rejects.toThrow('Invalid symbol');
     });
 
-    it('returns null when no data', () => {
-      expect(oracleTracker.getAverageUpdateFrequency('btc')).toBeNull();
+    it('returns null when no data', async () => {
+      expect(await oracleTracker.getAverageUpdateFrequency('btc')).toBeNull();
     });
 
-    it('calculates average update frequency', () => {
-      persistence.run(
+    it('calculates average update frequency', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50100, 0.002, 20000]
       );
 
-      const freq = oracleTracker.getAverageUpdateFrequency('btc');
+      const freq = await oracleTracker.getAverageUpdateFrequency('btc');
 
       expect(freq.avg_ms).toBe(15000);
       expect(freq.avg_seconds).toBe(15);
@@ -251,35 +238,35 @@ describe('Oracle Tracker Module', () => {
     it('throws if not initialized', async () => {
       await oracleTracker.shutdown();
 
-      expect(() => oracleTracker.getDeviationThreshold('btc')).toThrow('not initialized');
+      await expect(oracleTracker.getDeviationThreshold('btc')).rejects.toThrow('not initialized');
     });
 
-    it('throws for invalid symbol', () => {
-      expect(() => oracleTracker.getDeviationThreshold('invalid')).toThrow('Invalid symbol');
+    it('throws for invalid symbol', async () => {
+      await expect(oracleTracker.getDeviationThreshold('invalid')).rejects.toThrow('Invalid symbol');
     });
 
-    it('returns null when no data', () => {
-      expect(oracleTracker.getDeviationThreshold('btc')).toBeNull();
+    it('returns null when no data', async () => {
+      expect(await oracleTracker.getDeviationThreshold('btc')).toBeNull();
     });
 
-    it('calculates deviation threshold statistics', () => {
-      persistence.run(
+    it('calculates deviation threshold statistics', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50050, 50100, -0.001, 15000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:20.000Z', 'btc', 50200, 50050, 0.003, 12000]
       );
 
-      const threshold = oracleTracker.getDeviationThreshold('btc');
+      const threshold = await oracleTracker.getDeviationThreshold('btc');
 
       expect(threshold.sample_size).toBe(3);
       expect(threshold.min_pct).toBe(0.001);
@@ -296,69 +283,69 @@ describe('Oracle Tracker Module', () => {
     it('throws if not initialized', async () => {
       await oracleTracker.shutdown();
 
-      expect(() => oracleTracker.getRecentUpdates('btc')).toThrow('not initialized');
+      await expect(oracleTracker.getRecentUpdates('btc')).rejects.toThrow('not initialized');
     });
 
-    it('throws for invalid symbol', () => {
-      expect(() => oracleTracker.getRecentUpdates('invalid')).toThrow('Invalid symbol');
+    it('throws for invalid symbol', async () => {
+      await expect(oracleTracker.getRecentUpdates('invalid')).rejects.toThrow('Invalid symbol');
     });
 
-    it('returns empty array when no data', () => {
-      expect(oracleTracker.getRecentUpdates('btc')).toEqual([]);
+    it('returns empty array when no data', async () => {
+      expect(await oracleTracker.getRecentUpdates('btc')).toEqual([]);
     });
 
-    it('returns recent updates ordered by timestamp descending', () => {
-      persistence.run(
+    it('returns recent updates ordered by timestamp descending', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:10.000Z', 'btc', 50200, 50100, 0.002, 15000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:20.000Z', 'btc', 50300, 50200, 0.002, 12000]
       );
 
-      const updates = oracleTracker.getRecentUpdates('btc');
+      const updates = await oracleTracker.getRecentUpdates('btc');
 
       expect(updates).toHaveLength(3);
       expect(updates[0].price).toBe(50300); // Most recent first
       expect(updates[2].price).toBe(50100);
     });
 
-    it('respects limit parameter', () => {
+    it('respects limit parameter', async () => {
       for (let i = 0; i < 10; i++) {
-        persistence.run(
+        await persistence.run(
           `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           VALUES ($1, $2, $3, $4, $5, $6)`,
           [`2026-02-01T00:00:${i.toString().padStart(2, '0')}.000Z`, 'btc', 50000 + i * 100, 50000 + (i - 1) * 100, 0.002, 10000]
         );
       }
 
-      const updates = oracleTracker.getRecentUpdates('btc', 5);
+      const updates = await oracleTracker.getRecentUpdates('btc', 5);
 
       expect(updates).toHaveLength(5);
     });
 
-    it('only returns updates for specified symbol', () => {
-      persistence.run(
+    it('only returns updates for specified symbol', async () => {
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'btc', 50100, 50000, 0.002, 10000]
       );
-      persistence.run(
+      await persistence.run(
         `INSERT INTO oracle_updates (timestamp, symbol, price, previous_price, deviation_from_previous_pct, time_since_previous_ms)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         ['2026-02-01T00:00:00.000Z', 'eth', 3010, 3000, 0.003, 10000]
       );
 
-      const btcUpdates = oracleTracker.getRecentUpdates('btc');
-      const ethUpdates = oracleTracker.getRecentUpdates('eth');
+      const btcUpdates = await oracleTracker.getRecentUpdates('btc');
+      const ethUpdates = await oracleTracker.getRecentUpdates('eth');
 
       expect(btcUpdates).toHaveLength(1);
       expect(btcUpdates[0].symbol).toBe('btc');

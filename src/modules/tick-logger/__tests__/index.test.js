@@ -1,11 +1,11 @@
 /**
  * Tests for Tick Logger Module
+ *
+ * Integration tests requiring a PostgreSQL database.
+ * Skipped when DATABASE_URL is not set.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { unlinkSync, existsSync } from 'fs';
 
 // Import modules
 import * as tickLogger from '../index.js';
@@ -13,19 +13,17 @@ import * as logger from '../../logger/index.js';
 import persistence from '../../../persistence/index.js';
 import * as rtdsClient from '../../../clients/rtds/index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_DB_PATH = join(__dirname, 'test-tick-logger.db');
-
-describe('Tick Logger Module', () => {
+// Skip all tests if no PostgreSQL database is available
+describe.skipIf(!process.env.DATABASE_URL)('Tick Logger Module', () => {
   beforeEach(async () => {
     // Initialize logger
     await logger.init({
       logging: { level: 'error', console: false, directory: '/tmp/test-logs' },
     });
 
-    // Initialize persistence with test database
+    // Initialize persistence with PostgreSQL
     await persistence.init({
-      database: { path: TEST_DB_PATH },
+      database: { url: process.env.DATABASE_URL, pool: { min: 1, max: 2 } },
     });
 
     // Mock RTDS client subscribe
@@ -34,17 +32,10 @@ describe('Tick Logger Module', () => {
 
   afterEach(async () => {
     await tickLogger.shutdown();
+    // Clean up test data before shutting down persistence
+    await persistence.run('DELETE FROM rtds_ticks');
     await persistence.shutdown();
     await logger.shutdown();
-
-    // Clean up test database
-    if (existsSync(TEST_DB_PATH)) {
-      try {
-        unlinkSync(TEST_DB_PATH);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
 
     vi.restoreAllMocks();
   });
@@ -124,7 +115,7 @@ describe('Tick Logger Module', () => {
       await tickLogger.flush();
 
       // Query database to verify
-      const row = persistence.get('SELECT * FROM rtds_ticks WHERE symbol = ?', ['btc']);
+      const row = await persistence.get('SELECT * FROM rtds_ticks WHERE symbol = $1', ['btc']);
       expect(row.timestamp).toBe(new Date(now).toISOString());
     });
 
@@ -168,7 +159,7 @@ describe('Tick Logger Module', () => {
 
       await tickLogger.flush();
 
-      const row = persistence.get('SELECT * FROM rtds_ticks WHERE symbol = ?', ['btc']);
+      const row = await persistence.get('SELECT * FROM rtds_ticks WHERE symbol = $1', ['btc']);
       expect(row).toBeDefined();
       // Timestamp should be a valid ISO string (current time was used as fallback)
       expect(() => new Date(row.timestamp)).not.toThrow();
@@ -179,7 +170,7 @@ describe('Tick Logger Module', () => {
 
       await tickLogger.flush();
 
-      const row = persistence.get('SELECT * FROM rtds_ticks WHERE symbol = ?', ['btc']);
+      const row = await persistence.get('SELECT * FROM rtds_ticks WHERE symbol = $1', ['btc']);
       expect(row).toBeDefined();
       expect(() => new Date(row.timestamp)).not.toThrow();
     });
@@ -211,7 +202,7 @@ describe('Tick Logger Module', () => {
 
       await tickLogger.flush();
 
-      const rows = persistence.all('SELECT * FROM rtds_ticks ORDER BY id');
+      const rows = await persistence.all('SELECT * FROM rtds_ticks ORDER BY id');
       expect(rows).toHaveLength(2);
       expect(rows[0].symbol).toBe('btc');
       expect(rows[0].price).toBe(100);
@@ -261,7 +252,7 @@ describe('Tick Logger Module', () => {
 
       await tickLogger.shutdown();
 
-      const rows = persistence.all('SELECT * FROM rtds_ticks');
+      const rows = await persistence.all('SELECT * FROM rtds_ticks');
       expect(rows).toHaveLength(2);
     });
 
@@ -293,15 +284,15 @@ describe('Tick Logger Module', () => {
     it('deletes ticks older than retention period', async () => {
       // Insert old tick (8 days ago)
       const oldTimestamp = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [oldTimestamp, 'test', 'btc', 100]
       );
 
       // Insert recent tick
       const recentTimestamp = new Date().toISOString();
-      persistence.run(
-        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES (?, ?, ?, ?)',
+      await persistence.run(
+        'INSERT INTO rtds_ticks (timestamp, topic, symbol, price) VALUES ($1, $2, $3, $4)',
         [recentTimestamp, 'test', 'eth', 200]
       );
 
@@ -310,7 +301,7 @@ describe('Tick Logger Module', () => {
 
       expect(deleted).toBe(1);
 
-      const remaining = persistence.all('SELECT * FROM rtds_ticks');
+      const remaining = await persistence.all('SELECT * FROM rtds_ticks');
       expect(remaining).toHaveLength(1);
       expect(remaining[0].symbol).toBe('eth');
     });
@@ -359,7 +350,7 @@ describe('Tick Logger Module', () => {
 
       await tickLogger.flush();
 
-      const rows = persistence.all('SELECT * FROM rtds_ticks');
+      const rows = await persistence.all('SELECT * FROM rtds_ticks');
       expect(rows).toHaveLength(10);
     });
   });
