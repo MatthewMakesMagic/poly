@@ -83,17 +83,17 @@ describe('TOPICS', () => {
 
 describe('SYMBOL_MAPPING', () => {
   it('should map normalized symbols to Binance format', () => {
-    expect(SYMBOL_MAPPING.binance.btc).toBe('btcusdt');
-    expect(SYMBOL_MAPPING.binance.eth).toBe('ethusdt');
-    expect(SYMBOL_MAPPING.binance.sol).toBe('solusd');
-    expect(SYMBOL_MAPPING.binance.xrp).toBe('xrpusdt');
+    expect(SYMBOL_MAPPING.binance.btc).toBe('BTCUSDT');
+    expect(SYMBOL_MAPPING.binance.eth).toBe('ETHUSDT');
+    expect(SYMBOL_MAPPING.binance.sol).toBe('SOLUSDT');
+    expect(SYMBOL_MAPPING.binance.xrp).toBe('XRPUSDT');
   });
 
   it('should map normalized symbols to Chainlink format', () => {
-    expect(SYMBOL_MAPPING.chainlink.btc).toBe('btc/usd');
-    expect(SYMBOL_MAPPING.chainlink.eth).toBe('eth/usd');
-    expect(SYMBOL_MAPPING.chainlink.sol).toBe('sol/usd');
-    expect(SYMBOL_MAPPING.chainlink.xrp).toBe('xrp/usd');
+    expect(SYMBOL_MAPPING.chainlink.btc).toBe('BTC/USD');
+    expect(SYMBOL_MAPPING.chainlink.eth).toBe('ETH/USD');
+    expect(SYMBOL_MAPPING.chainlink.sol).toBe('SOL/USD');
+    expect(SYMBOL_MAPPING.chainlink.xrp).toBe('XRP/USD');
   });
 });
 
@@ -101,7 +101,7 @@ describe('REVERSE_SYMBOL_MAPPING', () => {
   it('should map Binance symbols to normalized format', () => {
     expect(REVERSE_SYMBOL_MAPPING.btcusdt).toBe('btc');
     expect(REVERSE_SYMBOL_MAPPING.ethusdt).toBe('eth');
-    expect(REVERSE_SYMBOL_MAPPING.solusd).toBe('sol');
+    expect(REVERSE_SYMBOL_MAPPING.solusdt).toBe('sol');
     expect(REVERSE_SYMBOL_MAPPING.xrpusdt).toBe('xrp');
   });
 

@@ -51,36 +51,46 @@ export const TOPICS = {
 
 /**
  * Symbol mapping between topics
- * Binance topic uses formats like 'btcusdt', 'ethusdt', 'solusd'
- * Chainlink topic uses formats like 'btc/usd', 'eth/usd', 'sol/usd'
+ * Polymarket RTDS uses uppercase symbols: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT
+ * Chainlink topic uses formats like 'BTC/USD', 'ETH/USD', 'SOL/USD'
  */
 export const SYMBOL_MAPPING = {
-  // Binance topic symbols (crypto_prices)
+  // Binance topic symbols (crypto_prices) - uppercase per Polymarket API
   binance: {
-    btc: 'btcusdt',
-    eth: 'ethusdt',
-    sol: 'solusd',
-    xrp: 'xrpusdt',
+    btc: 'BTCUSDT',
+    eth: 'ETHUSDT',
+    sol: 'SOLUSDT',
+    xrp: 'XRPUSDT',
   },
   // Chainlink topic symbols (crypto_prices_chainlink)
   chainlink: {
-    btc: 'btc/usd',
-    eth: 'eth/usd',
-    sol: 'sol/usd',
-    xrp: 'xrp/usd',
+    btc: 'BTC/USD',
+    eth: 'ETH/USD',
+    sol: 'SOL/USD',
+    xrp: 'XRP/USD',
   },
 };
 
 /**
  * Reverse mapping: from raw symbol to normalized symbol
+ * Handles both cases since Polymarket may send uppercase
  */
 export const REVERSE_SYMBOL_MAPPING = {
-  // Binance symbols
+  // Binance symbols (uppercase - Polymarket format)
+  BTCUSDT: 'btc',
+  ETHUSDT: 'eth',
+  SOLUSDT: 'sol',
+  XRPUSDT: 'xrp',
+  // Binance symbols (lowercase - legacy/fallback)
   btcusdt: 'btc',
   ethusdt: 'eth',
-  solusd: 'sol',
+  solusdt: 'sol',
   xrpusdt: 'xrp',
   // Chainlink symbols
+  'BTC/USD': 'btc',
+  'ETH/USD': 'eth',
+  'SOL/USD': 'sol',
+  'XRP/USD': 'xrp',
   'btc/usd': 'btc',
   'eth/usd': 'eth',
   'sol/usd': 'sol',

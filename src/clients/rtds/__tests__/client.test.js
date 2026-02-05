@@ -162,7 +162,7 @@ describe('RTDSClient', () => {
 
     it('should handle alternative field names (s, p, t)', () => {
       const tick = client.normalizePrice(
-        { s: 'solusd', p: '123.45', t: 1700000000000 },
+        { s: 'solusdt', p: '123.45', t: 1700000000000 },
         TOPICS.CRYPTO_PRICES
       );
 
@@ -476,9 +476,10 @@ describe('RTDSClient', () => {
 
     it('should process messages within size limit', () => {
       const validMessage = JSON.stringify({
-        type: 'price_update',
         topic: TOPICS.CRYPTO_PRICES,
-        prices: [{ symbol: 'btcusdt', price: '95234.50', timestamp: Date.now() }],
+        type: 'price',
+        timestamp: Date.now(),
+        payload: { symbol: 'BTCUSDT', value: '95234.50', timestamp: Date.now() },
       });
 
       client.handleMessage(validMessage);

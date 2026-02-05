@@ -251,36 +251,50 @@ export class RTDSClient {
 
   /**
    * Subscribe to crypto price topics
+   *
+   * Uses Polymarket's RTDS subscription format:
+   * { action: "subscribe", subscriptions: [{ topic, type, filters }] }
+   *
+   * Each symbol requires its own subscription entry with a JSON filter.
    */
   subscribeToTopics() {
-    // Subscribe to Binance prices (crypto_prices)
-    this.sendSubscription(TOPICS.CRYPTO_PRICES, Object.values(SYMBOL_MAPPING.binance));
-
-    // Subscribe to Chainlink prices (crypto_prices_chainlink)
-    this.sendSubscription(TOPICS.CRYPTO_PRICES_CHAINLINK, Object.values(SYMBOL_MAPPING.chainlink));
-  }
-
-  /**
-   * Send subscription message for a topic
-   *
-   * @param {string} topic - Topic to subscribe to
-   * @param {string[]} symbols - Symbols to subscribe to
-   */
-  sendSubscription(topic, symbols) {
     if (!this.ws || this.connectionState !== ConnectionState.CONNECTED) {
       return;
     }
 
-    // Polymarket RTDS subscription format (based on observed behavior)
+    // Build subscription entries for all symbols across both topics
+    const subscriptions = [];
+
+    // Binance prices (crypto_prices)
+    for (const symbol of Object.values(SYMBOL_MAPPING.binance)) {
+      subscriptions.push({
+        topic: TOPICS.CRYPTO_PRICES,
+        type: '*',
+        filters: JSON.stringify({ symbol }),
+      });
+    }
+
+    // Chainlink prices (crypto_prices_chainlink)
+    for (const symbol of Object.values(SYMBOL_MAPPING.chainlink)) {
+      subscriptions.push({
+        topic: TOPICS.CRYPTO_PRICES_CHAINLINK,
+        type: '*',
+        filters: JSON.stringify({ symbol }),
+      });
+    }
+
     const message = JSON.stringify({
-      type: 'subscribe',
-      topic: topic,
-      symbols: symbols,
+      action: 'subscribe',
+      subscriptions,
     });
 
     this.ws.send(message);
     console.log(`[RTDS_DIAG] Sent subscription: ${message}`);
-    this.log.info('rtds_subscribed', { topic, symbols });
+    this.log.info('rtds_subscribed', {
+      subscription_count: subscriptions.length,
+      topics: [TOPICS.CRYPTO_PRICES, TOPICS.CRYPTO_PRICES_CHAINLINK],
+      symbols: [...Object.values(SYMBOL_MAPPING.binance), ...Object.values(SYMBOL_MAPPING.chainlink)],
+    });
   }
 
   /**
@@ -305,19 +319,18 @@ export class RTDSClient {
       const message = JSON.parse(raw);
 
       // Diagnostic: track all messages received
-      this.stats.messages_received = (this.stats.messages_received || 0) + 1;
+      this.stats.messages_received++;
 
-      // Handle different message types
-      if (message.type === 'price_update' || message.prices) {
-        this.handlePriceUpdate(message);
-      } else if (message.type === 'subscription_confirmed') {
-        this.log.info('rtds_subscription_confirmed', { topic: message.topic });
+      // Polymarket RTDS message format: { topic, type, timestamp, payload, connection_id }
+      // Payload for crypto_prices: { symbol, timestamp, value }
+      if (message.payload) {
+        this.handlePriceMessage(message);
       } else if (message.type === 'error') {
-        this.log.error('rtds_server_error', { error: message.message });
+        this.log.error('rtds_server_error', { error: message.message || message.payload });
         this.stats.errors++;
       } else {
         // Log unrecognized message types for debugging
-        this.stats.messages_unrecognized = (this.stats.messages_unrecognized || 0) + 1;
+        this.stats.messages_unrecognized++;
         // Log first 10 unrecognized messages, then every 100th
         if (this.stats.messages_unrecognized <= 10 || this.stats.messages_unrecognized % 100 === 0) {
           this.log.warn('rtds_message_unrecognized', {
@@ -338,7 +351,72 @@ export class RTDSClient {
   }
 
   /**
-   * Handle price update message
+   * Handle Polymarket RTDS price message
+   *
+   * Polymarket format: { topic, type, timestamp, payload: { symbol, timestamp, value }, connection_id }
+   *
+   * @param {Object} message - Parsed RTDS message with payload
+   */
+  handlePriceMessage(message) {
+    const { topic, payload } = message;
+
+    // Validate topic
+    if (!topic || !Object.values(TOPICS).includes(topic)) {
+      this.log.warn('rtds_invalid_topic_in_message', {
+        topic: topic,
+        validTopics: Object.values(TOPICS),
+      });
+      return;
+    }
+
+    // Payload contains { symbol, timestamp, value }
+    const rawSymbol = payload.symbol || payload.s;
+    if (!rawSymbol) return;
+
+    // Map to normalized symbol (case-insensitive lookup)
+    const normalizedSymbol = REVERSE_SYMBOL_MAPPING[rawSymbol] || REVERSE_SYMBOL_MAPPING[rawSymbol.toLowerCase()];
+    if (!normalizedSymbol || !SUPPORTED_SYMBOLS.includes(normalizedSymbol)) {
+      return;
+    }
+
+    const price = parseFloat(payload.value ?? payload.price ?? payload.p);
+    if (isNaN(price) || price <= 0) return;
+
+    const timestamp = payload.timestamp || message.timestamp || Date.now();
+
+    // Defensive check: ensure symbol exists in price storage
+    if (!this.prices[normalizedSymbol]) {
+      this.log.warn('rtds_unknown_symbol_in_tick', { symbol: normalizedSymbol });
+      return;
+    }
+
+    // Update stored price
+    this.prices[normalizedSymbol][topic] = {
+      price: price,
+      timestamp: timestamp,
+      staleness_ms: 0,
+    };
+
+    this.stats.ticks_received++;
+    this.stats.last_tick_at = new Date().toISOString();
+
+    // Log first few ticks for diagnostics
+    if (this.stats.ticks_received <= 5) {
+      this.log.info('rtds_tick_received', {
+        symbol: normalizedSymbol,
+        topic: topic,
+        price: price,
+        tick_number: this.stats.ticks_received,
+      });
+    }
+
+    // Notify subscribers
+    const tick = { timestamp, topic, symbol: normalizedSymbol, price };
+    this.notifySubscribers(normalizedSymbol, tick);
+  }
+
+  /**
+   * Handle price update message (legacy format)
    *
    * @param {Object} message - Parsed price update message
    */
