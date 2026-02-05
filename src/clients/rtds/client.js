@@ -200,6 +200,7 @@ export class RTDSClient {
         this.connectionState = ConnectionState.CONNECTED;
         this.reconnectAttempts = 0;
         this.log.info('rtds_connected', { url: this.config.url });
+        console.log(`[RTDS_DIAG] Connected to ${this.config.url}`);
 
         // Subscribe to topics
         this.subscribeToTopics();
@@ -211,16 +212,23 @@ export class RTDSClient {
       });
 
       this.ws.on('message', (data) => {
+        // Diagnostic: log first 3 raw messages directly to console (bypass logger)
+        if ((this.stats.messages_received || 0) < 3) {
+          const raw = data.toString().substring(0, 300);
+          console.log(`[RTDS_DIAG] msg #${(this.stats.messages_received || 0) + 1}: ${raw}`);
+        }
         this.handleMessage(data);
       });
 
       this.ws.on('error', (err) => {
         clearTimeout(connectionTimeout);
         this.stats.errors++;
+        console.log(`[RTDS_DIAG] WebSocket error: ${err.message}`);
         this.log.error('rtds_websocket_error', { error: err.message });
       });
 
       this.ws.on('close', (code, reason) => {
+        console.log(`[RTDS_DIAG] WebSocket closed: code=${code}, reason=${reason?.toString() || 'unknown'}`);
         clearTimeout(connectionTimeout);
         const wasConnected = this.connectionState === ConnectionState.CONNECTED;
         this.connectionState = ConnectionState.DISCONNECTED;
@@ -271,6 +279,7 @@ export class RTDSClient {
     });
 
     this.ws.send(message);
+    console.log(`[RTDS_DIAG] Sent subscription: ${message}`);
     this.log.info('rtds_subscribed', { topic, symbols });
   }
 
