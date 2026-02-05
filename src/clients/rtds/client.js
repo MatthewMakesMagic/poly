@@ -100,8 +100,14 @@ export class RTDSClient {
       symbols: this.config.symbols,
     });
 
-    // Start connection
-    await this.connect();
+    // Start connection in background - don't block orchestrator init
+    // Reconnection logic handles failures automatically
+    this.connect().catch((err) => {
+      this.log.warn('rtds_initial_connect_failed', {
+        error: err.message,
+        will_retry: true,
+      });
+    });
   }
 
   /**
