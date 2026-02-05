@@ -637,8 +637,17 @@ export class RTDSClient {
     // Reset stale warning timestamps
     this.lastStaleWarning = {};
 
+    // Diagnostic: log connection status every 30 seconds
+    this._diagCounter = 0;
+
     this.staleCheckInterval = setInterval(() => {
       const now = Date.now();
+
+      // Periodic diagnostic (every 30s for first 5 min)
+      this._diagCounter++;
+      if (this._diagCounter % 30 === 0 && this._diagCounter <= 300) {
+        console.log(`[RTDS_DIAG] status: connected=${this.connectionState}, ws_state=${this.ws?.readyState}, msgs=${this.stats.messages_received}, ticks=${this.stats.ticks_received}, unrecognized=${this.stats.messages_unrecognized}, errors=${this.stats.errors}`);
+      }
 
       for (const symbol of SUPPORTED_SYMBOLS) {
         for (const topic of Object.values(TOPICS)) {
