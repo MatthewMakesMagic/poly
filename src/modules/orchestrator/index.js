@@ -28,6 +28,9 @@ import * as safeguards from '../position-manager/safeguards.js';
 import * as orderManager from '../order-manager/index.js';
 import * as staleOrderEvaluator from '../stale-order-evaluator/index.js';
 import * as safety from '../safety/index.js';
+// V3 Stage 5: Circuit breaker and position verifier
+import * as circuitBreaker from '../circuit-breaker/index.js';
+import * as positionVerifier from '../position-verifier/index.js';
 import * as strategyEvaluator from '../strategy-evaluator/index.js';
 import * as positionSizer from '../position-sizer/index.js';
 import * as stopLoss from '../stop-loss/index.js';
@@ -82,6 +85,7 @@ import { ExecutionLoop } from './execution-loop.js';
 const MODULE_MAP = {
   'launch-config': launchConfig,
   persistence: persistence,
+  'circuit-breaker': circuitBreaker,
   polymarket: polymarket,
   spot: spot,
   'window-manager': windowManager,
@@ -91,6 +95,7 @@ const MODULE_MAP = {
   'order-manager': orderManager,
   'stale-order-evaluator': staleOrderEvaluator,
   'safety': safety,
+  'position-verifier': positionVerifier,
   'strategy-evaluator': strategyEvaluator,
   'position-sizer': positionSizer,
   'stop-loss': stopLoss,
@@ -376,12 +381,27 @@ async function initializeModules(cfg) {
         }
       }
 
+      // Special handling: wire up circuit-breaker orchestrator ref (V3 Stage 5)
+      if (entry.name === 'circuit-breaker') {
+        if (typeof moduleInstance.setOrchestrator === 'function') {
+          moduleInstance.setOrchestrator({ shutdown });
+          log.info('circuit_breaker_orchestrator_wired', { module: 'circuit-breaker' });
+        }
+      }
+
       // Special handling: wire up safety module with order-manager for auto-stop
+      // Also wire circuit-breaker with order-manager (now that OM is initialized)
       if (entry.name === 'safety') {
         const orderManagerModule = getModule('order-manager');
         if (orderManagerModule && typeof moduleInstance.setOrderManager === 'function') {
           moduleInstance.setOrderManager(orderManagerModule);
           log.info('safety_order_manager_wired', { module: 'safety' });
+        }
+        // V3 Stage 5: Wire circuit-breaker with order-manager (OM now initialized)
+        const cbModule = getModule('circuit-breaker');
+        if (cbModule && orderManagerModule && typeof cbModule.setOrderManager === 'function') {
+          cbModule.setOrderManager(orderManagerModule);
+          log.info('circuit_breaker_order_manager_wired', { module: 'circuit-breaker' });
         }
       }
 

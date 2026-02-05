@@ -32,7 +32,7 @@ import { createServer } from 'http';
 import config from '../config/index.js';
 import * as orchestrator from '../src/modules/orchestrator/index.js';
 import { child } from '../src/modules/logger/index.js';
-import { buildStatusResponse } from './health-endpoint.mjs';
+import { buildStatusResponse, buildHealthResponse } from './health-endpoint.mjs';
 
 // Create logger for this script
 const log = child({ module: 'run-live-trading' });
@@ -72,6 +72,17 @@ function createHealthServer() {
         log.error('health_endpoint_error', { error: err.message });
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'unhealthy', error: 'internal_error' }));
+      }
+    } else if (req.method === 'GET' && req.url === '/health') {
+      // V3 Stage 5: Strict health check - 200 only when ALL checks pass
+      try {
+        const health = buildHealthResponse();
+        res.writeHead(health.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(health));
+      } catch (err) {
+        log.error('health_check_error', { error: err.message });
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ healthy: false, error: 'internal_error' }));
       }
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -187,6 +198,7 @@ async function main() {
     httpServer.listen(PORT, () => {
       log.info('http_server_started', { port: PORT });
       console.log(`   Health endpoint: http://localhost:${PORT}/api/live/status`);
+      console.log(`   Health check:    http://localhost:${PORT}/health`);
     });
 
     // Start the execution loop

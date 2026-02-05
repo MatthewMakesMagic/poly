@@ -85,6 +85,73 @@ export function determineHealthStatus(connections, errorCount1m, lastTick) {
 }
 
 /**
+ * Build health check response for /health endpoint (V3 Stage 5)
+ *
+ * Returns 200 only when ALL checks pass:
+ * - db_main: persistence connected + pool available
+ * - db_cb: CB pool available
+ * - circuit_breaker: state === 'CLOSED'
+ * - price_feed: spot module has price with timestamp < 30s old
+ *
+ * @returns {{ healthy: boolean, checks: Object, statusCode: number }}
+ */
+export function buildHealthResponse() {
+  try {
+    const state = orchestrator.getState();
+    const modules = state.modules || {};
+
+    const checks = {};
+
+    // db_main: persistence initialized
+    checks.db_main = !!modules.persistence?.initialized;
+
+    // db_cb: CB pool available (if CB module exists, its init succeeded with DB)
+    checks.db_cb = !!modules['circuit-breaker']?.initialized;
+
+    // circuit_breaker: state must be CLOSED
+    const cbState = modules['circuit-breaker']?.state;
+    checks.circuit_breaker = cbState === 'CLOSED';
+
+    // price_feed: spot module has recent price (< 30s)
+    let priceFeedOk = false;
+    try {
+      if (modules.spot?.initialized) {
+        // Check if any price is recent
+        const spotState = modules.spot;
+        const lastUpdate = spotState.lastUpdateAt || spotState.lastPriceAt;
+        if (lastUpdate) {
+          const age = Date.now() - new Date(lastUpdate).getTime();
+          priceFeedOk = age < 30000;
+        }
+      }
+    } catch {
+      priceFeedOk = false;
+    }
+    checks.price_feed = priceFeedOk;
+
+    const healthy = Object.values(checks).every(Boolean);
+
+    return {
+      healthy,
+      checks,
+      statusCode: healthy ? 200 : 503,
+    };
+  } catch {
+    return {
+      healthy: false,
+      checks: {
+        db_main: false,
+        db_cb: false,
+        circuit_breaker: false,
+        price_feed: false,
+      },
+      statusCode: 503,
+      error: 'state_unavailable',
+    };
+  }
+}
+
+/**
  * Build the complete status response
  *
  * Health endpoint should NEVER throw - always returns valid JSON.

@@ -160,6 +160,28 @@ export class ExecutionLoop {
 
       this.log.debug('tick_start', { tickCount: this.tickCount });
 
+      // 0. Circuit breaker gate - skip entire tick if CB is open (V3 Stage 5)
+      if (this.modules['circuit-breaker']) {
+        try {
+          const cbOpen = await this.modules['circuit-breaker'].isOpen();
+          if (cbOpen) {
+            this.log.warn('tick_skipped_circuit_breaker_open', {
+              tickCount: this.tickCount,
+              state: this.modules['circuit-breaker'].getState?.(),
+            });
+            return;
+          }
+        } catch (cbErr) {
+          // Fail closed - if we can't check, assume OPEN
+          this.log.warn('tick_skipped_circuit_breaker_check_failed', {
+            tickCount: this.tickCount,
+            error: cbErr.message,
+            message: 'CB check failed - fail closed, skipping tick',
+          });
+          return;
+        }
+      }
+
       // 1. Check drawdown limit before evaluating entries (Story 4.4)
       let drawdownCheck = { breached: false, current: 0, limit: 0.05, autoStopped: false };
       let entriesSkipped = false;
@@ -498,30 +520,55 @@ export class ExecutionLoop {
                   });
 
                   // Record position with position-manager
+                  // V3 Stage 5: Halt-on-uncertainty - if recording fails after successful order, trip CB
                   if (this.modules['position-manager'] && orderResult.status !== 'rejected') {
-                    const position = this.modules['position-manager'].openPosition({
-                      window_id: signal.window_id,
-                      market_id: signal.market_id,
-                      token_id: signal.token_id,
-                      side: signal.direction,
-                      size: sizingResult.actual_size,
-                      entry_price: signal.market_price || signal.expected_price,
-                      order_id: orderResult.orderId,
-                    });
+                    try {
+                      const position = this.modules['position-manager'].openPosition({
+                        window_id: signal.window_id,
+                        market_id: signal.market_id,
+                        token_id: signal.token_id,
+                        side: signal.direction,
+                        size: sizingResult.actual_size,
+                        entry_price: signal.market_price || signal.expected_price,
+                        order_id: orderResult.orderId,
+                      });
 
-                    this.log.info('position_opened', {
-                      position_id: position.id,
-                      window_id: signal.window_id,
-                      strategy_id: strategyId,
-                      side: signal.direction,
-                      size: sizingResult.actual_size,
-                      entry_price: position.entry_price,
-                      trading_mode: tradingMode,
-                    });
+                      this.log.info('position_opened', {
+                        position_id: position.id,
+                        window_id: signal.window_id,
+                        strategy_id: strategyId,
+                        side: signal.direction,
+                        size: sizingResult.actual_size,
+                        entry_price: position.entry_price,
+                        trading_mode: tradingMode,
+                      });
 
-                    // Story 8-9: Confirm entry after successful order
-                    if (this.modules.safeguards && reserved) {
-                      await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                      // Story 8-9: Confirm entry after successful order
+                      if (this.modules.safeguards && reserved) {
+                        await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                      }
+                    } catch (trackingErr) {
+                      // CRITICAL: Order succeeded but position tracking failed
+                      // Trip CB - we have an untracked position on the exchange
+                      this.log.error('position_tracking_failed_after_order', {
+                        level: 'CRITICAL',
+                        window_id: signal.window_id,
+                        order_id: orderResult.orderId,
+                        error: trackingErr.message,
+                        message: 'Order placed but position recording failed - tripping circuit breaker',
+                      });
+                      if (this.modules['circuit-breaker']) {
+                        await this.modules['circuit-breaker'].trip('POSITION_TRACKING_FAILED', {
+                          window_id: signal.window_id,
+                          order_id: orderResult.orderId,
+                          error: trackingErr.message,
+                        });
+                      }
+                      // Release safeguard reservation
+                      if (this.modules.safeguards && reserved) {
+                        await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                      }
+                      continue; // Skip to next signal - NEVER log-and-continue
                     }
                   } else if (this.modules.safeguards && reserved) {
                     // Order rejected - release the reservation
@@ -662,13 +709,64 @@ export class ExecutionLoop {
         }
       }
 
+      // 4c. Position verification before SL/TP evaluation (V3 Stage 5)
+      let verificationPassed = true;
+      if (this.modules['position-verifier'] && this.modules['position-manager']) {
+        try {
+          const openPositions = await this.modules['position-manager'].getPositions();
+          if (openPositions.length > 0) {
+            const verifyResult = await this.modules['position-verifier'].verify(openPositions);
+
+            if (!verifyResult.verified && verifyResult.missing?.length > 0) {
+              // Exchange has positions we don't track - blind to SL/TP
+              verificationPassed = false;
+              if (this.modules['circuit-breaker']) {
+                await this.modules['circuit-breaker'].trip('STOP_LOSS_BLIND', {
+                  missing: verifyResult.missing,
+                  local_count: openPositions.length,
+                });
+              }
+              this.log.error('position_verification_failed_tripped_cb', {
+                missing: verifyResult.missing,
+                local_count: openPositions.length,
+              });
+            }
+
+            if (verifyResult.orphans?.length > 0) {
+              // Local positions not on exchange - log but don't halt
+              this.log.error('position_verification_orphans_detected', {
+                orphans: verifyResult.orphans,
+                message: 'Local positions not found on exchange',
+              });
+            }
+          }
+        } catch (verifyErr) {
+          if (verifyErr.status === 429) {
+            // Rate limited with stale cache - trip CB
+            verificationPassed = false;
+            if (this.modules['circuit-breaker']) {
+              await this.modules['circuit-breaker'].trip('VERIFICATION_RATE_LIMITED', {
+                error: verifyErr.message,
+              });
+            }
+            this.log.error('position_verification_rate_limited_tripped_cb', {
+              error: verifyErr.message,
+            });
+          } else {
+            this.log.warn('position_verification_error', {
+              error: verifyErr.message,
+            });
+          }
+        }
+      }
+
       // 5. Evaluate exit conditions - stop-loss (Story 3.4) - always evaluate even when auto-stopped
       // Also evaluates virtual positions for PAPER mode
       let stopLossResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
       let virtualStopLossResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
 
-      // 5a. Evaluate real positions
-      if (this.modules['stop-loss'] && this.modules['position-manager']) {
+      // 5a. Evaluate real positions (guarded by position verification - V3 Stage 5)
+      if (verificationPassed && this.modules['stop-loss'] && this.modules['position-manager']) {
         const stopLossModule = this.modules['stop-loss'];
         const positionManager = this.modules['position-manager'];
 
@@ -854,8 +952,8 @@ export class ExecutionLoop {
       let takeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
       let virtualTakeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
 
-      // 6a. Evaluate real positions
-      if (this.modules['take-profit'] && this.modules['position-manager']) {
+      // 6a. Evaluate real positions (guarded by position verification - V3 Stage 5)
+      if (verificationPassed && this.modules['take-profit'] && this.modules['position-manager']) {
         const takeProfitModule = this.modules['take-profit'];
         const positionManager = this.modules['position-manager'];
 

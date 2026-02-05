@@ -319,6 +319,12 @@ const config = {
     // auto-stop state persisted in PostgreSQL (auto_stop_state table)
   },
 
+  // Circuit breaker configuration (V3 Stage 5)
+  circuitBreaker: {
+    escalationIntervalMs: 30000,
+    cbQueryTimeoutMs: 1000,
+  },
+
   // Trading window configuration
   trading: {
     windowDurationMs: 15 * 60 * 1000, // 15 minutes

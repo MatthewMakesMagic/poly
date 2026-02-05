@@ -37,6 +37,8 @@ export const MODULE_INIT_ORDER = [
   // Launch-config - reads launch manifest, must be first to provide strategy filter
   { name: 'launch-config', module: null, configKey: null },
   { name: 'persistence', module: null, configKey: 'database' },
+  // Circuit breaker - needs DB, before order-manager (V3 Stage 5)
+  { name: 'circuit-breaker', module: null, configKey: null },
   { name: 'polymarket', module: null, configKey: 'polymarket' },
   { name: 'spot', module: null, configKey: 'spot' },
   // TEMP SOLUTION: Window manager for fetching active 15-min markets
@@ -51,6 +53,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'stale-order-evaluator', module: null, configKey: null },
   // Safety module - after order-manager so it can reference it for auto-stop
   { name: 'safety', module: null, configKey: null },
+  // Position verifier - needs polymarket config (V3 Stage 5)
+  { name: 'position-verifier', module: null, configKey: null },
   // Strategy modules
   { name: 'strategy-evaluator', module: null, configKey: null },
   { name: 'position-sizer', module: null, configKey: null },
