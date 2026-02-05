@@ -70,8 +70,8 @@ async function runPreflightChecks() {
   // Run checks sequentially
   results.push(checkEnvironment());
   results.push(await checkPolymarketAuth());
-  results.push(checkDatabaseConnection());
-  results.push(checkMigrations());
+  results.push(await checkDatabaseConnection());
+  results.push(await checkMigrations());
   results.push(checkRailwayCli());
   results.push(await checkLaunchManifest());
 

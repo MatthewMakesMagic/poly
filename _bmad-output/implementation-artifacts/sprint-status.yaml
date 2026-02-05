@@ -116,11 +116,15 @@ development_status:
   7-10-window-timing-model: review
   7-11-lag-tracker: review
   7-12-strategy-composition-integration: in-progress
-  # NEW stories from Sprint Change Proposal 2026-02-01 (Probability Model Fix)
-  7-13-data-contract-integration-tests: backlog
-  7-14-correct-probability-model-inputs: backlog
-  7-15-market-reference-price-parsing: backlog
-  7-16-edge-based-signal-generation: backlog
+  # RETIRED: Superseded by V3 stages 4-7 (2026-02-04)
+  # Original: Sprint Change Proposal 2026-02-01 (Probability Model Fix)
+  # Rationale: V3 philosophy stages provide a more coherent roadmap.
+  # Functional gaps addressed within V3 Stage 4 (Single Book) and Stage 6 (Paper Full Flow).
+  # See docs/redundancies-and-review.md for details.
+  7-13-data-contract-integration-tests: retired
+  7-14-correct-probability-model-inputs: retired
+  7-15-market-reference-price-parsing: retired
+  7-16-edge-based-signal-generation: retired
   # NEW stories from Sprint Change Proposal 2026-02-01 (Production Safeguards)
   7-19-cross-module-integration-tests: done  # HIGH - Code Review 2026-02-02: test infrastructure fixed
   7-20-per-crypto-oracle-price-fix: done  # HIGH - root cause fix (Code Review: 2026-02-01)
@@ -134,8 +138,12 @@ development_status:
   8-3-health-endpoint-enhancement: done
   8-4-deploy-command: done
   8-5-post-deploy-verification: done
-  8-6-railway-api-kill-switch: backlog
-  8-7-position-entry-safeguards: backlog
+  # RETIRED: Superseded by V3 stages 4-5 (2026-02-04)
+  # 8-6: Kill skill exists + V3 Stage 5 circuit breakers make this redundant
+  # 8-7: V3 Stage 4 (Single Book + Atomic) + 8-9 (one-trade-per-window) cover this
+  # See docs/redundancies-and-review.md for details.
+  8-6-railway-api-kill-switch: retired
+  8-7-position-entry-safeguards: retired
   # NEW stories from Sprint Change Proposal 2026-02-01 (Production Safeguards)
   8-8-live-trading-gate: done  # CRITICAL - completed 2026-02-01
   8-9-one-trade-per-window-safeguard: done  # CRITICAL - Code Review 2026-02-02: test mocks added

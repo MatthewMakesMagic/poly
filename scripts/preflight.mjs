@@ -6,7 +6,8 @@
  * Validates deployment readiness by checking:
  * - Environment variables
  * - Polymarket API authentication
- * - Database connection and migrations
+ * - PostgreSQL database connection
+ * - Database migrations
  * - Railway CLI availability
  * - Launch manifest validity
  *
@@ -23,7 +24,7 @@ import { readdirSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import Database from 'better-sqlite3';
+import pg from 'pg';
 
 // Load .env.local first (takes precedence), then .env as fallback
 loadEnv({ path: '.env.local' });
@@ -58,7 +59,7 @@ function checkEnvironment() {
     'POLYMARKET_PRIVATE_KEY',
   ];
 
-  // Check for missing or empty environment variables (ISSUE 4 fix)
+  // Check for missing or empty environment variables
   const missing = requiredVars.filter((v) => !process.env[v] || process.env[v].trim() === '');
 
   if (missing.length > 0) {
@@ -70,10 +71,20 @@ function checkEnvironment() {
     };
   }
 
+  // Check DATABASE_URL
+  if (!process.env.DATABASE_URL) {
+    return {
+      name: 'Environment Variables',
+      pass: false,
+      details: '',
+      error: 'Missing: DATABASE_URL',
+    };
+  }
+
   return {
     name: 'Environment Variables',
     pass: true,
-    details: `All ${requiredVars.length} required vars set`,
+    details: `All required vars set (TRADING_MODE=${config.tradingMode})`,
     error: null,
   };
 }
@@ -102,17 +113,14 @@ async function checkPolymarketAuth() {
       config.polymarket.funder
     );
 
-    // Get balance to verify auth works (with timeout - ISSUE 15 fix)
-    const timeoutMs = 10000; // 10 second timeout
-    // Must specify asset_type: 'COLLATERAL' to get USDC balance
+    // Get balance to verify auth works (with timeout)
+    const timeoutMs = 10000;
     const balancePromise = client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('API request timed out')), timeoutMs)
     );
     const balance = await Promise.race([balancePromise, timeoutPromise]);
 
-    // Validate balance is a valid number (ISSUE 9 fix)
-    // Response has 'balance' field (not 'amount') as string in micro-USDC
     const rawAmount = parseFloat(balance?.balance || balance?.amount || 0);
     if (isNaN(rawAmount)) {
       return {
@@ -131,7 +139,6 @@ async function checkPolymarketAuth() {
       error: null,
     };
   } catch (err) {
-    // Sanitize error message to prevent credential leakage (ISSUE 1 fix)
     const sanitizedMessage = sanitizeErrorMessage(err.message);
     return {
       name: 'Polymarket API',
@@ -145,21 +152,16 @@ async function checkPolymarketAuth() {
 /**
  * Sanitize error messages to prevent credential leakage
  *
- * Removes sensitive data patterns from error messages including:
- * - Ethereum addresses and private keys
- * - API keys, secrets, passwords, tokens
- *
  * @param {string} message - Raw error message that may contain sensitive data
  * @returns {string} Sanitized message with sensitive patterns replaced by [REDACTED]
  */
 function sanitizeErrorMessage(message) {
   if (!message) return 'Unknown error';
 
-  // Patterns that might contain sensitive data
   const sensitivePatterns = [
-    /0x[a-fA-F0-9]{40,}/g,           // Ethereum addresses/keys
-    /[a-fA-F0-9]{64}/g,               // 64-char hex strings (private keys)
-    /key[=:]\s*["']?[^"'\s]+["']?/gi, // key=value patterns
+    /0x[a-fA-F0-9]{40,}/g,
+    /[a-fA-F0-9]{64}/g,
+    /key[=:]\s*["']?[^"'\s]+["']?/gi,
     /secret[=:]\s*["']?[^"'\s]+["']?/gi,
     /password[=:]\s*["']?[^"'\s]+["']?/gi,
     /passphrase[=:]\s*["']?[^"'\s]+["']?/gi,
@@ -175,82 +177,94 @@ function sanitizeErrorMessage(message) {
 }
 
 /**
- * Check database connection
- * @returns {CheckResult}
+ * Check PostgreSQL database connection
+ * @returns {Promise<CheckResult>}
  */
-function checkDatabaseConnection() {
-  let db = null;
-  try {
-    const dbPath = config.database.path;
+async function checkDatabaseConnection() {
+  const dbUrl = config.database?.url || process.env.DATABASE_URL;
 
-    if (!existsSync(dbPath)) {
+  if (!dbUrl) {
+    return {
+      name: 'Database',
+      pass: false,
+      details: '',
+      error: 'DATABASE_URL not configured',
+    };
+  }
+
+  let client;
+  try {
+    client = new pg.Client({
+      connectionString: dbUrl,
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 5000,
+    });
+
+    await client.connect();
+    const result = await client.query('SELECT 1 AS ok');
+    await client.end();
+
+    if (result.rows[0]?.ok === 1) {
       return {
         name: 'Database',
-        pass: false,
-        details: '',
-        error: `Database file not found: ${dbPath}`,
+        pass: true,
+        details: 'PostgreSQL connected',
+        error: null,
       };
     }
 
-    // Open in read-only mode to avoid interfering with running processes (ISSUE 2 fix)
-    db = new Database(dbPath, { readonly: true });
-
-    // Execute a simple query to verify connection
-    db.prepare('SELECT 1').get();
-
-    db.close();
-    db = null;
-
     return {
       name: 'Database',
-      pass: true,
-      details: 'connected',
-      error: null,
+      pass: false,
+      details: '',
+      error: 'Query returned unexpected result',
     };
   } catch (err) {
-    // Ensure database is closed on error (ISSUE 5 fix)
-    if (db) {
-      try { db.close(); } catch { /* ignore close errors */ }
+    if (client) {
+      try { await client.end(); } catch { /* ignore */ }
     }
     return {
       name: 'Database',
       pass: false,
       details: '',
-      error: `Connection failed: ${err.message}`,
+      error: `Connection failed: ${sanitizeErrorMessage(err.message)}`,
     };
   }
 }
 
 /**
  * Check database migrations
- * @returns {CheckResult}
+ * @returns {Promise<CheckResult>}
  */
-function checkMigrations() {
-  let db = null;
+async function checkMigrations() {
+  const dbUrl = config.database?.url || process.env.DATABASE_URL;
+
+  if (!dbUrl) {
+    return {
+      name: 'Database Migrations',
+      pass: false,
+      details: '',
+      error: 'DATABASE_URL not configured',
+    };
+  }
+
+  let client;
   try {
-    const dbPath = config.database.path;
+    client = new pg.Client({
+      connectionString: dbUrl,
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 5000,
+    });
 
-    if (!existsSync(dbPath)) {
-      return {
-        name: 'Database Migrations',
-        pass: false,
-        details: '',
-        error: 'Database file not found',
-      };
-    }
-
-    // Open in read-only mode (ISSUE 2 fix)
-    db = new Database(dbPath, { readonly: true });
+    await client.connect();
 
     // Get applied migrations from database
     let appliedCount = 0;
     try {
-      const applied = db.prepare('SELECT version FROM schema_migrations ORDER BY id').all();
-      appliedCount = applied.length;
+      const applied = await client.query('SELECT version FROM schema_migrations ORDER BY id');
+      appliedCount = applied.rows.length;
     } catch (err) {
-      // schema_migrations table might not exist
-      db.close();
-      db = null;
+      await client.end();
       return {
         name: 'Database Migrations',
         pass: false,
@@ -259,13 +273,11 @@ function checkMigrations() {
       };
     }
 
-    db.close();
-    db = null;
+    await client.end();
 
-    // Count migration files - support both 3-digit and larger prefixes (ISSUE 16 fix)
+    // Count migration files
     const migrationsDir = join(__dirname, '../src/persistence/migrations');
 
-    // Check if migrations directory exists
     if (!existsSync(migrationsDir)) {
       return {
         name: 'Database Migrations',
@@ -275,13 +287,11 @@ function checkMigrations() {
       };
     }
 
-    // Match migration files: NNN-*.js format (3+ digit prefix)
     const migrationFiles = readdirSync(migrationsDir).filter((f) =>
       f.match(/^\d{3,}-.*\.js$/) && !f.startsWith('index')
     );
     const totalCount = migrationFiles.length;
 
-    // Check for migration count mismatch in either direction (ISSUE 6 fix)
     if (appliedCount !== totalCount) {
       const direction = appliedCount < totalCount ? 'Missing' : 'Extra';
       const diff = Math.abs(totalCount - appliedCount);
@@ -300,15 +310,14 @@ function checkMigrations() {
       error: null,
     };
   } catch (err) {
-    // Ensure database is closed on error (ISSUE 5 fix)
-    if (db) {
-      try { db.close(); } catch { /* ignore close errors */ }
+    if (client) {
+      try { await client.end(); } catch { /* ignore */ }
     }
     return {
       name: 'Database Migrations',
       pass: false,
       details: '',
-      error: `Check failed: ${err.message}`,
+      error: `Check failed: ${sanitizeErrorMessage(err.message)}`,
     };
   }
 }
@@ -318,25 +327,21 @@ function checkMigrations() {
  * @returns {CheckResult}
  */
 function checkRailwayCli() {
-  // Timeout for CLI commands to prevent hanging (ISSUE 7 fix)
-  const cliTimeoutMs = 15000; // 15 seconds
+  const cliTimeoutMs = 15000;
 
   try {
-    // Check if CLI installed (railway uses --version flag)
     execSync('railway --version', {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: cliTimeoutMs,
     });
 
-    // Check if authenticated
     const status = execSync('railway status', {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: cliTimeoutMs,
     });
 
-    // Parse project name from status output (ISSUE 10 - add fallback patterns)
     let project = 'unknown';
     const patterns = [
       /Project:\s*(.+)/i,
@@ -351,7 +356,6 @@ function checkRailwayCli() {
       }
     }
 
-    // Warn if project couldn't be parsed but CLI works
     if (project === 'unknown') {
       return {
         name: 'Railway CLI',
@@ -398,7 +402,6 @@ function checkRailwayCli() {
       };
     }
 
-    // Provide meaningful error even if both message and stderr are empty (ISSUE 12 fix)
     const errorDetail = message || stderr || 'Unknown CLI error';
     return {
       name: 'Railway CLI',
@@ -415,7 +418,6 @@ function checkRailwayCli() {
  */
 async function checkLaunchManifest() {
   try {
-    // Initialize launch-config module to load manifest
     try {
       await initLaunchConfig();
     } catch (initErr) {
@@ -429,7 +431,6 @@ async function checkLaunchManifest() {
 
     const manifest = loadManifest();
 
-    // Validate each strategy exists
     const unknownStrategies = manifest.strategies.filter(
       (s) => !isKnownStrategy(s)
     );
@@ -444,7 +445,6 @@ async function checkLaunchManifest() {
       };
     }
 
-    // Validate position_size_dollars > 0 (explicit check for negative/zero/missing)
     if (typeof manifest.position_size_dollars !== 'number' || manifest.position_size_dollars <= 0) {
       await shutdownLaunchConfig();
       return {
@@ -455,7 +455,6 @@ async function checkLaunchManifest() {
       };
     }
 
-    // Validate max_exposure_dollars > position_size_dollars (explicit type check)
     if (
       typeof manifest.max_exposure_dollars !== 'number' ||
       manifest.max_exposure_dollars <= manifest.position_size_dollars
@@ -495,9 +494,6 @@ async function checkLaunchManifest() {
 /**
  * Format check results as ASCII table
  *
- * Writes formatted output to stdout. Handles write errors gracefully
- * to support piped/CI environments.
- *
  * @param {CheckResult[]} results - Array of check results to format
  */
 function formatResults(results) {
@@ -523,133 +519,12 @@ function formatResults(results) {
   }
   lines.push('');
 
-  // Write all lines at once - handle potential EPIPE errors in CI
   try {
     console.log(lines.join('\n'));
   } catch (err) {
-    // Silently ignore write errors (EPIPE from closed pipe)
     if (err.code !== 'EPIPE') {
       throw err;
     }
-  }
-}
-
-/**
- * Check Railway deployment configuration
- * Verifies volume, database path, and required env vars for Railway
- * @returns {Promise<CheckResult>}
- */
-async function checkRailwayConfig() {
-  // Check if we're running ON Railway (deployed)
-  const isOnRailway = !!(
-    process.env.RAILWAY_ENVIRONMENT ||
-    process.env.RAILWAY_SERVICE_ID
-  );
-
-  if (isOnRailway) {
-    // Running on Railway - verify volume is accessible
-    const dbPath = process.env.DATABASE_PATH || '/app/data/poly.db';
-    const dataDir = dbPath.substring(0, dbPath.lastIndexOf('/'));
-
-    try {
-      const { existsSync, accessSync, constants } = await import('fs');
-
-      // Check if data directory exists and is writable
-      if (!existsSync(dataDir)) {
-        return {
-          name: 'Railway Config',
-          pass: false,
-          details: '',
-          error: `Volume not mounted: ${dataDir} does not exist`,
-        };
-      }
-
-      // Check write access
-      try {
-        accessSync(dataDir, constants.W_OK);
-      } catch {
-        return {
-          name: 'Railway Config',
-          pass: false,
-          details: '',
-          error: `Volume not writable: ${dataDir}`,
-        };
-      }
-
-      return {
-        name: 'Railway Config',
-        pass: true,
-        details: `volume OK (${dataDir})`,
-        error: null,
-      };
-    } catch (err) {
-      return {
-        name: 'Railway Config',
-        pass: false,
-        details: '',
-        error: `Volume check failed: ${err.message}`,
-      };
-    }
-  }
-
-  // Running locally - check Railway CLI can query the project config
-  try {
-    const envOutput = execSync('railway variables --json 2>/dev/null || echo "{}"', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 15000,
-    });
-
-    let railwayVars = {};
-    try {
-      railwayVars = JSON.parse(envOutput);
-    } catch {
-      // Could not parse - maybe not authenticated
-      return {
-        name: 'Railway Config',
-        pass: true,
-        details: 'skipped (CLI not linked to project)',
-        error: null,
-      };
-    }
-
-    // Check for required Railway env vars
-    const requiredVars = ['DATABASE_PATH'];
-    const missing = requiredVars.filter(v => !railwayVars[v]);
-
-    // Check for recommended vars
-    const recommendedVars = ['RAILWAY_API_TOKEN', 'RAILWAY_SERVICE_ID'];
-    const missingRecommended = recommendedVars.filter(v => !railwayVars[v] && !process.env[v]);
-
-    if (missing.length > 0) {
-      return {
-        name: 'Railway Config',
-        pass: false,
-        details: '',
-        error: `Missing Railway env vars: ${missing.join(', ')}`,
-      };
-    }
-
-    const warnings = [];
-    if (missingRecommended.length > 0) {
-      warnings.push(`(missing: ${missingRecommended.join(', ')})`);
-    }
-
-    const dbPath = railwayVars.DATABASE_PATH || '/app/data/poly.db';
-    return {
-      name: 'Railway Config',
-      pass: true,
-      details: `DB=${dbPath} ${warnings.join(' ')}`.trim(),
-      error: null,
-    };
-  } catch (err) {
-    // Railway CLI not working or not linked
-    return {
-      name: 'Railway Config',
-      pass: true,
-      details: 'skipped (CLI unavailable)',
-      error: null,
-    };
   }
 }
 
@@ -659,38 +534,32 @@ async function checkRailwayConfig() {
 async function main() {
   const results = [];
 
-  // Run checks sequentially
   results.push(checkEnvironment());
   results.push(await checkPolymarketAuth());
-  results.push(checkDatabaseConnection());
-  results.push(checkMigrations());
+  results.push(await checkDatabaseConnection());
+  results.push(await checkMigrations());
   results.push(checkRailwayCli());
-  results.push(await checkRailwayConfig());
   results.push(await checkLaunchManifest());
 
-  // Display results
   formatResults(results);
 
-  // Exit with appropriate code
   const allPassed = results.every((r) => r.pass);
   process.exit(allPassed ? 0 : 1);
 }
 
-// Export functions for testing (ISSUE 3 fix)
+// Export functions for testing
 export {
   checkEnvironment,
   checkPolymarketAuth,
   checkDatabaseConnection,
   checkMigrations,
   checkRailwayCli,
-  checkRailwayConfig,
   checkLaunchManifest,
   formatResults,
   sanitizeErrorMessage,
 };
 
 // Only run main if this is the entry point (not imported for testing)
-// Use import.meta.url comparison for robust cross-platform detection
 const scriptPath = fileURLToPath(import.meta.url);
 const isMainModule = process.argv[1] && (
   process.argv[1] === scriptPath ||
