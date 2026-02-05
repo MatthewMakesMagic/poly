@@ -14,15 +14,10 @@
  */
 
 import { config as loadEnv } from 'dotenv';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 
 // Load .env.local first (takes precedence), then .env as fallback
 loadEnv({ path: '.env.local' });
 loadEnv();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // =============================================================================
 // UTILITY FUNCTIONS
@@ -64,34 +59,11 @@ function isTestEnvironment() {
 
 /**
  * Validate and normalize TRADING_MODE
- * Supports backwards compatibility with LIVE_TRADING_ENABLED (F1 fix)
  * @returns {{ mode: string, isLive: boolean }}
  * @throws {Error} If TRADING_MODE is invalid or LIVE without confirmation
  */
 function validateTradingMode() {
   const raw = process.env.TRADING_MODE;
-  const legacyEnabled = process.env.LIVE_TRADING_ENABLED;
-
-  // F1 FIX: Backwards compatibility - detect old env var and warn
-  if (!raw && legacyEnabled === 'true') {
-    console.warn(
-      '[config] DEPRECATED: LIVE_TRADING_ENABLED is no longer used.\n' +
-      '  To enable LIVE trading, set:\n' +
-      '    TRADING_MODE=LIVE\n' +
-      '    CONFIRM_LIVE_TRADING=true\n' +
-      '  Defaulting to PAPER mode for safety.'
-    );
-    return { mode: 'PAPER', isLive: false };
-  }
-
-  // Warn if legacy var is set alongside new var (potential confusion)
-  if (raw && legacyEnabled) {
-    console.warn(
-      '[config] WARNING: Both TRADING_MODE and LIVE_TRADING_ENABLED are set.\n' +
-      '  LIVE_TRADING_ENABLED is ignored. Using TRADING_MODE=' + raw
-    );
-  }
-
   const normalized = raw?.trim().toUpperCase();
 
   // Default to PAPER if not set (F10: only warn if not in test environment)
@@ -139,9 +111,15 @@ function validateTradingMode() {
 function validateDatabaseUrl(isLive) {
   const url = process.env.DATABASE_URL;
 
-  // DATABASE_URL is optional for now (SQLite fallback during migration)
+  // DATABASE_URL is required for PostgreSQL (V3 Single Book principle)
   if (!url) {
-    return null;
+    if (isTestEnvironment()) {
+      return null; // Tests may mock persistence
+    }
+    throw new Error(
+      '[config] FATAL: DATABASE_URL is required.\n' +
+      '  Set DATABASE_URL to your PostgreSQL connection string.'
+    );
   }
 
   // F6 FIX: Wrap URL parsing to never leak credentials in errors
@@ -215,23 +193,6 @@ function detectRailwayEnvironment() {
 }
 
 /**
- * Get Railway-aware database path (SQLite fallback during migration)
- * @returns {string} Database path
- */
-function getSqliteDatabasePath() {
-  if (process.env.DATABASE_PATH) {
-    return process.env.DATABASE_PATH;
-  }
-
-  const railway = detectRailwayEnvironment();
-  if (railway.isRailway) {
-    return '/app/data/poly.db';
-  }
-
-  return './data/poly.db';
-}
-
-/**
  * Parse STARTING_CAPITAL with proper handling of 0 and invalid values (F5 fix)
  * @returns {number} Starting capital (defaults to 1000)
  */
@@ -272,8 +233,6 @@ if (!isTestEnvironment()) {
   }
   if (databaseUrl) {
     console.log('[config] DATABASE_URL: [REDACTED - PostgreSQL configured]');
-  } else {
-    console.log('[config] DATABASE_URL: not set (using SQLite fallback)');
   }
 }
 
@@ -318,11 +277,9 @@ const config = {
 
   // Database configuration
   database: {
-    // PostgreSQL (primary - when DATABASE_URL is set)
+    // PostgreSQL connection (V3 Single Book)
     url: databaseUrl,
-    // SQLite (fallback during migration)
-    path: getSqliteDatabasePath(),
-    // Pool configuration (for PostgreSQL)
+    // Pool configuration
     pool: {
       min: 2,
       max: 10,
@@ -359,7 +316,7 @@ const config = {
     startingCapital: parseStartingCapital(),
     unrealizedUpdateIntervalMs: 5000,
     drawdownWarningPct: null, // DISABLED
-    autoStopStateFile: './data/auto-stop-state.json',
+    // auto-stop state persisted in PostgreSQL (auto_stop_state table)
   },
 
   // Trading window configuration

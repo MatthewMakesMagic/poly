@@ -309,7 +309,6 @@ export async function init(cfg) {
       pid: process.pid,
       activeStrategy: getActiveStrategyName(),
       tradingMode: cfg.tradingMode,
-      LIVE_TRADING_ENABLED_raw: process.env.LIVE_TRADING_ENABLED,
     });
   } catch (err) {
     state.state = OrchestratorState.ERROR;

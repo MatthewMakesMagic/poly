@@ -49,7 +49,7 @@ vi.mock('dotenv', () => ({
 // Mock config
 vi.mock('../../config/index.js', () => ({
   default: {
-    database: { path: './data/poly.db' },
+    database: { url: 'postgresql://test:test@localhost:5432/poly' },
     server: { port: 3333 },
     polymarket: {
       apiUrl: 'https://clob.polymarket.com',

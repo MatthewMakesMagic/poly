@@ -89,7 +89,7 @@ vi.mock('better-sqlite3', () => ({
 // Mock config
 vi.mock('../../config/index.js', () => ({
   default: {
-    database: { path: './data/poly.db' },
+    database: { url: 'postgresql://test:test@localhost:5432/poly' },
     polymarket: {
       apiUrl: 'https://clob.polymarket.com',
       apiKey: 'test-key',

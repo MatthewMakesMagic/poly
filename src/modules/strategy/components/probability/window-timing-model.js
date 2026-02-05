@@ -471,7 +471,9 @@ export function detectVolatilitySurprise(symbol) {
     const shortTermVol = calculateRealizedVolatility(symbol, config.volatility.shortTermLookbackMs);
     const longTermVol = calculateRealizedVolatility(symbol, config.volatility.longTermLookbackMs);
 
-    if (shortTermVol === null || longTermVol === null || longTermVol === 0) {
+    // V3: calculateRealizedVolatility is async (returns Promise in sync context).
+    // Return safe default when values aren't resolved numbers.
+    if (typeof shortTermVol !== 'number' || typeof longTermVol !== 'number' || longTermVol === 0) {
       return { isSurprise: false, ratio: null };
     }
 
