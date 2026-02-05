@@ -55,6 +55,8 @@ export class RTDSClient {
     // Stats tracking
     this.stats = {
       ticks_received: 0,
+      messages_received: 0,
+      messages_unrecognized: 0,
       errors: 0,
       reconnects: 0,
       last_tick_at: null,
@@ -290,7 +292,11 @@ export class RTDSClient {
         return;
       }
 
-      const message = JSON.parse(data.toString());
+      const raw = data.toString();
+      const message = JSON.parse(raw);
+
+      // Diagnostic: track all messages received
+      this.stats.messages_received = (this.stats.messages_received || 0) + 1;
 
       // Handle different message types
       if (message.type === 'price_update' || message.prices) {
@@ -300,8 +306,19 @@ export class RTDSClient {
       } else if (message.type === 'error') {
         this.log.error('rtds_server_error', { error: message.message });
         this.stats.errors++;
+      } else {
+        // Log unrecognized message types for debugging
+        this.stats.messages_unrecognized = (this.stats.messages_unrecognized || 0) + 1;
+        // Log first 10 unrecognized messages, then every 100th
+        if (this.stats.messages_unrecognized <= 10 || this.stats.messages_unrecognized % 100 === 0) {
+          this.log.warn('rtds_message_unrecognized', {
+            type: message.type,
+            keys: Object.keys(message),
+            sample: raw.substring(0, 500),
+            count: this.stats.messages_unrecognized,
+          });
+        }
       }
-      // Ignore other message types (heartbeats, etc.)
     } catch (err) {
       this.stats.errors++;
       this.log.warn('rtds_parse_error', {
@@ -348,6 +365,16 @@ export class RTDSClient {
 
           this.stats.ticks_received++;
           this.stats.last_tick_at = new Date().toISOString();
+
+          // Log first few ticks for diagnostics
+          if (this.stats.ticks_received <= 5) {
+            this.log.info('rtds_tick_received', {
+              symbol: tick.symbol,
+              topic: tick.topic,
+              price: tick.price,
+              tick_number: this.stats.ticks_received,
+            });
+          }
 
           // Notify subscribers
           this.notifySubscribers(tick.symbol, tick);

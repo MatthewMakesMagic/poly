@@ -408,6 +408,8 @@ describe('RTDSClient', () => {
       expect(state.prices).toBeDefined();
       expect(state.stats).toEqual({
         ticks_received: 0,
+        messages_received: 0,
+        messages_unrecognized: 0,
         errors: 0,
         reconnects: 0,
         last_tick_at: null,
