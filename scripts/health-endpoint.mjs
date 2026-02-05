@@ -112,17 +112,13 @@ export function buildHealthResponse() {
     const cbState = modules['circuit-breaker']?.state;
     checks.circuit_breaker = cbState === 'CLOSED';
 
-    // price_feed: spot module has recent price (< 30s)
+    // price_feed: RTDS receiving recent ticks (< 30s)
     let priceFeedOk = false;
     try {
-      if (modules.spot?.initialized) {
-        // Check if any price is recent
-        const spotState = modules.spot;
-        const lastUpdate = spotState.lastUpdateAt || spotState.lastPriceAt;
-        if (lastUpdate) {
-          const age = Date.now() - new Date(lastUpdate).getTime();
-          priceFeedOk = age < 30000;
-        }
+      const lastTickAt = modules['rtds-client']?.stats?.last_tick_at;
+      if (lastTickAt) {
+        const age = Date.now() - new Date(lastTickAt).getTime();
+        priceFeedOk = age < 30000;
       }
     } catch {
       priceFeedOk = false;
