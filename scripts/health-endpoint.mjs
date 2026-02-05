@@ -23,7 +23,7 @@ export function getConnectionStatus() {
 
     return {
       database: modules.persistence?.initialized ? 'connected' : (modules.persistence ? 'disconnected' : 'unknown'),
-      rtds: modules.rtds?.connected ? 'connected' : (modules.rtds ? 'disconnected' : 'unknown'),
+      rtds: modules['rtds-client']?.connected ? 'connected' : (modules['rtds-client'] ? 'disconnected' : 'unknown'),
       polymarket: modules.polymarket?.authenticated ? 'authenticated' : (modules.polymarket ? 'disconnected' : 'unknown'),
     };
   } catch {
@@ -173,7 +173,7 @@ export function buildStatusResponse() {
     // Get last tick from RTDS - safely handle missing/invalid data
     let lastTick = null;
     try {
-      lastTick = modules.rtds?.stats?.last_tick_at || null;
+      lastTick = modules['rtds-client']?.stats?.last_tick_at || null;
     } catch {
       lastTick = null;
     }

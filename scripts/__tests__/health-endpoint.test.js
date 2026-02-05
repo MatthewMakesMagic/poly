@@ -29,7 +29,7 @@ const mockOrchestratorState = {
   },
   modules: {
     persistence: { initialized: true },
-    rtds: {
+    'rtds-client': {
       connected: true,
       stats: { last_tick_at: '2026-02-01T12:34:56.789Z' }
     },
@@ -162,7 +162,7 @@ describe('Health Endpoint', () => {
         ...mockOrchestratorState,
         modules: {
           ...mockOrchestratorState.modules,
-          rtds: { connected: true, stats: { last_tick_at: null } },
+          'rtds-client': { connected: true, stats: { last_tick_at: null } },
         },
       });
 
@@ -204,7 +204,7 @@ describe('Health Endpoint', () => {
         ...mockOrchestratorState,
         modules: {
           ...mockOrchestratorState.modules,
-          rtds: { connected: false },
+          'rtds-client': { connected: false },
         },
       });
 
