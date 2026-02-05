@@ -64,6 +64,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'window-expiry', module: null, configKey: null },
   // Monitoring modules (Epic 5)
   { name: 'trade-event', module: null, configKey: null },
+  // RTDS client - real-time data feed, must init before data capture modules
+  { name: 'rtds-client', module: null, configKey: null },
   // Data capture modules (V3 Phase 5)
   { name: 'tick-logger', module: null, configKey: null },
   { name: 'oracle-tracker', module: null, configKey: null },

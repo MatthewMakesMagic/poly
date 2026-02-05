@@ -206,7 +206,47 @@ function translateAlert(data) {
   let summary;
   let explanation;
 
-  if (alertType === 'divergence' || diagnosticFlags?.includes('state_divergence')) {
+  // Circuit breaker alerts (V3 Stage 5)
+  if (alertType === 'circuit_breaker_tripped' || data.raw?.event === 'circuit_breaker_tripped') {
+    summary = 'CIRCUIT BREAKER TRIPPED';
+    explanation = `Trading halted: ${data.raw?.reason || 'unknown reason'}. No orders will execute until manually reset.`;
+    level = 'error';
+  } else if (alertType === 'circuit_breaker_open' || data.raw?.event === 'circuit_breaker_open') {
+    summary = 'CIRCUIT BREAKER OPEN';
+    explanation = 'Trading is halted. All order execution is blocked.';
+    level = 'error';
+  } else if (alertType === 'circuit_breaker_reset' || data.raw?.event === 'circuit_breaker_reset') {
+    summary = 'Circuit breaker reset';
+    explanation = 'Trading resumed. Circuit breaker has been manually reset.';
+    level = 'info';
+  } else if (alertType === 'circuit_breaker_escalation' || data.raw?.event === 'circuit_breaker_escalation') {
+    summary = 'CIRCUIT BREAKER ESCALATION';
+    explanation = `Escalation triggered: ${data.raw?.reason || 'repeated failures'}. System may shut down.`;
+    level = 'error';
+  // Health/verification alerts (V3 Stage 5)
+  } else if (alertType === 'health_check_failed' || data.raw?.event === 'health_check_failed') {
+    summary = 'Health check failed';
+    explanation = `Health endpoint reported failure: ${data.raw?.reason || data.raw?.message || 'unknown'}.`;
+    level = 'error';
+  } else if (alertType === 'position_verification_failed' || data.raw?.event === 'position_verification_failed') {
+    summary = 'Position verification failed';
+    explanation = 'Local position state does not match exchange. Verify-before-act check failed.';
+    level = 'error';
+  } else if (alertType === 'halt_on_uncertainty' || data.raw?.event === 'halt_on_uncertainty') {
+    summary = 'HALTED ON UNCERTAINTY';
+    explanation = 'System halted because position state could not be verified. Manual review needed.';
+    level = 'error';
+  // RTDS data feed alerts
+  } else if (alertType === 'rtds_disconnected' || data.raw?.event === 'rtds_disconnected') {
+    summary = 'Data feed disconnected';
+    explanation = 'Real-time price feed lost connection. Reconnecting...';
+    level = 'warn';
+  } else if (alertType === 'rtds_reconnecting' || data.raw?.event === 'rtds_reconnecting') {
+    summary = 'Data feed reconnecting';
+    explanation = `Attempting to restore real-time price feed. Attempt ${data.raw?.attempt || '?'}.`;
+    level = 'warn';
+  // Existing alerts
+  } else if (alertType === 'divergence' || diagnosticFlags?.includes('state_divergence')) {
     summary = 'State mismatch detected';
     explanation = "What I think we have doesn't match the exchange. This needs attention now.";
   } else if (diagnosticFlags?.includes('size_divergence')) {

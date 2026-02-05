@@ -194,6 +194,15 @@ vi.mock('../../strategy/state.js', () => ({
   getCatalog: vi.fn().mockReturnValue(null),
 }));
 
+// RTDS client - real-time data feed
+vi.mock('../../../clients/rtds/index.js', () => ({
+  init: vi.fn().mockResolvedValue(undefined),
+  shutdown: vi.fn().mockResolvedValue(undefined),
+  getState: vi.fn().mockReturnValue({ initialized: true, connected: true, connectionState: 'connected' }),
+  getCurrentPrice: vi.fn().mockReturnValue(null),
+  subscribe: vi.fn().mockReturnValue(() => {}),
+}));
+
 // V3 Phase 5: Data capture module mocks
 vi.mock('../../tick-logger/index.js', () => ({
   init: vi.fn().mockResolvedValue(undefined),

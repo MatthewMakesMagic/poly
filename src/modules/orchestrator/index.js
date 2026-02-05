@@ -39,6 +39,8 @@ import * as windowExpiry from '../window-expiry/index.js';
 import * as tradeEvent from '../trade-event/index.js';
 import * as virtualPositionManager from '../virtual-position-manager/index.js';
 import * as launchConfig from '../launch-config/index.js';
+// RTDS client - real-time data feed
+import * as rtdsClient from '../../clients/rtds/index.js';
 // Data capture modules (V3 Phase 5)
 import * as tickLogger from '../tick-logger/index.js';
 import * as oracleTracker from '../oracle-tracker/index.js';
@@ -102,6 +104,8 @@ const MODULE_MAP = {
   'take-profit': takeProfit,
   'window-expiry': windowExpiry,
   'trade-event': tradeEvent,
+  // RTDS client - real-time data feed
+  'rtds-client': rtdsClient,
   // Data capture modules (V3 Phase 5)
   'tick-logger': tickLogger,
   'oracle-tracker': oracleTracker,

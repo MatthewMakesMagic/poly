@@ -41,6 +41,22 @@ const LOG_PATTERNS = {
   stale_oracle: TradeEventType.ALERT,
   kill_switch_triggered: TradeEventType.ALERT,
   error: TradeEventType.ALERT,
+
+  // Circuit breaker events (V3 Stage 5)
+  circuit_breaker_tripped: TradeEventType.ALERT,
+  circuit_breaker_open: TradeEventType.ALERT,
+  circuit_breaker_reset: TradeEventType.ALERT,
+  circuit_breaker_escalation: TradeEventType.ALERT,
+
+  // Health/verification events (V3 Stage 5)
+  health_check_failed: TradeEventType.ALERT,
+  position_verification_failed: TradeEventType.ALERT,
+  halt_on_uncertainty: TradeEventType.ALERT,
+
+  // Data feed events
+  rtds_connected: TradeEventType.SIGNAL,
+  rtds_disconnected: TradeEventType.ALERT,
+  rtds_reconnecting: TradeEventType.ALERT,
 };
 
 /**

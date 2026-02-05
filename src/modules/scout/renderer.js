@@ -130,12 +130,18 @@ function renderStatusBar(state) {
 
   lines.push(header + ' '.repeat(Math.max(1, headerPadding)) + headerRight);
 
+  // Circuit breaker status from parsed log events
+  const cbState = state.circuitBreakerState || 'CLOSED';
+  const cbDisplay = cbState === 'CLOSED'
+    ? `${Colors.GREEN}CB: CLOSED${Colors.RESET}`
+    : `${Colors.RED}${Colors.BOLD}CB: ${cbState}${Colors.RESET}`;
+
   // Story E.3: Status line with paper/live counts
   const paperCount = state.paperSignalCount || 0;
   const liveCount = state.liveOrderCount || 0;
   const lastUpdate = state.lastEventTime ? getTimeAgo(state.lastEventTime) : 'waiting';
 
-  const statusLine = `${Colors.DIM} Paper signals: ${paperCount} | Live orders: ${liveCount} ${Icons.DOT} Last check: ${lastUpdate}${Colors.RESET}`;
+  const statusLine = `${Colors.DIM} ${cbDisplay} ${Colors.DIM}${Icons.DOT} Paper signals: ${paperCount} | Live orders: ${liveCount} ${Icons.DOT} Last check: ${lastUpdate}${Colors.RESET}`;
 
   lines.push(statusLine);
 
