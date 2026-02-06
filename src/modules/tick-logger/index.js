@@ -96,6 +96,7 @@ export async function init(cfg = {}) {
           topic: 'crypto_prices_pyth',
           symbol: crypto,
           price: price.price,
+          received_at: Date.now(),
         });
       });
       unsubscribers.push(unsubscribe);
@@ -204,6 +205,7 @@ function handleTick(tick) {
     symbol: tick.symbol,
     price: tick.price,
     raw_payload: JSON.stringify(tick),
+    received_at: tick.received_at ? new Date(tick.received_at).toISOString() : null,
   };
 
   buffer.add(dbTick);
@@ -243,8 +245,8 @@ async function batchInsert(ticks) {
 
   try {
     const insertSQL = `
-      INSERT INTO rtds_ticks (timestamp, topic, symbol, price, raw_payload)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO rtds_ticks (timestamp, topic, symbol, price, raw_payload, received_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
     `;
 
     // V3: Use async transaction with client object
@@ -256,6 +258,7 @@ async function batchInsert(ticks) {
           tick.symbol,
           tick.price,
           tick.raw_payload,
+          tick.received_at,
         ]);
       }
     });
@@ -323,6 +326,7 @@ export function logTick(tick) {
     symbol: tick.symbol,
     price: tick.price,
     raw_payload: tick.raw_payload || JSON.stringify(tick),
+    received_at: tick.received_at ? new Date(tick.received_at).toISOString() : null,
   };
 
   buffer.add(dbTick);

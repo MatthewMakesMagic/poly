@@ -294,6 +294,9 @@ export class RTDSClient {
    * @param {Buffer|string} data - Raw message data
    */
   handleMessage(data) {
+    // Capture local receipt time immediately — before any parsing
+    const receivedAt = Date.now();
+
     try {
       // Security: Check message size before parsing
       const messageSize = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
@@ -308,6 +311,9 @@ export class RTDSClient {
 
       const raw = data.toString();
       const message = JSON.parse(raw);
+
+      // Attach local receipt timestamp for sub-second lag measurement
+      message._received_at = receivedAt;
 
       // Diagnostic: track all messages received
       this.stats.messages_received++;
@@ -401,8 +407,8 @@ export class RTDSClient {
       });
     }
 
-    // Notify subscribers
-    const tick = { timestamp, topic, symbol: normalizedSymbol, price };
+    // Notify subscribers (received_at captured in handleMessage)
+    const tick = { timestamp, topic, symbol: normalizedSymbol, price, received_at: message._received_at };
     this.notifySubscribers(normalizedSymbol, tick);
   }
 
@@ -453,6 +459,9 @@ export class RTDSClient {
               tick_number: this.stats.ticks_received,
             });
           }
+
+          // Attach received_at from handleMessage
+          tick.received_at = message._received_at;
 
           // Notify subscribers
           this.notifySubscribers(tick.symbol, tick);
