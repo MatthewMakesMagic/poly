@@ -2,8 +2,8 @@
  * RTDS Client Core Implementation
  *
  * Manages WebSocket connection to Polymarket's Real Time Data Socket for:
- * - Binance-sourced prices (crypto_prices topic)
- * - Chainlink oracle prices (crypto_prices_chainlink topic)
+ * - Polymarket reference prices (crypto_prices topic — composite, near-Binance but NOT raw Binance)
+ * - Chainlink oracle prices (crypto_prices_chainlink topic — settlement oracle)
  *
  * Features:
  * - Connection lifecycle (connect, disconnect, reconnect)
@@ -258,7 +258,7 @@ export class RTDSClient {
     const subscriptions = [];
 
     // Binance prices (crypto_prices)
-    for (const symbol of Object.values(SYMBOL_MAPPING.binance)) {
+    for (const symbol of Object.values(SYMBOL_MAPPING.polymarket_ref)) {
       subscriptions.push({
         topic: TOPICS.CRYPTO_PRICES,
         type: '*',
@@ -284,7 +284,7 @@ export class RTDSClient {
     this.log.info('rtds_subscribed', {
       subscription_count: subscriptions.length,
       topics: [TOPICS.CRYPTO_PRICES, TOPICS.CRYPTO_PRICES_CHAINLINK],
-      symbols: [...Object.values(SYMBOL_MAPPING.binance), ...Object.values(SYMBOL_MAPPING.chainlink)],
+      symbols: [...Object.values(SYMBOL_MAPPING.polymarket_ref), ...Object.values(SYMBOL_MAPPING.chainlink)],
     });
   }
 

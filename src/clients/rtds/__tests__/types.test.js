@@ -82,11 +82,11 @@ describe('TOPICS', () => {
 });
 
 describe('SYMBOL_MAPPING', () => {
-  it('should map normalized symbols to Binance format', () => {
-    expect(SYMBOL_MAPPING.binance.btc).toBe('BTCUSDT');
-    expect(SYMBOL_MAPPING.binance.eth).toBe('ETHUSDT');
-    expect(SYMBOL_MAPPING.binance.sol).toBe('SOLUSDT');
-    expect(SYMBOL_MAPPING.binance.xrp).toBe('XRPUSDT');
+  it('should map normalized symbols to Polymarket reference format', () => {
+    expect(SYMBOL_MAPPING.polymarket_ref.btc).toBe('BTCUSDT');
+    expect(SYMBOL_MAPPING.polymarket_ref.eth).toBe('ETHUSDT');
+    expect(SYMBOL_MAPPING.polymarket_ref.sol).toBe('SOLUSDT');
+    expect(SYMBOL_MAPPING.polymarket_ref.xrp).toBe('XRPUSDT');
   });
 
   it('should map normalized symbols to Chainlink format', () => {

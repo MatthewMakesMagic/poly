@@ -45,7 +45,7 @@ export const SUPPORTED_SYMBOLS = ['btc', 'eth', 'sol', 'xrp'];
  * RTDS Topics
  */
 export const TOPICS = {
-  CRYPTO_PRICES: 'crypto_prices',           // Binance-sourced prices (UI feed)
+  CRYPTO_PRICES: 'crypto_prices',           // Polymarket reference price (composite, near-Binance but NOT raw Binance)
   CRYPTO_PRICES_CHAINLINK: 'crypto_prices_chainlink',  // Chainlink oracle prices
 };
 
@@ -55,8 +55,9 @@ export const TOPICS = {
  * Chainlink topic uses formats like 'BTC/USD', 'ETH/USD', 'SOL/USD'
  */
 export const SYMBOL_MAPPING = {
-  // Binance topic symbols (crypto_prices) - uppercase per Polymarket API
-  binance: {
+  // Polymarket reference price symbols (crypto_prices) - BTCUSDT format per Polymarket API
+  // NOTE: This is Polymarket's composite reference price, NOT raw Binance
+  polymarket_ref: {
     btc: 'BTCUSDT',
     eth: 'ETHUSDT',
     sol: 'SOLUSDT',
@@ -76,12 +77,12 @@ export const SYMBOL_MAPPING = {
  * Handles both cases since Polymarket may send uppercase
  */
 export const REVERSE_SYMBOL_MAPPING = {
-  // Binance symbols (uppercase - Polymarket format)
+  // Polymarket reference symbols (BTCUSDT format - Polymarket RTDS convention)
   BTCUSDT: 'btc',
   ETHUSDT: 'eth',
   SOLUSDT: 'sol',
   XRPUSDT: 'xrp',
-  // Binance symbols (lowercase - legacy/fallback)
+  // Polymarket reference symbols (lowercase - legacy/fallback)
   btcusdt: 'btc',
   ethusdt: 'eth',
   solusdt: 'sol',
