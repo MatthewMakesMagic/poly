@@ -21,8 +21,8 @@ export const OrderBookCollectorErrorCodes = {
 };
 
 export const DEFAULT_CONFIG = {
-  /** Snapshot interval in milliseconds (default: 5 seconds) */
-  snapshotIntervalMs: 5000,
+  /** Snapshot interval in milliseconds (default: 1 second for FINDTHEGOLD data capture) */
+  snapshotIntervalMs: 1000,
   /** Depth percentage thresholds for liquidity calculation */
   depthThresholds: [0.01, 0.05], // 1% and 5%
   /** Maximum number of active token IDs to track */

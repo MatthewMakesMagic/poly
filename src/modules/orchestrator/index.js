@@ -51,6 +51,9 @@ import * as qualityGate from '../quality-gate/index.js';
 import * as windowCloseEventRecorder from '../window-close-event-recorder/index.js';
 import * as partitionManager from '../partition-manager/index.js';
 import * as orderBookCollector from '../order-book-collector/index.js';
+// FINDTHEGOLD data capture modules
+import * as clobPriceLogger from '../clob-price-logger/index.js';
+import * as exchangeFeedCollector from '../exchange-feed-collector/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 // Strategy composition integration (Story 7-12)
 import {
@@ -116,6 +119,9 @@ const MODULE_MAP = {
   'window-close-event-recorder': windowCloseEventRecorder,
   'partition-manager': partitionManager,
   'order-book-collector': orderBookCollector,
+  // FINDTHEGOLD data capture modules
+  'clob-price-logger': clobPriceLogger,
+  'exchange-feed-collector': exchangeFeedCollector,
 };
 
 // PID file path for kill switch watchdog integration

@@ -13,6 +13,8 @@ import { child } from '../logger/index.js';
 import persistence from '../../persistence/index.js';
 import * as rtdsClient from '../../clients/rtds/index.js';
 import { SUPPORTED_SYMBOLS } from '../../clients/rtds/types.js';
+import * as spotClient from '../../clients/spot/index.js';
+import { SUPPORTED_CRYPTOS } from '../../clients/spot/types.js';
 import { TickBuffer } from './buffer.js';
 import { TickLoggerError, TickLoggerErrorCodes, DEFAULT_CONFIG, MS_PER_HOUR, MAX_STRING_LENGTH } from './types.js';
 
@@ -83,6 +85,24 @@ export async function init(cfg = {}) {
       handleTick(tick);
     });
     unsubscribers.push(unsubscribe);
+  }
+
+  // Subscribe to spot client for Pyth prices
+  for (const crypto of SUPPORTED_CRYPTOS) {
+    try {
+      const unsubscribe = spotClient.subscribe(crypto, (price) => {
+        handleTick({
+          timestamp: price.timestamp,
+          topic: 'crypto_prices_pyth',
+          symbol: crypto,
+          price: price.price,
+        });
+      });
+      unsubscribers.push(unsubscribe);
+    } catch (err) {
+      // Spot client may not be initialized yet - log and continue
+      log.warn('pyth_subscription_failed', { crypto, error: err.message });
+    }
   }
 
   // Run initial cleanup if configured

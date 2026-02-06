@@ -38,7 +38,7 @@ export class OracleTrackerError extends PolyError {
 export const DEFAULT_CONFIG = {
   bufferSize: 10,                  // Flush after N update records
   flushIntervalMs: 1000,           // Flush every N ms
-  minDeviationForUpdate: 0.0001,   // Minimum deviation to count as "update" (0.01%)
+  minDeviationForUpdate: 0.00001,  // Minimum deviation to count as "update" (0.001%) - lowered for FINDTHEGOLD research
   maxBufferSize: 500,              // Max buffer before overflow
 };
 

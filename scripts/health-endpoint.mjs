@@ -148,6 +148,88 @@ export function buildHealthResponse() {
 }
 
 /**
+ * Build data capture health response for /health/data-capture endpoint
+ *
+ * Reports tick counts for all FINDTHEGOLD data sources in the last minute.
+ * Returns staleness warnings for any source with zero recent data.
+ *
+ * @returns {{ healthy: boolean, sources: Object, statusCode: number }}
+ */
+export function buildDataCaptureHealthResponse() {
+  try {
+    const state = orchestrator.getState();
+    const modules = state.modules || {};
+
+    // Grace period: don't warn about missing data in first 60s after startup
+    const startedAt = state.startedAt ? new Date(state.startedAt).getTime() : Date.now();
+    const uptimeMs = Date.now() - startedAt;
+    const inGracePeriod = uptimeMs < 60000;
+
+    const sources = {};
+
+    // Pyth ticks (via tick-logger stats)
+    const tickLoggerStats = modules['tick-logger']?.stats;
+    sources.pyth = {
+      ticks_received: tickLoggerStats?.ticks_received ?? 0,
+      ticks_inserted: tickLoggerStats?.ticks_inserted ?? 0,
+      last_flush_at: tickLoggerStats?.last_flush_at ?? null,
+    };
+
+    // CLOB snapshots
+    const clobStats = modules['clob-price-logger']?.stats;
+    sources.clob = {
+      snapshots_captured: clobStats?.snapshotsCaptured ?? 0,
+      snapshots_inserted: clobStats?.snapshotsInserted ?? 0,
+      active_tokens: modules['clob-price-logger']?.activeTokens ?? 0,
+      ws_connected: modules['clob-price-logger']?.wsConnected ?? false,
+      last_snapshot_at: clobStats?.lastSnapshotAt ?? null,
+    };
+
+    // L2 order book levels
+    const obcStats = modules['order-book-collector']?.stats;
+    sources.l2_order_book = {
+      snapshots_taken: obcStats?.snapshotsTaken ?? 0,
+      l2_levels_inserted: obcStats?.l2LevelsInserted ?? 0,
+      active_tokens: modules['order-book-collector']?.activeTokens ?? 0,
+      last_snapshot_at: obcStats?.lastSnapshotAt ?? null,
+    };
+
+    // Exchange ticks (via CCXT)
+    const efcStats = modules['exchange-feed-collector']?.stats;
+    sources.exchange_feeds = {
+      ticks_captured: efcStats?.ticksCaptured ?? 0,
+      ticks_inserted: efcStats?.ticksInserted ?? 0,
+      poll_cycles: efcStats?.pollCycles ?? 0,
+      last_poll_at: efcStats?.lastPollAt ?? null,
+    };
+
+    // Check staleness (any source with no data) — skip during startup grace period
+    const warnings = [];
+    if (!inGracePeriod) {
+      if (!sources.clob.ws_connected) warnings.push('clob_ws_disconnected');
+      if (sources.l2_order_book.active_tokens === 0) warnings.push('no_active_l2_tokens');
+      if (sources.exchange_feeds.ticks_captured === 0) warnings.push('no_exchange_ticks');
+    }
+
+    const healthy = warnings.length === 0;
+
+    return {
+      healthy,
+      sources,
+      warnings,
+      statusCode: healthy ? 200 : 503,
+    };
+  } catch {
+    return {
+      healthy: false,
+      sources: {},
+      warnings: ['state_unavailable'],
+      statusCode: 503,
+    };
+  }
+}
+
+/**
  * Build the complete status response
  *
  * Health endpoint should NEVER throw - always returns valid JSON.

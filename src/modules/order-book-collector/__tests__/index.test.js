@@ -38,6 +38,10 @@ vi.mock('../../logger/index.js', () => ({
   }),
 }));
 
+vi.mock('../../window-manager/index.js', () => ({
+  getActiveWindows: vi.fn().mockResolvedValue([]),
+}));
+
 import * as collector from '../index.js';
 
 describe('order-book-collector module', () => {
@@ -56,7 +60,7 @@ describe('order-book-collector module', () => {
       const state = collector.getState();
 
       expect(state.initialized).toBe(true);
-      expect(state.config.snapshotIntervalMs).toBe(5000);
+      expect(state.config.snapshotIntervalMs).toBe(1000);
       expect(state.config.maxActiveTokens).toBe(20);
     });
 

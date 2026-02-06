@@ -76,6 +76,9 @@ export const MODULE_INIT_ORDER = [
   { name: 'window-close-event-recorder', module: null, configKey: null },
   { name: 'partition-manager', module: null, configKey: null },
   { name: 'order-book-collector', module: null, configKey: null },
+  // FINDTHEGOLD data capture modules
+  { name: 'clob-price-logger', module: null, configKey: null },
+  { name: 'exchange-feed-collector', module: null, configKey: null },
 ];
 
 /**

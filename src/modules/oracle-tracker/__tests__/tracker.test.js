@@ -17,7 +17,7 @@ describe('OraclePatternTracker', () => {
   describe('constructor', () => {
     it('initializes with default config', () => {
       const t = new OraclePatternTracker();
-      expect(t.minDeviationForUpdate).toBe(0.0001);
+      expect(t.minDeviationForUpdate).toBe(0.00001);
     });
 
     it('initializes with custom minDeviationForUpdate', () => {
