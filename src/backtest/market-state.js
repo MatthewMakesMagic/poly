@@ -1,234 +1,239 @@
 /**
- * Market State Reconstruction
+ * Market State for Backtesting
  *
- * Reconstructs market state at any timestamp from tick data.
- * Maintains the latest prices for each symbol/topic combination
- * and provides snapshot functionality for strategy evaluation.
- */
-
-/**
- * @typedef {Object} PricePoint
- * @property {number} price - Price value
- * @property {string} timestamp - ISO timestamp
- * @property {string} topic - Source topic
- */
-
-/**
- * @typedef {Object} SymbolState
- * @property {string} symbol - Symbol name
- * @property {Map<string, PricePoint>} pricesByTopic - Latest price for each topic
- * @property {number|null} spotPrice - Latest spot price (binance)
- * @property {number|null} oraclePrice - Latest oracle price (chainlink)
- * @property {string|null} lastUpdate - ISO timestamp of last update
- */
-
-/**
- * @typedef {Object} MarketSnapshot
- * @property {string} timestamp - Snapshot timestamp
- * @property {Object.<string, SymbolState>} symbols - State by symbol
- */
-
-/**
- * Market state manager for backtesting
+ * Flat state object with 3-tier feed naming:
+ *   Oracle:    chainlink (settlement), strike (threshold)
+ *   Reference: polyRef (Polymarket composite — NOT Binance)
+ *   Exchange:  binance, coinbase, kraken, bybit, okx
+ *   CLOB:      clobUp, clobDown (token prices)
  *
- * Incrementally builds market state from tick stream.
+ * Updated incrementally by processEvent() during replay.
  */
+
+/**
+ * Create a fresh market state object.
+ *
+ * @returns {MarketState}
+ */
+export function createMarketState() {
+  return new MarketState();
+}
+
 export class MarketState {
   constructor() {
-    /** @type {Map<string, SymbolState>} */
-    this.symbols = new Map();
+    this.timestamp = null;
 
-    /** @type {string|null} */
-    this.currentTimestamp = null;
+    // Oracle tier (settlement)
+    this.chainlink = null;  // { price, ts }
+    this.strike = null;     // number — from window_close_events.strike_price
 
-    /** @type {number} */
-    this.tickCount = 0;
+    // Reference tier
+    this.polyRef = null;    // { price, ts }
+
+    // CLOB tier
+    this.clobUp = null;     // { bestBid, bestAsk, mid, spread, bidSize, askSize, ts }
+    this.clobDown = null;   // { bestBid, bestAsk, mid, spread, bidSize, askSize, ts }
+
+    // Window context
+    this.window = null;     // { id, symbol, openTime, closeTime, timeToCloseMs, resolvedDirection }
+
+    // Internal
+    this._exchanges = new Map();  // exchange name → { price, bid, ask, ts }
+    this._positions = [];         // set by simulator
+    this._tickCount = 0;
   }
 
   /**
-   * Process a tick and update market state
+   * Process a timeline event and update appropriate state field.
    *
-   * @param {Object} tick - Tick row from database
-   * @param {string} tick.timestamp - ISO timestamp
-   * @param {string} tick.symbol - Symbol
-   * @param {string} tick.topic - Topic (binance, chainlink, etc.)
-   * @param {number} tick.price - Price value
+   * @param {Object} event - Event with `source` tag from loadMergedTimeline
    */
-  processTick(tick) {
-    const { timestamp, symbol, topic, price } = tick;
+  processEvent(event) {
+    this.timestamp = event.timestamp;
+    this._tickCount++;
 
-    // Get or create symbol state
-    if (!this.symbols.has(symbol)) {
-      this.symbols.set(symbol, {
-        symbol,
-        pricesByTopic: new Map(),
-        spotPrice: null,
-        oraclePrice: null,
-        lastUpdate: null,
+    const { source } = event;
+
+    if (source === 'chainlink') {
+      this.chainlink = {
+        price: parseFloat(event.price),
+        ts: event.timestamp,
+      };
+    } else if (source === 'polyRef') {
+      this.polyRef = {
+        price: parseFloat(event.price),
+        ts: event.timestamp,
+      };
+    } else if (source === 'clobUp') {
+      this.clobUp = {
+        bestBid: parseFloat(event.best_bid),
+        bestAsk: parseFloat(event.best_ask),
+        mid: parseFloat(event.mid_price),
+        spread: parseFloat(event.spread),
+        bidSize: parseFloat(event.bid_size_top || 0),
+        askSize: parseFloat(event.ask_size_top || 0),
+        ts: event.timestamp,
+      };
+    } else if (source === 'clobDown') {
+      this.clobDown = {
+        bestBid: parseFloat(event.best_bid),
+        bestAsk: parseFloat(event.best_ask),
+        mid: parseFloat(event.mid_price),
+        spread: parseFloat(event.spread),
+        bidSize: parseFloat(event.bid_size_top || 0),
+        askSize: parseFloat(event.ask_size_top || 0),
+        ts: event.timestamp,
+      };
+    } else if (source.startsWith('exchange_')) {
+      const exchangeName = source.slice('exchange_'.length);
+      this._exchanges.set(exchangeName, {
+        price: parseFloat(event.price),
+        bid: event.bid != null ? parseFloat(event.bid) : null,
+        ask: event.ask != null ? parseFloat(event.ask) : null,
+        ts: event.timestamp,
       });
     }
-
-    const symbolState = this.symbols.get(symbol);
-
-    // Update topic price
-    symbolState.pricesByTopic.set(topic, {
-      price,
-      timestamp,
-      topic,
-    });
-
-    // Update convenience fields
-    if (topic === 'binance' || topic === 'spot') {
-      symbolState.spotPrice = price;
-    } else if (topic === 'chainlink' || topic === 'oracle') {
-      symbolState.oraclePrice = price;
-    }
-
-    symbolState.lastUpdate = timestamp;
-    this.currentTimestamp = timestamp;
-    this.tickCount++;
+    // rtds_* topics we don't explicitly model get ignored
   }
 
   /**
-   * Process multiple ticks
+   * Set window context from a window_close_event row.
+   * Called by the engine when a new window opens.
    *
-   * @param {Object[]} ticks - Array of tick rows
+   * @param {Object} windowEvent - Row from window_close_events
+   * @param {string} [openTime] - Computed open time (closeTime - 5min typically)
    */
-  processTicks(ticks) {
-    for (const tick of ticks) {
-      this.processTick(tick);
-    }
-  }
-
-  /**
-   * Get current market state snapshot
-   *
-   * @returns {MarketSnapshot} Current state snapshot
-   */
-  getSnapshot() {
-    const symbolsObj = {};
-
-    for (const [symbol, state] of this.symbols) {
-      symbolsObj[symbol] = {
-        symbol: state.symbol,
-        spotPrice: state.spotPrice,
-        oraclePrice: state.oraclePrice,
-        lastUpdate: state.lastUpdate,
-        pricesByTopic: Object.fromEntries(state.pricesByTopic),
-      };
-    }
-
-    return {
-      timestamp: this.currentTimestamp,
-      symbols: symbolsObj,
+  setWindow(windowEvent, openTime) {
+    const closeTime = windowEvent.window_close_time;
+    this.strike = windowEvent.strike_price != null ? parseFloat(windowEvent.strike_price) : null;
+    this.window = {
+      id: closeTime, // use close time as window ID
+      symbol: windowEvent.symbol,
+      openTime: openTime || null,
+      closeTime,
+      timeToCloseMs: null,
+      resolvedDirection: windowEvent.resolved_direction || null,
     };
   }
 
   /**
-   * Get state for a specific symbol
+   * Recalculate timeToCloseMs based on current timestamp.
    *
-   * @param {string} symbol - Symbol to get
-   * @returns {SymbolState|null} Symbol state or null
+   * @param {string} timestamp - Current replay timestamp
    */
-  getSymbolState(symbol) {
-    return this.symbols.get(symbol) || null;
+  updateTimeToClose(timestamp) {
+    if (!this.window?.closeTime) return;
+    const currentMs = new Date(timestamp).getTime();
+    const closeMs = new Date(this.window.closeTime).getTime();
+    this.window.timeToCloseMs = Math.max(0, closeMs - currentMs);
+  }
+
+  // ─── Exchange Accessors ───
+
+  /**
+   * Get data for a specific exchange.
+   *
+   * @param {string} name - Exchange name (e.g. 'binance', 'coinbase')
+   * @returns {{ price: number, bid: number|null, ask: number|null, ts: string }|null}
+   */
+  getExchange(name) {
+    return this._exchanges.get(name) || null;
   }
 
   /**
-   * Get spot price for a symbol
+   * Get all exchange data.
    *
-   * @param {string} symbol - Symbol to get
-   * @returns {number|null} Spot price or null
+   * @returns {{ exchange: string, price: number, bid: number|null, ask: number|null, ts: string }[]}
    */
-  getSpotPrice(symbol) {
-    const state = this.symbols.get(symbol);
-    return state?.spotPrice ?? null;
-  }
-
-  /**
-   * Get oracle price for a symbol
-   *
-   * @param {string} symbol - Symbol to get
-   * @returns {number|null} Oracle price or null
-   */
-  getOraclePrice(symbol) {
-    const state = this.symbols.get(symbol);
-    return state?.oraclePrice ?? null;
-  }
-
-  /**
-   * Get price spread between spot and oracle
-   *
-   * @param {string} symbol - Symbol to get
-   * @returns {number|null} Spread (spot - oracle) or null
-   */
-  getSpread(symbol) {
-    const state = this.symbols.get(symbol);
-    if (!state || state.spotPrice === null || state.oraclePrice === null) {
-      return null;
+  getAllExchanges() {
+    const result = [];
+    for (const [exchange, data] of this._exchanges) {
+      result.push({ exchange, ...data });
     }
-    return state.spotPrice - state.oraclePrice;
+    return result;
   }
 
   /**
-   * Get price spread as percentage
+   * Get median price across all available exchanges.
    *
-   * @param {string} symbol - Symbol to get
-   * @returns {number|null} Spread percentage or null
+   * @returns {number|null}
    */
-  getSpreadPct(symbol) {
-    const state = this.symbols.get(symbol);
-    if (!state || state.spotPrice === null || state.oraclePrice === null) {
-      return null;
+  getExchangeMedian() {
+    const prices = [];
+    for (const data of this._exchanges.values()) {
+      if (data.price != null) prices.push(data.price);
     }
-    if (state.oraclePrice === 0) return null;
-    return (state.spotPrice - state.oraclePrice) / state.oraclePrice;
+    if (prices.length === 0) return null;
+    prices.sort((a, b) => a - b);
+    const mid = Math.floor(prices.length / 2);
+    return prices.length % 2 !== 0
+      ? prices[mid]
+      : (prices[mid - 1] + prices[mid]) / 2;
   }
 
   /**
-   * Check if we have both spot and oracle prices for a symbol
+   * Get spread across all exchange prices.
    *
-   * @param {string} symbol - Symbol to check
-   * @returns {boolean} True if both prices available
+   * @returns {{ min: number, max: number, range: number, rangePct: number }|null}
    */
-  hasBothPrices(symbol) {
-    const state = this.symbols.get(symbol);
-    return state?.spotPrice !== null && state?.oraclePrice !== null;
+  getExchangeSpread() {
+    const prices = [];
+    for (const data of this._exchanges.values()) {
+      if (data.price != null) prices.push(data.price);
+    }
+    if (prices.length < 2) return null;
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const range = max - min;
+    const rangePct = min > 0 ? range / min : 0;
+    return { min, max, range, rangePct };
   }
 
+  // ─── Derived Metrics ───
+
   /**
-   * Get all symbols with data
+   * Chainlink deficit: how far CL is below strike.
+   * Positive = CL below strike = DOWN bias.
    *
-   * @returns {string[]} Array of symbols
+   * @returns {number|null}
    */
-  getSymbols() {
-    return Array.from(this.symbols.keys());
+  getChainlinkDeficit() {
+    if (this.strike == null || !this.chainlink?.price) return null;
+    return this.strike - this.chainlink.price;
   }
 
   /**
-   * Reset market state
-   */
-  reset() {
-    this.symbols.clear();
-    this.currentTimestamp = null;
-    this.tickCount = 0;
-  }
-
-  /**
-   * Get tick count processed
+   * Reference-to-strike gap.
    *
-   * @returns {number} Number of ticks processed
+   * @returns {number|null}
+   */
+  getRefToStrikeGap() {
+    if (this.strike == null || !this.polyRef?.price) return null;
+    return this.strike - this.polyRef.price;
+  }
+
+  /**
+   * Get tick count processed.
+   *
+   * @returns {number}
    */
   getTickCount() {
-    return this.tickCount;
+    return this._tickCount;
   }
-}
 
-/**
- * Create a new market state manager
- *
- * @returns {MarketState} New market state instance
- */
-export function createMarketState() {
-  return new MarketState();
+  /**
+   * Reset all state.
+   */
+  reset() {
+    this.timestamp = null;
+    this.chainlink = null;
+    this.strike = null;
+    this.polyRef = null;
+    this.clobUp = null;
+    this.clobDown = null;
+    this.window = null;
+    this._exchanges.clear();
+    this._positions = [];
+    this._tickCount = 0;
+  }
 }

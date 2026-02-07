@@ -1,14 +1,27 @@
 /**
  * Backtest Replay Engine
  *
- * Core replay loop that iterates through historical ticks,
- * builds market context, runs strategy evaluation, and
- * simulates trade execution.
+ * Window-aware async replay that:
+ *   1. Pre-loads window schedule from window_close_events
+ *   2. Replays merged timeline events through market state
+ *   3. Evaluates strategy on each event
+ *   4. Executes signals through simulator
+ *   5. Resolves positions at window boundaries
+ *
+ * Strategy interface contract:
+ *   {
+ *     name: string,
+ *     evaluate: (state, config) => Signal[],
+ *     onWindowOpen?: (state, config) => void,
+ *     onWindowClose?: (state, windowResult, config) => void,
+ *   }
+ *
+ * Signal format:
+ *   { action: 'buy'|'sell', token: string, size: number, reason: string, confidence?: number }
  */
 
-import { loadTicksBatched, getTickCount } from './data-loader.js';
+import { loadMergedTimeline, loadWindowEvents } from './data-loader.js';
 import { createMarketState } from './market-state.js';
-import { createContextBuilder } from './context-builder.js';
 import { createSimulator } from './simulator.js';
 import { child } from '../modules/logger/index.js';
 
@@ -16,32 +29,24 @@ const log = child({ module: 'backtest:engine' });
 
 /**
  * @typedef {Object} BacktestConfig
- * @property {string} startDate - Start date ISO string
- * @property {string} endDate - End date ISO string
- * @property {string[]} [symbols] - Symbols to backtest
- * @property {Function} strategy - Strategy function(context) => { action, direction, size }
- * @property {Object} [strategyConfig] - Strategy configuration
- * @property {number} [initialCapital=1000] - Starting capital
- * @property {number} [slippagePct=0.001] - Slippage percentage
- * @property {number} [batchSize=10000] - Tick batch size
- * @property {Function} [onProgress] - Progress callback(processed, total)
- * @property {number} [progressIntervalTicks=1000] - Ticks between progress updates
+ * @property {string} startDate
+ * @property {string} endDate
+ * @property {string[]} [symbols]
+ * @property {Object} strategy - Strategy object with name + evaluate
+ * @property {Object} [strategyConfig] - Params passed to strategy.evaluate
+ * @property {number} [initialCapital=100]
+ * @property {number} [spreadBuffer=0.005]
+ * @property {number} [tradingFee=0]
+ * @property {boolean} [verbose=false] - Enable decision log
+ * @property {number} [windowDurationMs=300000] - Default window duration (5 min)
+ * @property {Function} [onProgress]
  */
 
 /**
- * @typedef {Object} BacktestResult
- * @property {Object} config - Backtest configuration
- * @property {Object} summary - Summary statistics
- * @property {Object[]} trades - All completed trades
- * @property {number[]} equityCurve - Equity values over time
- * @property {Object} bySymbol - Breakdown by symbol
- */
-
-/**
- * Run a backtest with the given configuration
+ * Run a full backtest.
  *
- * @param {BacktestConfig} config - Backtest configuration
- * @returns {Promise<BacktestResult>} Backtest results
+ * @param {BacktestConfig} config
+ * @returns {Promise<Object>} Backtest result
  */
 export async function runBacktest(config) {
   const {
@@ -50,140 +55,249 @@ export async function runBacktest(config) {
     symbols,
     strategy,
     strategyConfig = {},
-    initialCapital = 1000,
-    slippagePct = 0.001,
-    batchSize = 10000,
+    initialCapital = 100,
+    spreadBuffer = 0.005,
+    tradingFee = 0,
+    verbose = false,
+    windowDurationMs = 5 * 60 * 1000,
     onProgress,
-    progressIntervalTicks = 1000,
   } = config;
 
   if (!startDate || !endDate) {
     throw new Error('startDate and endDate are required');
   }
 
-  if (typeof strategy !== 'function') {
-    throw new Error('strategy must be a function');
+  if (!strategy || typeof strategy.evaluate !== 'function') {
+    throw new Error('strategy must have an evaluate function');
   }
 
   log.info('backtest_start', {
-    startDate,
-    endDate,
+    startDate, endDate,
+    strategy: strategy.name,
     symbols: symbols || 'all',
-    initialCapital,
-    slippagePct,
   });
 
-  // Get total tick count for progress tracking
-  const totalTicks = getTickCount({ startDate, endDate, symbols });
+  // Load data
+  const [timeline, windows] = await Promise.all([
+    loadMergedTimeline({ startDate, endDate, symbols }),
+    loadWindowEvents({ startDate, endDate, symbols }),
+  ]);
 
-  log.info('backtest_tick_count', { totalTicks });
+  return replayTimeline(timeline, windows, {
+    strategy,
+    strategyConfig,
+    initialCapital,
+    spreadBuffer,
+    tradingFee,
+    verbose,
+    windowDurationMs,
+    onProgress,
+    startDate,
+    endDate,
+    symbols,
+  });
+}
 
-  // Initialize components
-  const marketState = createMarketState();
-  const contextBuilder = createContextBuilder();
-  const simulator = createSimulator({ initialCapital, defaultSlippagePct: slippagePct });
+/**
+ * Replay a pre-loaded timeline against windows.
+ * Separated from runBacktest so sweeps can share loaded data.
+ *
+ * @param {Object[]} timeline - Merged timeline events
+ * @param {Object[]} windows - Window close events
+ * @param {Object} config
+ * @returns {Object} Backtest result
+ */
+function replayTimeline(timeline, windows, config) {
+  const {
+    strategy,
+    strategyConfig = {},
+    initialCapital = 100,
+    spreadBuffer = 0.005,
+    tradingFee = 0,
+    verbose = false,
+    windowDurationMs = 5 * 60 * 1000,
+    onProgress,
+    startDate,
+    endDate,
+    symbols,
+  } = config;
 
-  // Track stats by symbol
-  const symbolStats = new Map();
+  const state = createMarketState();
+  const simulator = createSimulator({ initialCapital, spreadBuffer, tradingFee });
 
-  let processedTicks = 0;
-  let lastProgressTicks = 0;
+  // Build window schedule sorted by close time
+  const windowSchedule = windows.map(w => ({
+    ...w,
+    closeMs: new Date(w.window_close_time).getTime(),
+    openMs: new Date(w.window_close_time).getTime() - windowDurationMs,
+  }));
 
-  // Process ticks in batches
-  for (const batch of loadTicksBatched({ startDate, endDate, symbols, batchSize })) {
-    for (const tick of batch) {
-      // Update market state
-      marketState.processTick(tick);
-      processedTicks++;
+  let windowIdx = 0;
+  let currentWindow = null;
+  const windowResults = [];
+  const decisionLog = [];
+  let eventsProcessed = 0;
 
-      // Build context for this symbol
-      const symbol = tick.symbol;
-      const timestamp = tick.timestamp;
+  // Advance to first window
+  if (windowSchedule.length > 0) {
+    currentWindow = windowSchedule[0];
+    const openTime = new Date(currentWindow.openMs).toISOString();
+    state.setWindow(currentWindow, openTime);
+    if (strategy.onWindowOpen) {
+      strategy.onWindowOpen(state, strategyConfig);
+    }
+  }
 
-      // Only evaluate if we have both prices
-      if (!marketState.hasBothPrices(symbol)) {
-        continue;
-      }
+  for (const event of timeline) {
+    const eventMs = new Date(event.timestamp).getTime();
 
-      // Sync simulated position to context builder
-      const simPosition = simulator.getPosition(symbol);
-      if (simPosition) {
-        contextBuilder.setPosition(symbol, {
-          isOpen: true,
-          direction: simPosition.direction,
-          entryPrice: simPosition.entryPrice,
-          size: simPosition.size,
+    // Check window transitions
+    while (currentWindow && eventMs >= currentWindow.closeMs) {
+      // Resolve current window
+      if (currentWindow.resolved_direction) {
+        simulator.resolveWindow({
+          direction: currentWindow.resolved_direction,
+          timestamp: currentWindow.window_close_time,
         });
-      } else {
-        contextBuilder.setPosition(symbol, null);
       }
 
-      // Build context
-      const context = contextBuilder.buildContext(symbol, marketState, timestamp);
-
-      // Run strategy
-      try {
-        const decision = strategy(context, strategyConfig);
-
-        if (decision && decision.action) {
-          handleDecision(symbol, decision, context, simulator, symbolStats);
-        }
-      } catch (err) {
-        log.warn('strategy_error', { symbol, timestamp, error: err.message });
-      }
-
-      // Progress callback
-      if (onProgress && processedTicks - lastProgressTicks >= progressIntervalTicks) {
-        onProgress(processedTicks, totalTicks);
-        lastProgressTicks = processedTicks;
-      }
-    }
-  }
-
-  // Final progress update
-  if (onProgress) {
-    onProgress(processedTicks, totalTicks);
-  }
-
-  // Close any remaining positions at last known price
-  for (const position of simulator.getOpenPositions()) {
-    const currentPrice = marketState.getSpotPrice(position.symbol);
-    if (currentPrice !== null) {
-      simulator.closePosition({
-        symbol: position.symbol,
-        price: currentPrice,
-        timestamp: marketState.currentTimestamp,
-        reason: 'backtest_end',
+      const windowPnl = simulator.getWindowPnL();
+      windowResults.push({
+        windowCloseTime: currentWindow.window_close_time,
+        symbol: currentWindow.symbol,
+        strike: currentWindow.strike_price,
+        chainlinkClose: currentWindow.chainlink_price_at_close,
+        resolvedDirection: currentWindow.resolved_direction,
+        pnl: windowPnl,
+        tradesInWindow: simulator.getTrades().filter(
+          t => t.exitTimestamp === currentWindow.window_close_time
+        ).length,
       });
+
+      if (strategy.onWindowClose) {
+        strategy.onWindowClose(state, windowResults[windowResults.length - 1], strategyConfig);
+      }
+
+      simulator.resetWindowPnL();
+
+      // Advance to next window
+      windowIdx++;
+      if (windowIdx < windowSchedule.length) {
+        currentWindow = windowSchedule[windowIdx];
+        const openTime = new Date(currentWindow.openMs).toISOString();
+        state.setWindow(currentWindow, openTime);
+        if (strategy.onWindowOpen) {
+          strategy.onWindowOpen(state, strategyConfig);
+        }
+      } else {
+        currentWindow = null;
+      }
+    }
+
+    // Update market state
+    state.processEvent(event);
+    if (state.window) {
+      state.updateTimeToClose(event.timestamp);
+    }
+
+    eventsProcessed++;
+
+    // Evaluate strategy
+    try {
+      const signals = strategy.evaluate(state, strategyConfig);
+      if (!signals || signals.length === 0) continue;
+
+      for (const signal of signals) {
+        if (!signal.action || !signal.token) continue;
+
+        // Execute through simulator
+        const execResult = simulator.execute(signal, state, strategyConfig);
+
+        if (execResult.filled) {
+          if (signal.action === 'buy') {
+            simulator.buyToken({
+              token: signal.token,
+              price: execResult.fillPrice,
+              size: execResult.fillSize,
+              timestamp: event.timestamp,
+              reason: signal.reason || '',
+            });
+          } else if (signal.action === 'sell') {
+            simulator.sellToken({
+              token: signal.token,
+              price: execResult.fillPrice,
+              timestamp: event.timestamp,
+              reason: signal.reason || 'strategy_sell',
+            });
+          }
+        }
+
+        if (verbose) {
+          decisionLog.push({
+            timestamp: event.timestamp,
+            signal,
+            execution: execResult,
+            stateSnapshot: {
+              chainlink: state.chainlink?.price,
+              polyRef: state.polyRef?.price,
+              strike: state.strike,
+              clobUp: state.clobUp ? { bid: state.clobUp.bestBid, ask: state.clobUp.bestAsk } : null,
+              clobDown: state.clobDown ? { bid: state.clobDown.bestBid, ask: state.clobDown.bestAsk } : null,
+              timeToCloseMs: state.window?.timeToCloseMs,
+            },
+          });
+        }
+      }
+    } catch (err) {
+      log.warn('strategy_error', { timestamp: event.timestamp, error: err.message });
+    }
+
+    if (onProgress && eventsProcessed % 1000 === 0) {
+      onProgress(eventsProcessed, timeline.length);
     }
   }
 
-  // Build results
+  // Resolve any remaining window
+  if (currentWindow && currentWindow.resolved_direction) {
+    simulator.resolveWindow({
+      direction: currentWindow.resolved_direction,
+      timestamp: currentWindow.window_close_time,
+    });
+
+    const windowPnl = simulator.getWindowPnL();
+    const windowResult = {
+      windowCloseTime: currentWindow.window_close_time,
+      symbol: currentWindow.symbol,
+      strike: currentWindow.strike_price,
+      chainlinkClose: currentWindow.chainlink_price_at_close,
+      resolvedDirection: currentWindow.resolved_direction,
+      pnl: windowPnl,
+      tradesInWindow: simulator.getTrades().filter(
+        t => t.exitTimestamp === currentWindow.window_close_time
+      ).length,
+    };
+    windowResults.push(windowResult);
+
+    if (strategy.onWindowClose) {
+      strategy.onWindowClose(state, windowResult, strategyConfig);
+    }
+  }
+
+  if (onProgress) {
+    onProgress(eventsProcessed, timeline.length);
+  }
+
   const stats = simulator.getStats();
   const trades = simulator.getTrades();
-
-  // Build by-symbol breakdown
-  const bySymbol = {};
-  for (const [symbol, symbolStat] of symbolStats) {
-    const symbolTrades = trades.filter(t => t.symbol === symbol);
-    const wins = symbolTrades.filter(t => t.pnl > 0);
-
-    bySymbol[symbol] = {
-      tradeCount: symbolTrades.length,
-      winCount: wins.length,
-      winRate: symbolTrades.length > 0 ? wins.length / symbolTrades.length : 0,
-      totalPnl: symbolTrades.reduce((s, t) => s + t.pnl, 0),
-      ...symbolStat,
-    };
-  }
 
   const result = {
     config: {
       startDate,
       endDate,
       symbols: symbols || 'all',
+      strategyName: strategy.name,
+      strategyConfig,
       initialCapital,
-      slippagePct,
     },
     summary: {
       totalTrades: stats.tradeCount,
@@ -194,223 +308,101 @@ export async function runBacktest(config) {
       finalCapital: stats.finalCapital,
       avgWin: stats.avgWin,
       avgLoss: stats.avgLoss,
-      ticksProcessed: processedTicks,
+      eventsProcessed,
+      windowsProcessed: windowResults.length,
     },
     trades,
     equityCurve: simulator.getEquityCurve(),
-    bySymbol,
+    windowResults,
   };
 
+  if (verbose) {
+    result.decisionLog = decisionLog;
+  }
+
   log.info('backtest_complete', {
-    totalTrades: result.summary.totalTrades,
-    winRate: result.summary.winRate,
-    totalPnl: result.summary.totalPnl,
-    returnPct: result.summary.returnPct,
-    maxDrawdown: result.summary.maxDrawdown,
-    ticksProcessed: processedTicks,
+    strategy: strategy.name,
+    totalTrades: stats.tradeCount,
+    winRate: stats.winRate,
+    totalPnl: stats.totalPnl,
+    windows: windowResults.length,
   });
 
   return result;
 }
 
+// ─── Parameter Sweep ───
+
 /**
- * Handle a strategy decision
+ * Run the same strategy across a grid of parameter values.
+ * Data is loaded once and shared across all param sets.
  *
- * @param {string} symbol - Symbol
- * @param {Object} decision - Strategy decision
- * @param {Object} context - Current context
- * @param {import('./simulator.js').Simulator} simulator - Simulator instance
- * @param {Map} symbolStats - Symbol statistics map
+ * @param {BacktestConfig} baseConfig
+ * @param {Object} paramGrid - { paramName: [values], ... }
+ * @returns {Promise<Object[]>} Array of { params, result }
  */
-function handleDecision(symbol, decision, context, simulator, symbolStats) {
-  const { action, direction, size, reason } = decision;
+export async function runSweep(baseConfig, paramGrid) {
+  const { startDate, endDate, symbols } = baseConfig;
 
-  // Initialize symbol stats if needed
-  if (!symbolStats.has(symbol)) {
-    symbolStats.set(symbol, { signalCount: 0, entryCount: 0, exitCount: 0 });
+  // Load data once
+  const [timeline, windows] = await Promise.all([
+    loadMergedTimeline({ startDate, endDate, symbols }),
+    loadWindowEvents({ startDate, endDate, symbols }),
+  ]);
+
+  const paramSets = generateParamCombinations(paramGrid);
+
+  log.info('sweep_start', {
+    strategy: baseConfig.strategy?.name,
+    paramSets: paramSets.length,
+    params: Object.keys(paramGrid),
+  });
+
+  const results = [];
+
+  for (const params of paramSets) {
+    const mergedConfig = {
+      ...baseConfig,
+      strategyConfig: { ...baseConfig.strategyConfig, ...params },
+      startDate,
+      endDate,
+      symbols,
+    };
+
+    const result = replayTimeline(timeline, windows, mergedConfig);
+    results.push({ params, result });
   }
-  const stats = symbolStats.get(symbol);
-  stats.signalCount++;
 
-  const hasPosition = simulator.hasPosition(symbol);
-  const spotPrice = context.market.spotPrice;
+  log.info('sweep_complete', { paramSets: paramSets.length });
 
-  if (action === 'enter' && !hasPosition && spotPrice !== null) {
-    // Open position
-    simulator.openPosition({
-      symbol,
-      direction: direction || 'long',
-      size: size || 1,
-      price: spotPrice,
-      timestamp: context.timestamp,
-    });
-    stats.entryCount++;
-
-  } else if (action === 'exit' && hasPosition && spotPrice !== null) {
-    // Close position
-    simulator.closePosition({
-      symbol,
-      price: spotPrice,
-      timestamp: context.timestamp,
-      reason: reason || 'strategy_exit',
-    });
-    stats.exitCount++;
-  }
+  return results;
 }
 
 /**
- * Create a strategy function from a loaded strategy definition
+ * Generate all combinations from a parameter grid.
  *
- * Wraps the strategy composition framework components into a
- * function compatible with the backtest engine.
- *
- * @param {Object} strategyDef - Strategy definition from loader
- * @param {Object} catalog - Component catalog
- * @returns {Function} Strategy function(context, config) => decision
+ * @param {Object} grid - { key: [values], ... }
+ * @returns {Object[]} Array of param objects
  */
-export function createComposedStrategy(strategyDef, catalog) {
-  const { components, config: strategyConfig, pipeline } = strategyDef;
+function generateParamCombinations(grid) {
+  const keys = Object.keys(grid);
+  if (keys.length === 0) return [{}];
 
-  return function composedStrategy(context, config) {
-    const mergedConfig = { ...strategyConfig, ...config };
-    const results = {};
+  const combos = [{}];
 
-    // Execute components in pipeline order
-    const order = pipeline?.order || Object.keys(components);
+  for (const key of keys) {
+    const values = grid[key];
+    const newCombos = [];
 
-    for (const componentType of order) {
-      const versionIds = components[componentType];
-      if (!versionIds) continue;
-
-      const ids = Array.isArray(versionIds) ? versionIds : [versionIds];
-
-      for (const versionId of ids) {
-        // Find component in catalog
-        let component = null;
-        for (const type of Object.keys(catalog)) {
-          if (catalog[type][versionId]) {
-            component = catalog[type][versionId];
-            break;
-          }
-        }
-
-        if (!component || !component.module || typeof component.module.evaluate !== 'function') {
-          continue;
-        }
-
-        try {
-          // Build component context
-          const componentContext = {
-            ...context,
-            previousResults: results,
-          };
-
-          const result = component.module.evaluate(componentContext, mergedConfig);
-          results[versionId] = result;
-
-          // Check for signal
-          if (result.has_signal && result.direction) {
-            // Convert oracle edge signal format to backtest decision
-            return {
-              action: 'enter',
-              direction: result.direction === 'FADE_UP' ? 'short' : 'long',
-              confidence: result.confidence,
-              reason: `signal_from_${component.name}`,
-            };
-          }
-
-          // Check for probability-based entry
-          if (result.probability !== undefined && result.signal === 'entry') {
-            return {
-              action: 'enter',
-              direction: result.probability > 0.5 ? 'long' : 'short',
-              confidence: Math.abs(result.probability - 0.5) * 2,
-              reason: `probability_threshold`,
-            };
-          }
-
-          // Check for lag-based entry
-          if (result.signal?.has_signal && result.signal.direction) {
-            return {
-              action: 'enter',
-              direction: result.signal.direction === 'up' ? 'long' : 'short',
-              confidence: result.signal.confidence,
-              reason: 'lag_signal',
-            };
-          }
-        } catch (err) {
-          // Component evaluation failed - continue with others
-        }
+    for (const existing of combos) {
+      for (const value of values) {
+        newCombos.push({ ...existing, [key]: value });
       }
     }
 
-    // No signal from any component
-    return { action: null };
-  };
-}
+    combos.length = 0;
+    combos.push(...newCombos);
+  }
 
-/**
- * Create a simple threshold strategy for testing
- *
- * @param {Object} options - Strategy options
- * @param {number} [options.entryThreshold=0.001] - Enter when spread > threshold
- * @param {number} [options.exitThreshold=0] - Exit when spread < threshold
- * @param {number} [options.stopLossPct=0.05] - Stop loss percentage
- * @param {number} [options.takeProfitPct=0.02] - Take profit percentage
- * @returns {Function} Strategy function
- */
-export function createThresholdStrategy(options = {}) {
-  const {
-    entryThreshold = 0.001,
-    exitThreshold = 0,
-    stopLossPct = 0.05,
-    takeProfitPct = 0.02,
-  } = options;
-
-  return function thresholdStrategy(context) {
-    const { market, position } = context;
-    const spreadPct = market.spreadPct;
-
-    if (spreadPct === null) {
-      return { action: null };
-    }
-
-    // If we have a position, check exit conditions
-    if (position.isOpen) {
-      const pnlPct = position.unrealizedPnl / (position.entryPrice * position.size);
-
-      // Stop loss
-      if (pnlPct <= -stopLossPct) {
-        return { action: 'exit', reason: 'stop_loss' };
-      }
-
-      // Take profit
-      if (pnlPct >= takeProfitPct) {
-        return { action: 'exit', reason: 'take_profit' };
-      }
-
-      // Exit on spread reversal
-      if (position.direction === 'long' && spreadPct < exitThreshold) {
-        return { action: 'exit', reason: 'spread_reversal' };
-      }
-      if (position.direction === 'short' && spreadPct > -exitThreshold) {
-        return { action: 'exit', reason: 'spread_reversal' };
-      }
-
-      return { action: null };
-    }
-
-    // Check entry conditions
-    if (spreadPct > entryThreshold) {
-      // Spot > Oracle, expect oracle to catch up (spot likely to fall or oracle rise)
-      return { action: 'enter', direction: 'short', size: 1 };
-    }
-
-    if (spreadPct < -entryThreshold) {
-      // Oracle > Spot, expect spot to catch up (spot likely to rise)
-      return { action: 'enter', direction: 'long', size: 1 };
-    }
-
-    return { action: null };
-  };
+  return combos;
 }

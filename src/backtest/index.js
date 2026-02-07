@@ -4,47 +4,48 @@
  * Public API for running backtests on historical data.
  *
  * Usage:
- *   import { runBacktest, createThresholdStrategy } from './backtest/index.js';
+ *   import { runBacktest, runSweep } from './backtest/index.js';
+ *   import * as edgeC from './backtest/strategies/edge-c-asymmetry.js';
  *
  *   const result = await runBacktest({
- *     startDate: '2026-01-25T00:00:00Z',
- *     endDate: '2026-02-01T00:00:00Z',
- *     symbols: ['BTC', 'ETH'],
- *     strategy: createThresholdStrategy({ entryThreshold: 0.002 }),
+ *     startDate: '2026-02-01T00:00:00Z',
+ *     endDate: '2026-02-02T00:00:00Z',
+ *     strategy: edgeC,
+ *     strategyConfig: { deficitThreshold: 80 },
  *   });
  *
  * @module backtest
  */
 
-// Re-export main API
-export { runBacktest, createThresholdStrategy, createComposedStrategy } from './engine.js';
+// Engine
+export { runBacktest, runSweep } from './engine.js';
 
-// Re-export data loading utilities
+// Data loading
 export {
-  loadTicks,
-  loadTicksBatched,
+  loadRtdsTicks,
+  loadRtdsTicksBatched,
+  loadClobSnapshots,
+  loadExchangeTicks,
+  loadWindowEvents,
+  loadMergedTimeline,
   getTickCount,
-  loadOracleUpdates,
-  loadTradeEvents,
-  loadLagSignals,
   getTickDateRange,
   getAvailableSymbols,
   getAvailableTopics,
 } from './data-loader.js';
 
-// Re-export market state utilities
+// Market state
 export { MarketState, createMarketState } from './market-state.js';
 
-// Re-export context builder
-export { ContextBuilder, createContextBuilder } from './context-builder.js';
-
-// Re-export simulator
+// Simulator
 export { Simulator, createSimulator } from './simulator.js';
 
-// Re-export metrics
+// Metrics
 export {
   calculateMetrics,
   calculateSubsetMetrics,
+  calculateBinaryMetrics,
+  calculatePerWindowMetrics,
   calculateSharpeRatio,
   calculateSortinoRatio,
   calculateMaxDrawdown,
@@ -52,7 +53,7 @@ export {
   calculateExpectancy,
 } from './metrics.js';
 
-// Re-export reporter
+// Reporter
 export {
   generateReport,
   generateComparisonReport,

@@ -1,25 +1,15 @@
 /**
  * Backtest Data Loader
  *
- * Loads historical tick data from the database for replay.
- * Supports filtering by date range, symbol, and topic.
- * Uses streaming to handle large datasets efficiently.
+ * Loads historical data from PostgreSQL for replay.
+ * Supports rtds_ticks, clob_price_snapshots, exchange_ticks, and window_close_events.
+ * Uses batched loading for large tables (rtds_ticks).
  */
 
-import { getDb } from '../persistence/database.js';
+import persistence from '../persistence/index.js';
 import { child } from '../modules/logger/index.js';
 
 const log = child({ module: 'backtest:data-loader' });
-
-/**
- * @typedef {Object} TickRow
- * @property {number} id - Row ID
- * @property {string} timestamp - ISO timestamp
- * @property {string} topic - Feed topic (e.g., 'binance', 'chainlink')
- * @property {string} symbol - Symbol (e.g., 'BTC', 'ETH')
- * @property {number} price - Price value
- * @property {string|null} raw_payload - Raw JSON payload
- */
 
 /**
  * @typedef {Object} LoadOptions
@@ -27,64 +17,87 @@ const log = child({ module: 'backtest:data-loader' });
  * @property {string} endDate - End date ISO string
  * @property {string[]} [symbols] - Filter to specific symbols
  * @property {string[]} [topics] - Filter to specific topics
- * @property {number} [batchSize=10000] - Number of rows per batch
+ * @property {number} [batchSize=10000] - Number of rows per batch (rtds_ticks only)
  */
 
 /**
- * Load ticks by date range with optional filters
- *
- * Returns an iterator for memory-efficient processing of large datasets.
- *
- * @param {LoadOptions} options - Query options
- * @returns {Generator<TickRow[]>} Generator yielding batches of ticks
+ * Build WHERE clause fragments for optional filters.
+ * Returns { clauses: string[], params: any[] } with $N placeholders starting from paramOffset.
  */
-export function* loadTicksBatched(options) {
-  const { startDate, endDate, symbols, topics, batchSize = 10000 } = options;
+function buildFilters(options, paramOffset = 3) {
+  const clauses = [];
+  const params = [];
+  let idx = paramOffset;
+
+  if (options.symbols && options.symbols.length > 0) {
+    const placeholders = options.symbols.map(() => `$${idx++}`);
+    clauses.push(`symbol IN (${placeholders.join(',')})`);
+    params.push(...options.symbols);
+  }
+
+  if (options.topics && options.topics.length > 0) {
+    const placeholders = options.topics.map(() => `$${idx++}`);
+    clauses.push(`topic IN (${placeholders.join(',')})`);
+    params.push(...options.topics);
+  }
+
+  if (options.exchanges && options.exchanges.length > 0) {
+    const placeholders = options.exchanges.map(() => `$${idx++}`);
+    clauses.push(`exchange IN (${placeholders.join(',')})`);
+    params.push(...options.exchanges);
+  }
+
+  return { clauses, params };
+}
+
+// ─── RTDS Ticks ───
+
+/**
+ * Load rtds_ticks in batches (async generator).
+ * Largest table — uses LIMIT/OFFSET pagination.
+ *
+ * @param {LoadOptions} options
+ * @yields {Object[]} Batches of tick rows
+ */
+export async function* loadRtdsTicksBatched(options) {
+  const { startDate, endDate, batchSize = 10000 } = options;
 
   if (!startDate || !endDate) {
     throw new Error('startDate and endDate are required');
   }
 
-  const db = getDb();
+  const { clauses, params: filterParams } = buildFilters(options);
 
-  // Build query with optional filters
-  let sql = `
-    SELECT id, timestamp, topic, symbol, price, raw_payload
+  let baseSql = `
+    SELECT id, timestamp, topic, symbol, price, received_at
     FROM rtds_ticks
-    WHERE timestamp >= ? AND timestamp <= ?
+    WHERE timestamp >= $1 AND timestamp <= $2
   `;
-  const params = [startDate, endDate];
+  const baseParams = [startDate, endDate];
 
-  if (symbols && symbols.length > 0) {
-    sql += ` AND symbol IN (${symbols.map(() => '?').join(',')})`;
-    params.push(...symbols);
+  if (clauses.length > 0) {
+    baseSql += ' AND ' + clauses.join(' AND ');
   }
 
-  if (topics && topics.length > 0) {
-    sql += ` AND topic IN (${topics.map(() => '?').join(',')})`;
-    params.push(...topics);
-  }
+  baseSql += ' ORDER BY timestamp ASC, id ASC';
 
-  sql += ' ORDER BY timestamp ASC, id ASC';
-
-  // Use pagination for memory efficiency
   let offset = 0;
   let hasMore = true;
 
-  log.info('load_ticks_start', {
-    startDate,
-    endDate,
-    symbols: symbols || 'all',
-    topics: topics || 'all',
+  log.info('load_rtds_ticks_start', {
+    startDate, endDate,
+    symbols: options.symbols || 'all',
+    topics: options.topics || 'all',
     batchSize,
   });
 
   while (hasMore) {
-    const batchSql = `${sql} LIMIT ? OFFSET ?`;
-    const batchParams = [...params, batchSize, offset];
+    const limitIdx = baseParams.length + filterParams.length + 1;
+    const offsetIdx = limitIdx + 1;
+    const sql = `${baseSql} LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
+    const params = [...baseParams, ...filterParams, batchSize, offset];
 
-    const stmt = db.prepare(batchSql);
-    const rows = stmt.all(...batchParams);
+    const rows = await persistence.all(sql, params);
 
     if (rows.length > 0) {
       yield rows;
@@ -94,183 +107,243 @@ export function* loadTicksBatched(options) {
     hasMore = rows.length === batchSize;
   }
 
-  log.info('load_ticks_complete', { totalRows: offset });
+  log.info('load_rtds_ticks_complete', { totalRows: offset });
 }
 
 /**
- * Load all ticks as a single array (use for smaller datasets)
+ * Load all rtds_ticks as a single array.
  *
- * @param {LoadOptions} options - Query options
- * @returns {TickRow[]} Array of tick rows
+ * @param {LoadOptions} options
+ * @returns {Promise<Object[]>}
  */
-export function loadTicks(options) {
+export async function loadRtdsTicks(options) {
   const result = [];
-  for (const batch of loadTicksBatched(options)) {
+  for await (const batch of loadRtdsTicksBatched(options)) {
     result.push(...batch);
   }
   return result;
 }
 
 /**
- * Get tick count for a date range (for progress estimation)
+ * Get tick count for a date range.
  *
- * @param {LoadOptions} options - Query options
- * @returns {number} Count of matching ticks
+ * @param {LoadOptions} options
+ * @returns {Promise<number>}
  */
-export function getTickCount(options) {
-  const { startDate, endDate, symbols, topics } = options;
+export async function getTickCount(options) {
+  const { startDate, endDate } = options;
 
   if (!startDate || !endDate) {
     throw new Error('startDate and endDate are required');
   }
 
-  const db = getDb();
+  const { clauses, params: filterParams } = buildFilters(options);
 
   let sql = `
     SELECT COUNT(*) as count
     FROM rtds_ticks
-    WHERE timestamp >= ? AND timestamp <= ?
+    WHERE timestamp >= $1 AND timestamp <= $2
   `;
   const params = [startDate, endDate];
 
-  if (symbols && symbols.length > 0) {
-    sql += ` AND symbol IN (${symbols.map(() => '?').join(',')})`;
-    params.push(...symbols);
+  if (clauses.length > 0) {
+    sql += ' AND ' + clauses.join(' AND ');
   }
 
-  if (topics && topics.length > 0) {
-    sql += ` AND topic IN (${topics.map(() => '?').join(',')})`;
-    params.push(...topics);
-  }
-
-  const stmt = db.prepare(sql);
-  const result = stmt.get(...params);
-  return result?.count || 0;
+  const result = await persistence.get(sql, [...params, ...filterParams]);
+  return parseInt(result?.count || '0', 10);
 }
 
+// ─── CLOB Snapshots ───
+
 /**
- * Load oracle updates by date range
+ * Load CLOB price snapshots.
  *
- * @param {Object} options - Query options
- * @param {string} options.startDate - Start date ISO string
- * @param {string} options.endDate - End date ISO string
- * @param {string[]} [options.symbols] - Filter to specific symbols
- * @returns {Object[]} Array of oracle update rows
+ * @param {LoadOptions} options
+ * @returns {Promise<Object[]>}
  */
-export function loadOracleUpdates(options) {
-  const { startDate, endDate, symbols } = options;
+export async function loadClobSnapshots(options) {
+  const { startDate, endDate } = options;
 
   if (!startDate || !endDate) {
     throw new Error('startDate and endDate are required');
   }
 
-  const db = getDb();
+  const { clauses, params: filterParams } = buildFilters(options);
 
   let sql = `
-    SELECT id, timestamp, symbol, price, previous_price,
-           deviation_from_previous_pct, time_since_previous_ms
-    FROM oracle_updates
-    WHERE timestamp >= ? AND timestamp <= ?
+    SELECT timestamp, symbol, token_id, best_bid, best_ask,
+           mid_price, spread, bid_size_top, ask_size_top
+    FROM clob_price_snapshots
+    WHERE timestamp >= $1 AND timestamp <= $2
   `;
   const params = [startDate, endDate];
 
-  if (symbols && symbols.length > 0) {
-    sql += ` AND symbol IN (${symbols.map(() => '?').join(',')})`;
-    params.push(...symbols);
+  if (clauses.length > 0) {
+    sql += ' AND ' + clauses.join(' AND ');
   }
 
   sql += ' ORDER BY timestamp ASC';
 
-  const stmt = db.prepare(sql);
-  return stmt.all(...params);
+  return persistence.all(sql, [...params, ...filterParams]);
 }
 
+// ─── Exchange Ticks ───
+
 /**
- * Load trade events by date range
+ * Load exchange ticks (binance, coinbase, kraken, bybit, okx).
  *
- * @param {Object} options - Query options
- * @param {string} options.startDate - Start date ISO string
- * @param {string} options.endDate - End date ISO string
- * @param {string} [options.strategyId] - Filter to specific strategy
- * @returns {Object[]} Array of trade event rows
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @param {string[]} [options.symbols]
+ * @param {string[]} [options.exchanges] - Filter to specific exchanges
+ * @returns {Promise<Object[]>}
  */
-export function loadTradeEvents(options) {
-  const { startDate, endDate, strategyId } = options;
+export async function loadExchangeTicks(options) {
+  const { startDate, endDate } = options;
 
   if (!startDate || !endDate) {
     throw new Error('startDate and endDate are required');
   }
 
-  const db = getDb();
+  const { clauses, params: filterParams } = buildFilters(options);
 
   let sql = `
-    SELECT *
-    FROM trade_events
-    WHERE created_at >= ? AND created_at <= ?
+    SELECT timestamp, exchange, symbol, price, bid, ask
+    FROM exchange_ticks
+    WHERE timestamp >= $1 AND timestamp <= $2
   `;
   const params = [startDate, endDate];
 
-  if (strategyId) {
-    sql += ' AND strategy_id = ?';
-    params.push(strategyId);
-  }
-
-  sql += ' ORDER BY created_at ASC';
-
-  const stmt = db.prepare(sql);
-  return stmt.all(...params);
-}
-
-/**
- * Load lag signals by date range
- *
- * @param {Object} options - Query options
- * @param {string} options.startDate - Start date ISO string
- * @param {string} options.endDate - End date ISO string
- * @param {string[]} [options.symbols] - Filter to specific symbols
- * @returns {Object[]} Array of lag signal rows
- */
-export function loadLagSignals(options) {
-  const { startDate, endDate, symbols } = options;
-
-  if (!startDate || !endDate) {
-    throw new Error('startDate and endDate are required');
-  }
-
-  const db = getDb();
-
-  let sql = `
-    SELECT *
-    FROM lag_signals
-    WHERE timestamp >= ? AND timestamp <= ?
-  `;
-  const params = [startDate, endDate];
-
-  if (symbols && symbols.length > 0) {
-    sql += ` AND symbol IN (${symbols.map(() => '?').join(',')})`;
-    params.push(...symbols);
+  if (clauses.length > 0) {
+    sql += ' AND ' + clauses.join(' AND ');
   }
 
   sql += ' ORDER BY timestamp ASC';
 
-  const stmt = db.prepare(sql);
-  return stmt.all(...params);
+  return persistence.all(sql, [...params, ...filterParams]);
 }
 
-/**
- * Get available date range for tick data
- *
- * @returns {{ earliest: string|null, latest: string|null }} Date range
- */
-export function getTickDateRange() {
-  const db = getDb();
+// ─── Window Close Events ───
 
-  const stmt = db.prepare(`
+/**
+ * Load window close events (ground truth for resolution).
+ *
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @param {string[]} [options.symbols]
+ * @returns {Promise<Object[]>}
+ */
+export async function loadWindowEvents(options) {
+  const { startDate, endDate } = options;
+
+  if (!startDate || !endDate) {
+    throw new Error('startDate and endDate are required');
+  }
+
+  const { clauses, params: filterParams } = buildFilters(options);
+
+  let sql = `
+    SELECT window_close_time, symbol, strike_price,
+           chainlink_price_at_close,
+           COALESCE(resolved_direction,
+             CASE WHEN chainlink_price_at_close > strike_price THEN 'UP' ELSE 'DOWN' END
+           ) as resolved_direction,
+           polymarket_binance_at_close, binance_price_at_close,
+           oracle_price_at_close, pyth_price_at_close,
+           market_up_price_60s, market_up_price_30s, market_up_price_10s,
+           market_up_price_5s, market_up_price_1s,
+           market_down_price_60s, market_down_price_30s, market_down_price_10s,
+           market_down_price_5s, market_down_price_1s,
+           market_consensus_direction, market_consensus_confidence,
+           surprise_resolution
+    FROM window_close_events
+    WHERE window_close_time >= $1 AND window_close_time <= $2
+  `;
+  const params = [startDate, endDate];
+
+  if (clauses.length > 0) {
+    sql += ' AND ' + clauses.join(' AND ');
+  }
+
+  sql += ' ORDER BY window_close_time ASC';
+
+  return persistence.all(sql, [...params, ...filterParams]);
+}
+
+// ─── Merged Timeline ───
+
+/**
+ * Load all data sources and merge into a single sorted timeline.
+ * Each event is tagged with a `source` field.
+ *
+ * @param {LoadOptions} options
+ * @returns {Promise<Object[]>} Sorted array of events
+ */
+export async function loadMergedTimeline(options) {
+  const [rtdsTicks, clobSnapshots, exchangeTicks] = await Promise.all([
+    loadRtdsTicks(options),
+    loadClobSnapshots(options),
+    loadExchangeTicks(options),
+  ]);
+
+  const timeline = [];
+
+  for (const tick of rtdsTicks) {
+    const topic = tick.topic;
+    let source;
+    if (topic === 'crypto_prices_chainlink') {
+      source = 'chainlink';
+    } else if (topic === 'crypto_prices') {
+      source = 'polyRef';
+    } else {
+      source = `rtds_${topic}`;
+    }
+    timeline.push({ ...tick, source });
+  }
+
+  for (const snap of clobSnapshots) {
+    // symbol is 'btc-down' or 'btc-up' etc.
+    const isDown = snap.symbol?.toLowerCase().includes('down');
+    const source = isDown ? 'clobDown' : 'clobUp';
+    timeline.push({ ...snap, source });
+  }
+
+  for (const tick of exchangeTicks) {
+    timeline.push({ ...tick, source: `exchange_${tick.exchange}` });
+  }
+
+  // Sort by timestamp, stable
+  timeline.sort((a, b) => {
+    const tA = new Date(a.timestamp).getTime();
+    const tB = new Date(b.timestamp).getTime();
+    return tA - tB;
+  });
+
+  log.info('load_merged_timeline', {
+    rtdsTicks: rtdsTicks.length,
+    clobSnapshots: clobSnapshots.length,
+    exchangeTicks: exchangeTicks.length,
+    totalEvents: timeline.length,
+  });
+
+  return timeline;
+}
+
+// ─── Utility ───
+
+/**
+ * Get available date range for tick data.
+ *
+ * @returns {Promise<{ earliest: string|null, latest: string|null }>}
+ */
+export async function getTickDateRange() {
+  const result = await persistence.get(`
     SELECT MIN(timestamp) as earliest, MAX(timestamp) as latest
     FROM rtds_ticks
   `);
-
-  const result = stmt.get();
   return {
     earliest: result?.earliest || null,
     latest: result?.latest || null,
@@ -278,27 +351,21 @@ export function getTickDateRange() {
 }
 
 /**
- * Get available symbols in tick data
+ * Get available symbols in tick data.
  *
- * @returns {string[]} Array of unique symbols
+ * @returns {Promise<string[]>}
  */
-export function getAvailableSymbols() {
-  const db = getDb();
-
-  const stmt = db.prepare('SELECT DISTINCT symbol FROM rtds_ticks ORDER BY symbol');
-  const rows = stmt.all();
+export async function getAvailableSymbols() {
+  const rows = await persistence.all('SELECT DISTINCT symbol FROM rtds_ticks ORDER BY symbol');
   return rows.map(r => r.symbol);
 }
 
 /**
- * Get available topics in tick data
+ * Get available topics in tick data.
  *
- * @returns {string[]} Array of unique topics
+ * @returns {Promise<string[]>}
  */
-export function getAvailableTopics() {
-  const db = getDb();
-
-  const stmt = db.prepare('SELECT DISTINCT topic FROM rtds_ticks ORDER BY topic');
-  const rows = stmt.all();
+export async function getAvailableTopics() {
+  const rows = await persistence.all('SELECT DISTINCT topic FROM rtds_ticks ORDER BY topic');
   return rows.map(r => r.topic);
 }

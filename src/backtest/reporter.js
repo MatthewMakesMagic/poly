@@ -2,9 +2,10 @@
  * Backtest Report Generator
  *
  * Outputs backtest results in JSON and CSV formats.
+ * Includes edge_summary, per_window, and optional decision_log sections.
  */
 
-import { calculateMetrics, calculateSubsetMetrics } from './metrics.js';
+import { calculateMetrics, calculateBinaryMetrics, calculatePerWindowMetrics } from './metrics.js';
 
 /**
  * @typedef {Object} ReportOptions
@@ -15,10 +16,10 @@ import { calculateMetrics, calculateSubsetMetrics } from './metrics.js';
  */
 
 /**
- * Generate a formatted report from backtest results
+ * Generate a formatted report from backtest results.
  *
  * @param {Object} result - Backtest result from engine.runBacktest()
- * @param {ReportOptions} [options] - Report options
+ * @param {ReportOptions} [options]
  * @returns {string} Formatted report string
  */
 export function generateReport(result, options = {}) {
@@ -29,29 +30,20 @@ export function generateReport(result, options = {}) {
     compact = false,
   } = options;
 
-  // Calculate full metrics
   const metrics = calculateMetrics(result);
-
-  // Build report object
   const report = buildReportObject(result, metrics, { includeTrades, includeEquityCurve });
 
   if (format === 'csv') {
     return generateCsvReport(report, result.trades, includeTrades);
   }
 
-  // JSON format
   return compact
     ? JSON.stringify(report)
     : JSON.stringify(report, null, 2);
 }
 
 /**
- * Build the report object structure
- *
- * @param {Object} result - Backtest result
- * @param {Object} metrics - Calculated metrics
- * @param {Object} options - Report options
- * @returns {Object} Report object
+ * Build the report object.
  */
 function buildReportObject(result, metrics, options) {
   const { includeTrades, includeEquityCurve } = options;
@@ -77,30 +69,54 @@ function buildReportObject(result, metrics, options) {
       avg_loss: round(metrics.avgLoss, 4),
       payoff_ratio: round(metrics.payoffRatio, 2),
       final_capital: round(result.summary.finalCapital, 2),
-      ticks_processed: result.summary.ticksProcessed,
+      events_processed: result.summary.eventsProcessed || result.summary.ticksProcessed || 0,
+      windows_processed: result.summary.windowsProcessed || 0,
     },
-    by_symbol: {},
   };
 
-  // Add by-symbol breakdown
-  for (const [symbol, stats] of Object.entries(result.bySymbol)) {
-    report.by_symbol[symbol] = {
-      trade_count: stats.tradeCount,
-      win_count: stats.winCount,
-      win_rate: round(stats.winRate, 4),
-      total_pnl: round(stats.totalPnl, 2),
-      signal_count: stats.signalCount || 0,
-      entry_count: stats.entryCount || 0,
-      exit_count: stats.exitCount || 0,
+  // Edge summary (binary option specific)
+  const binaryMetrics = calculateBinaryMetrics(result.trades);
+  report.edge_summary = {
+    win_rate: round(binaryMetrics.winRate, 4),
+    avg_entry_price: round(binaryMetrics.avgEntryPrice, 4),
+    edge_per_trade: round(binaryMetrics.edgeCaptured, 4),
+    ev_per_trade: round(binaryMetrics.evPerTrade, 4),
+    total_ev: round(binaryMetrics.totalEV, 2),
+    total_trades: binaryMetrics.totalTrades,
+  };
+
+  // Per-window results
+  if (result.windowResults && result.windowResults.length > 0) {
+    const perWindow = calculatePerWindowMetrics(result.trades, result.windowResults);
+    report.per_window = {
+      windows: perWindow.windows.map(w => ({
+        close_time: w.windowCloseTime,
+        symbol: w.symbol,
+        strike: w.strike,
+        chainlink_close: w.chainlinkClose,
+        resolved: w.resolvedDirection,
+        pnl: round(w.pnl, 4),
+        trades: w.trades,
+        accuracy: w.accuracy != null ? round(w.accuracy, 4) : null,
+      })),
+      by_time_of_day: perWindow.byTimeOfDay,
+      by_deficit_bucket: perWindow.byDeficitBucket,
+      contested_accuracy: round(perWindow.contestedWindowAccuracy, 4),
+      decided_accuracy: round(perWindow.decidedWindowAccuracy, 4),
     };
   }
 
-  // Optionally include trades
+  // Decision log (verbose only)
+  if (result.decisionLog && result.decisionLog.length > 0) {
+    report.decision_log = result.decisionLog;
+  }
+
+  // Individual trades
   if (includeTrades) {
     report.trades = result.trades.map(formatTrade);
   }
 
-  // Optionally include equity curve
+  // Equity curve
   if (includeEquityCurve) {
     report.equity_curve = result.equityCurve.map(v => round(v, 2));
   }
@@ -109,46 +125,35 @@ function buildReportObject(result, metrics, options) {
 }
 
 /**
- * Format a trade for report output
- *
- * @param {Object} trade - Trade object
- * @returns {Object} Formatted trade
+ * Format a trade for report output.
  */
 function formatTrade(trade) {
   return {
     id: trade.id,
-    symbol: trade.symbol,
-    direction: trade.direction,
-    entry_price: round(trade.entryPrice, 6),
-    exit_price: round(trade.exitPrice, 6),
+    token: trade.token,
+    entry_price: round(trade.entryPrice, 4),
     size: trade.size,
+    cost: round(trade.cost, 4),
+    payout: trade.payout != null ? round(trade.payout, 4) : null,
     pnl: round(trade.pnl, 4),
-    pnl_pct: round(trade.pnlPct * 100, 2),
-    entry_time: trade.entryTimestamp,
+    entry_time: trade.timestamp,
     exit_time: trade.exitTimestamp,
-    duration_ms: trade.durationMs,
     exit_reason: trade.exitReason,
+    reason: trade.reason,
   };
 }
 
 /**
- * Generate CSV format report
- *
- * @param {Object} report - Report object
- * @param {Object[]} trades - Trades array
- * @param {boolean} includeTrades - Whether to include trades
- * @returns {string} CSV formatted string
+ * Generate CSV format report.
  */
 function generateCsvReport(report, trades, includeTrades) {
   const lines = [];
 
-  // Summary section
   lines.push('# Backtest Summary');
   lines.push(`Strategy,${report.strategy}`);
   lines.push(`Period,${report.period.start} to ${report.period.end}`);
   lines.push('');
 
-  // Summary metrics
   lines.push('# Summary Metrics');
   lines.push('Metric,Value');
   for (const [key, value] of Object.entries(report.summary)) {
@@ -157,50 +162,32 @@ function generateCsvReport(report, trades, includeTrades) {
   }
   lines.push('');
 
-  // By-symbol breakdown
-  if (Object.keys(report.by_symbol).length > 0) {
-    lines.push('# Performance by Symbol');
-    const symbolHeaders = ['Symbol', 'Trades', 'Wins', 'Win Rate', 'Total PnL', 'Signals', 'Entries', 'Exits'];
-    lines.push(symbolHeaders.join(','));
-
-    for (const [symbol, stats] of Object.entries(report.by_symbol)) {
-      lines.push([
-        symbol,
-        stats.trade_count,
-        stats.win_count,
-        stats.win_rate,
-        stats.total_pnl,
-        stats.signal_count,
-        stats.entry_count,
-        stats.exit_count,
-      ].join(','));
-    }
-    lines.push('');
+  lines.push('# Edge Summary');
+  lines.push('Metric,Value');
+  for (const [key, value] of Object.entries(report.edge_summary)) {
+    const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    lines.push(`${label},${value}`);
   }
+  lines.push('');
 
-  // Individual trades
   if (includeTrades && trades && trades.length > 0) {
     lines.push('# Individual Trades');
-    const tradeHeaders = [
-      'ID', 'Symbol', 'Direction', 'Entry Price', 'Exit Price',
-      'Size', 'PnL', 'PnL %', 'Entry Time', 'Exit Time', 'Duration (ms)', 'Exit Reason',
-    ];
-    lines.push(tradeHeaders.join(','));
+    const headers = ['ID', 'Token', 'Entry Price', 'Size', 'Cost', 'Payout', 'PnL', 'Entry Time', 'Exit Time', 'Exit Reason', 'Reason'];
+    lines.push(headers.join(','));
 
     for (const trade of trades) {
       lines.push([
         trade.id,
-        trade.symbol,
-        trade.direction,
-        round(trade.entryPrice, 6),
-        round(trade.exitPrice, 6),
+        trade.token,
+        round(trade.entryPrice, 4),
         trade.size,
+        round(trade.cost, 4),
+        trade.payout != null ? round(trade.payout, 4) : '',
         round(trade.pnl, 4),
-        round(trade.pnlPct * 100, 2),
-        trade.entryTimestamp,
-        trade.exitTimestamp,
-        trade.durationMs,
-        trade.exitReason,
+        trade.timestamp,
+        trade.exitTimestamp || '',
+        trade.exitReason || '',
+        trade.reason || '',
       ].join(','));
     }
   }
@@ -209,11 +196,7 @@ function generateCsvReport(report, trades, includeTrades) {
 }
 
 /**
- * Round a number to specified decimal places
- *
- * @param {number} value - Value to round
- * @param {number} decimals - Decimal places
- * @returns {number} Rounded value
+ * Round a number to specified decimal places.
  */
 function round(value, decimals) {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -223,72 +206,60 @@ function round(value, decimals) {
 }
 
 /**
- * Generate a comparison report for multiple backtests
+ * Generate a comparison report for parameter sweep results.
+ * Ranks by EV per trade.
  *
- * @param {Object[]} results - Array of backtest results
- * @param {string[]} [labels] - Labels for each result
+ * @param {Object[]} sweepResults - Array of { params, result }
  * @returns {Object} Comparison report
  */
-export function generateComparisonReport(results, labels) {
-  const comparison = {
-    strategies: [],
-    best: {
-      sharpe: null,
-      return: null,
-      winRate: null,
-      drawdown: null,
-    },
-  };
+export function generateComparisonReport(sweepResults) {
+  if (!sweepResults || sweepResults.length === 0) {
+    return { strategies: [], best: null };
+  }
 
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    const metrics = calculateMetrics(result);
-    const label = labels?.[i] || `Strategy ${i + 1}`;
+  const strategies = sweepResults.map(({ params, result }) => {
+    const binaryMetrics = calculateBinaryMetrics(result.trades);
+    const perfMetrics = calculateMetrics(result);
 
-    const strategyData = {
-      name: label,
+    return {
+      params,
       total_trades: result.summary.totalTrades,
       win_rate: round(result.summary.winRate, 4),
       total_pnl: round(result.summary.totalPnl, 2),
       return_pct: round(result.summary.returnPct * 100, 2),
-      sharpe_ratio: round(metrics.sharpeRatio, 2),
-      max_drawdown_pct: round(metrics.maxDrawdown * 100, 2),
+      ev_per_trade: round(binaryMetrics.evPerTrade, 4),
+      total_ev: round(binaryMetrics.totalEV, 2),
+      edge_captured: round(binaryMetrics.edgeCaptured, 4),
+      sharpe_ratio: round(perfMetrics.sharpeRatio, 2),
+      max_drawdown_pct: round(perfMetrics.maxDrawdown * 100, 2),
+      windows_processed: result.summary.windowsProcessed || 0,
     };
+  });
 
-    comparison.strategies.push(strategyData);
+  // Sort by EV per trade descending
+  strategies.sort((a, b) => b.ev_per_trade - a.ev_per_trade);
 
-    // Track best performers
-    if (!comparison.best.sharpe || metrics.sharpeRatio > comparison.best.sharpe.value) {
-      comparison.best.sharpe = { name: label, value: metrics.sharpeRatio };
-    }
-    if (!comparison.best.return || result.summary.returnPct > comparison.best.return.value) {
-      comparison.best.return = { name: label, value: result.summary.returnPct };
-    }
-    if (!comparison.best.winRate || result.summary.winRate > comparison.best.winRate.value) {
-      comparison.best.winRate = { name: label, value: result.summary.winRate };
-    }
-    if (!comparison.best.drawdown || metrics.maxDrawdown < comparison.best.drawdown.value) {
-      comparison.best.drawdown = { name: label, value: metrics.maxDrawdown };
-    }
-  }
-
-  return comparison;
+  return {
+    strategies,
+    best: strategies.length > 0 ? strategies[0] : null,
+  };
 }
 
 /**
- * Print a summary to console (for CLI)
+ * Print a summary to console.
  *
  * @param {Object} result - Backtest result
  */
 export function printSummary(result) {
   const metrics = calculateMetrics(result);
+  const binaryMetrics = calculateBinaryMetrics(result.trades);
 
   console.log('\n========================================');
   console.log('           BACKTEST RESULTS');
   console.log('========================================\n');
 
+  console.log(`Strategy: ${result.config.strategyName || 'unknown'}`);
   console.log(`Period: ${result.config.startDate} to ${result.config.endDate}`);
-  console.log(`Symbols: ${Array.isArray(result.config.symbols) ? result.config.symbols.join(', ') : 'all'}`);
   console.log('');
 
   console.log('--- Performance ---');
@@ -296,29 +267,20 @@ export function printSummary(result) {
   console.log(`Win Rate:         ${(result.summary.winRate * 100).toFixed(1)}%`);
   console.log(`Total P&L:        $${result.summary.totalPnl.toFixed(2)}`);
   console.log(`Return:           ${(result.summary.returnPct * 100).toFixed(2)}%`);
+  console.log(`Windows:          ${result.summary.windowsProcessed || 0}`);
+  console.log('');
+
+  console.log('--- Edge Summary ---');
+  console.log(`Avg Entry Price:  ${binaryMetrics.avgEntryPrice.toFixed(4)}`);
+  console.log(`Edge Captured:    ${binaryMetrics.edgeCaptured.toFixed(4)}`);
+  console.log(`EV Per Trade:     $${binaryMetrics.evPerTrade.toFixed(4)}`);
+  console.log(`Total EV:         $${binaryMetrics.totalEV.toFixed(2)}`);
   console.log('');
 
   console.log('--- Risk Metrics ---');
   console.log(`Sharpe Ratio:     ${metrics.sharpeRatio.toFixed(2)}`);
-  console.log(`Sortino Ratio:    ${metrics.sortinoRatio.toFixed(2)}`);
   console.log(`Max Drawdown:     ${(metrics.maxDrawdown * 100).toFixed(2)}%`);
-  console.log(`Calmar Ratio:     ${metrics.calmarRatio.toFixed(2)}`);
-  console.log('');
-
-  console.log('--- Trade Analysis ---');
   console.log(`Profit Factor:    ${metrics.profitFactor.toFixed(2)}`);
-  console.log(`Expectancy:       $${metrics.expectancy.toFixed(4)}`);
-  console.log(`Avg Win:          $${metrics.avgWin.toFixed(4)}`);
-  console.log(`Avg Loss:         $${metrics.avgLoss.toFixed(4)}`);
-  console.log(`Payoff Ratio:     ${metrics.payoffRatio.toFixed(2)}`);
-  console.log('');
-
-  if (Object.keys(result.bySymbol).length > 0) {
-    console.log('--- By Symbol ---');
-    for (const [symbol, stats] of Object.entries(result.bySymbol)) {
-      console.log(`  ${symbol}: ${stats.tradeCount} trades, ${(stats.winRate * 100).toFixed(1)}% win rate, $${stats.totalPnl.toFixed(2)} P&L`);
-    }
-  }
 
   console.log('\n========================================\n');
 }
