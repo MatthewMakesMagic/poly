@@ -23,10 +23,10 @@ export const ExchangeFeedCollectorErrorCodes = {
 export const DEFAULT_CONFIG = {
   /** Polling interval in milliseconds */
   pollIntervalMs: 1000,
-  /** Batch size for database inserts */
-  batchSize: 100,
+  /** Batch size for database inserts (21 exchanges × 4 cryptos = 84 ticks/cycle) */
+  batchSize: 200,
   /** Max buffer before overflow */
-  maxBufferSize: 1000,
+  maxBufferSize: 5000,
   /** Retention in days */
   retentionDays: 30,
 };

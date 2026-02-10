@@ -2,24 +2,51 @@
  * CCXT Client Wrapper
  *
  * Unified multi-exchange price data client using the CCXT library.
- * Supports: Binance, Coinbase, Kraken, Bybit, OKX
+ * Captures 21 exchanges to maximize oracle coverage.
  *
  * @module clients/ccxt
  */
 
 import ccxt from 'ccxt';
 
-const EXCHANGES = ['binance', 'coinbaseexchange', 'kraken', 'bybit', 'okx'];
+const EXCHANGES = [
+  // --- Original 5 ---
+  'binance',
+  'coinbaseexchange',
+  'kraken',
+  'bybit',
+  'okx',
+  // --- New: likely in Chainlink oracle feed ---
+  'bitstamp',
+  'gemini',
+  'bitfinex',
+  'htx',
+  'gateio',
+  'kucoin',
+  'mexc',
+  'cryptocom',
+  'bitget',
+  // --- New: additional coverage ---
+  'upbit',
+  'poloniex',
+  'whitebit',
+  'bingx',
+  'lbank',
+  'phemex',
+  'bitmart',
+];
 
-const SYMBOLS = {
+// Exchanges that use USD pairs (rest use USDT)
+const USD_EXCHANGES = new Set(['coinbaseexchange', 'bitstamp', 'gemini', 'bitfinex']);
+
+const USDT_SYMBOLS = {
   btc: 'BTC/USDT',
   eth: 'ETH/USDT',
   sol: 'SOL/USDT',
   xrp: 'XRP/USDT',
 };
 
-// Coinbase Exchange uses USD pairs
-const COINBASE_SYMBOLS = {
+const USD_SYMBOLS = {
   btc: 'BTC/USD',
   eth: 'ETH/USD',
   sol: 'SOL/USD',
@@ -55,7 +82,7 @@ export async function init() {
 export async function fetchTicker(exchange, crypto) {
   if (!exchanges[exchange]) return null;
 
-  const symbolMap = exchange === 'coinbaseexchange' ? COINBASE_SYMBOLS : SYMBOLS;
+  const symbolMap = USD_EXCHANGES.has(exchange) ? USD_SYMBOLS : USDT_SYMBOLS;
   const ccxtSymbol = symbolMap[crypto];
   if (!ccxtSymbol) return null;
 
@@ -85,7 +112,7 @@ export function getExchanges() {
  * @returns {string[]}
  */
 export function getCryptos() {
-  return Object.keys(SYMBOLS);
+  return Object.keys(USDT_SYMBOLS);
 }
 
 /**
