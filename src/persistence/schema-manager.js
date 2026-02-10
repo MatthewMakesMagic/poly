@@ -26,6 +26,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  */
 export async function applySchema() {
   try {
+    // Skip DDL if core tables already exist (required for Supabase transaction pooler
+    // which rejects CREATE TABLE in read-only transactions)
+    const hasSchema = await tableExists('trade_intents') && await tableExists('schema_migrations');
+    if (hasSchema) {
+      log.info('schema_already_exists', { msg: 'Skipping DDL - tables already present' });
+      return;
+    }
+
     const schemaPath = join(__dirname, 'schema.sql');
     const schema = readFileSync(schemaPath, 'utf-8');
     await exec(schema);
