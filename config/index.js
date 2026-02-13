@@ -448,6 +448,15 @@ const config = {
     autoLoadOnInit: true,
   },
 
+  // Exchange trade collector (WebSocket VWAP)
+  exchangeTradeCollector: {
+    cryptos: ['btc', 'eth', 'sol', 'xrp'],
+    vwapWindowMs: 10000,
+    snapshotIntervalMs: 1000,
+    retentionDays: 30,
+    maxTradesPerBuffer: 5000,
+  },
+
   // Backtest configuration
   backtest: {
     tickBatchSize: 10000,

@@ -40,7 +40,7 @@ async function queryOne(sql, params = []) {
  * For a given window close time, get the market state at a specific point
  * within the entry window. Returns chainlink, polyRef, clobDown.
  */
-async function getMarketStateAt(timestamp) {
+async function getMarketStateAt(timestamp, windowEpoch) {
   // Latest chainlink tick at or before timestamp
   const [chainlink, polyRef, clobDown] = await Promise.all([
     queryOne(`
@@ -57,8 +57,10 @@ async function getMarketStateAt(timestamp) {
       SELECT best_bid, best_ask, mid_price, spread, timestamp
       FROM clob_price_snapshots
       WHERE symbol = 'btc-down' AND timestamp <= $1
+        AND window_epoch = $2
+        AND timestamp >= to_timestamp($2)
       ORDER BY timestamp DESC LIMIT 1
-    `, [timestamp]),
+    `, [timestamp, windowEpoch]),
   ]);
 
   return { chainlink, polyRef, clobDown };
@@ -70,6 +72,7 @@ async function getMarketStateAt(timestamp) {
  */
 async function getEntryWindowSnapshots(closeTime, entryWindowMs) {
   const closeMs = new Date(closeTime).getTime();
+  const windowEpoch = Math.floor(closeMs / 1000) - 900; // 15-min window start epoch
   const sampleOffsets = [
     entryWindowMs,            // start of entry window
     entryWindowMs * 2 / 3,    // 1/3 into entry window
@@ -80,7 +83,7 @@ async function getEntryWindowSnapshots(closeTime, entryWindowMs) {
   const snapshots = [];
   for (const offset of sampleOffsets) {
     const sampleTime = new Date(closeMs - offset).toISOString();
-    const state = await getMarketStateAt(sampleTime);
+    const state = await getMarketStateAt(sampleTime, windowEpoch);
     snapshots.push({
       timestamp: sampleTime,
       timeToCloseMs: offset,
@@ -209,12 +212,13 @@ async function main() {
   for (let i = 0; i < windows.length; i++) {
     const win = windows[i];
     const closeMs = new Date(win.window_close_time).getTime();
+    const windowEpoch = Math.floor(closeMs / 1000) - 900;
     const strike = parseFloat(win.strike_price);
 
     const samples = {};
     for (const offset of sampleOffsets) {
       const sampleTime = new Date(closeMs - offset).toISOString();
-      const state = await getMarketStateAt(sampleTime);
+      const state = await getMarketStateAt(sampleTime, windowEpoch);
       samples[offset] = {
         chainlinkPrice: state.chainlink ? parseFloat(state.chainlink.price) : null,
         polyRefPrice: state.polyRef ? parseFloat(state.polyRef.price) : null,

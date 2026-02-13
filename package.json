@@ -30,6 +30,7 @@
     "ethers": "^6.16.0",
     "node-cron": "^4.2.1",
     "pg": "^8.18.0",
+    "protobufjs": "^8.0.0",
     "simple-statistics": "^7.8.0",
     "uuid": "^9.0.0",
     "ws": "^8.16.0"

@@ -18,6 +18,7 @@ const log = child({ module: 'backtest:data-loader' });
  * @property {string[]} [symbols] - Filter to specific symbols
  * @property {string[]} [topics] - Filter to specific topics
  * @property {number} [batchSize=10000] - Number of rows per batch (rtds_ticks only)
+ * @property {number} [windowEpoch] - Window start epoch for CLOB queries (filters to active window only)
  */
 
 /**
@@ -163,7 +164,7 @@ export async function getTickCount(options) {
  * @returns {Promise<Object[]>}
  */
 export async function loadClobSnapshots(options) {
-  const { startDate, endDate } = options;
+  const { startDate, endDate, windowEpoch } = options;
 
   if (!startDate || !endDate) {
     throw new Error('startDate and endDate are required');
@@ -178,6 +179,12 @@ export async function loadClobSnapshots(options) {
     WHERE timestamp >= $1 AND timestamp <= $2
   `;
   const params = [startDate, endDate];
+
+  // Filter to active window period only (excludes pre-window data at $0.50)
+  if (windowEpoch) {
+    sql += ` AND window_epoch = $${params.length + 1} AND timestamp >= to_timestamp($${params.length + 1})`;
+    params.push(windowEpoch);
+  }
 
   if (clauses.length > 0) {
     sql += ' AND ' + clauses.join(' AND ');

@@ -54,6 +54,7 @@ import * as orderBookCollector from '../order-book-collector/index.js';
 // FINDTHEGOLD data capture modules
 import * as clobPriceLogger from '../clob-price-logger/index.js';
 import * as exchangeFeedCollector from '../exchange-feed-collector/index.js';
+import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 // Strategy composition integration (Story 7-12)
 import {
@@ -122,6 +123,7 @@ const MODULE_MAP = {
   // FINDTHEGOLD data capture modules
   'clob-price-logger': clobPriceLogger,
   'exchange-feed-collector': exchangeFeedCollector,
+  'exchange-trade-collector': exchangeTradeCollector,
 };
 
 // PID file path for kill switch watchdog integration

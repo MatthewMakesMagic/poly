@@ -120,13 +120,15 @@ async function getPolyRefAt(timestamp) {
   `, [timestamp]);
 }
 
-async function getClobAt(symbol, timestamp) {
+async function getClobAt(symbol, timestamp, windowEpoch) {
   return queryOne(`
     SELECT best_bid, best_ask, mid_price, spread, timestamp
     FROM clob_price_snapshots
     WHERE symbol = $1 AND timestamp <= $2
+      AND window_epoch = $3
+      AND timestamp >= to_timestamp($3)
     ORDER BY timestamp DESC LIMIT 1
-  `, [symbol, timestamp]);
+  `, [symbol, timestamp, windowEpoch]);
 }
 
 async function getExchangeAt(exchange, timestamp) {
@@ -144,6 +146,7 @@ async function populateWindow(win, sampleIntervalMs = 10000) {
   const windowDurationMs = 300000; // 5 min
   const strike = parseFloat(win.strike_price);
   const symbol = win.symbol;
+  const windowEpoch = Math.floor(closeMs / 1000) - 900; // 15-min window start epoch
 
   // Generate offsets: 300000, 290000, ..., 10000, 0
   const offsets = [];
@@ -161,8 +164,8 @@ async function populateWindow(win, sampleIntervalMs = 10000) {
       await Promise.all([
         getChainlinkAt(sampleTime),
         getPolyRefAt(sampleTime),
-        getClobAt(`${symbol}-down`, sampleTime),
-        getClobAt(`${symbol}-up`, sampleTime),
+        getClobAt(`${symbol}-down`, sampleTime, windowEpoch),
+        getClobAt(`${symbol}-up`, sampleTime, windowEpoch),
         getExchangeAt('binance', sampleTime),
         getExchangeAt('coinbaseexchange', sampleTime),
         getExchangeAt('kraken', sampleTime),
@@ -326,10 +329,11 @@ async function main() {
       new Date(sampleState.window_close_time).getTime() - sampleState.offset_ms
     ).toISOString();
 
+    const sampleWindowEpoch = Math.floor(new Date(sampleState.window_close_time).getTime() / 1000) - 900;
     const [liveCL, liveRef, liveClobDown] = await Promise.all([
       getChainlinkAt(sampleTime),
       getPolyRefAt(sampleTime),
-      getClobAt(`${sampleState.symbol}-down`, sampleTime),
+      getClobAt(`${sampleState.symbol}-down`, sampleTime, sampleWindowEpoch),
     ]);
 
     console.log(`  Window: ${sampleState.window_close_time}, offset: ${sampleState.offset_ms}ms`);
