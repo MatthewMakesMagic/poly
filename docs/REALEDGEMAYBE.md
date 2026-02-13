@@ -755,15 +755,71 @@ CL values end up in two tables through two independent collection paths:
 - Falls back to previous window's `oracle_price_at_close` (consecutive windows share boundaries)
 - Self-resolves immediately at close time — no longer depends on Gamma API `market.closed` (which was timing out after 60s, leaving `resolved_direction` NULL for all rows)
 
-#### 5. Data Integrity Summary
+#### 5. On-Chain Cross-Check (2026-02-13)
+
+We verified our RTDS-derived resolution against the **actual on-chain CTF (Conditional Token Framework) payouts** on Polygon.
+
+**Method:**
+1. For each BTC window, fetch `conditionId` from Polymarket's Gamma API
+2. Read `payoutNumerators(conditionId, 0)` and `payoutNumerators(conditionId, 1)` from the CTF contract (`0x4d97dcd97ec945f40cf65f87097ace5ea0476045`) via Multicall3
+3. `payouts = [1, 0]` → UP won on-chain; `payouts = [0, 1]` → DOWN won on-chain
+4. Compare against our `CL@close >= CL@open` computed from RTDS/vwap_snapshots
+
+**Results: 127/137 (92.7%) match**
+
+10 mismatches, all on tiny CL moves:
+
+| Window | Our call | On-chain | |CL move| |
+|--------|----------|----------|---------:|
+| btc-15m-1770948900 | UP | DOWN | $1.40 |
+| btc-15m-1770953400 | UP | DOWN | $2.49 |
+| btc-15m-1770977700 | DOWN | UP | $6.94 |
+| btc-15m-1770932700 | DOWN | UP | $7.45 |
+| btc-15m-1770947100 | DOWN | UP | $8.41 |
+| btc-15m-1770973200 | UP | DOWN | $11.04 |
+| btc-15m-1770873300 | DOWN | UP | $12.37 |
+| btc-15m-1770862500 | DOWN | UP | $33.28 |
+| btc-15m-1770876000 | UP | DOWN | $46.80 |
+| btc-15m-1770907500 | UP | DOWN | $48.01 |
+
+**Average mismatch CL move: $17.82. All < $50.**
+
+**Root cause:** Our CL@open and CL@close come from RTDS snapshots taken at ~1-second granularity, matched to window boundaries via nearest-timestamp lookup (±5s tolerance). The on-chain resolution uses the *exact* Chainlink Data Streams report at the precise open/close epoch (submitted by Chainlink Automation ~55s after close). On tiny moves, our 1-3 second timing drift is enough to flip the direction — a price that was $66,500.23 at second N becomes $66,501.63 at second N+2, and the on-chain resolver sampled at second N+1 where it was $66,499.
+
+**Impact on strategy:** None. The VWAP edge strategy with $75+ delta threshold only trades large CL moves. All 10 mismatches are on moves < $50. Strategy 2's 9/9 record on $75+ moves would be unaffected.
+
+**Fix implemented (2026-02-13):** The production system now reads on-chain resolution after each window close, storing both perceived and actual directions:
+
+1. **`conditionId` capture:** `window-manager/fetchMarket()` now returns the Gamma API `conditionId` for each market. This is captured during interval price snapshots and stored in `window_close_events.condition_id`.
+
+2. **On-chain resolution reader:** After self-resolving at close (perceived direction from RTDS), the recorder schedules an on-chain check:
+   - First attempt at T+60s (resolution typically lands at T+55s)
+   - Retries every 15s, max wait 180s
+   - Reads `payoutDenominator(conditionId)` and `payoutNumerators(conditionId, 0/1)` from CTF contract (`0x4d97dcd97ec945f40cf65f87097ace5ea0476045`) via raw `eth_call` to `polygon-rpc.com`
+   - If `payoutDenominator > 0`: market is resolved; `payoutNumerators[0] > payoutNumerators[1]` → UP, else DOWN
+   - Stores result in `window_close_events.onchain_resolved_direction`
+
+3. **Two-column resolution model:**
+   - `resolved_direction` — perceived direction from RTDS CL@close >= CL@open (available immediately at close)
+   - `onchain_resolved_direction` — ground truth from CTF contract (available ~60s after close)
+   - Both are stored for every window, enabling ongoing accuracy monitoring
+
+4. **No Multicall3 needed in production:** Unlike the batch verification script (`verify-onchain-resolution.cjs`), the production reader checks one window at a time via simple `eth_call`. No ethers.js dependency — raw HTTPS to Polygon RPC.
+
+Migration: `028-onchain-resolved-direction.js` adds `onchain_resolved_direction VARCHAR(10)` and `condition_id VARCHAR(66)` columns.
+
+See `src/backtest/verify-onchain-resolution.cjs` for the batch verification script that validated 127/137 matches.
+
+#### 6. Data Integrity Summary
 
 | Question | Answer |
 |----------|--------|
 | What price resolves the market? | Chainlink Data Streams BTC/USD |
-| How do we get it? | RTDS `crypto_prices_chainlink` subscription |
+| How do we get it? | RTDS `crypto_prices_chainlink` subscription (perceived, immediate) + on-chain CTF payouts (actual, T+60s) |
 | Where is CL@close stored? | `window_close_events.oracle_price_at_close` and `vwap_snapshots.chainlink_price` |
 | Where is CL@open stored? | `window_close_events.oracle_price_at_open` (NEW) and `vwap_snapshots.chainlink_price` |
 | Are both from the same source? | Yes — both are `rtdsClient.getCurrentPrice(symbol, TOPICS.CRYPTO_PRICES_CHAINLINK)` |
-| Is the resolution formula verified? | Yes — 129/129 match against post-resolution CLOB (UP token → $0.99 or $0.01) |
+| Is the RTDS-based resolution verified? | 127/137 (92.7%) match on-chain CTF; 10 mismatches all on <$50 CL moves |
+| On-chain ground truth available? | Yes — `onchain_resolved_direction` column, read automatically ~60s post-close from CTF contract |
 | Is CL different from exchange spot? | Yes — CL is ~$30-$150 below spot (VWAP vs last-trade) |
 | Does Pyth help predict CL? | No — Pyth uses similar VWAP methodology, tracks CL within 0-3s, not a leading indicator |

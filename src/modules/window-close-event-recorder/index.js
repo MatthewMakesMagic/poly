@@ -18,6 +18,7 @@
  * @module modules/window-close-event-recorder
  */
 
+import https from 'https';
 import { child } from '../logger/index.js';
 import persistence from '../../persistence/index.js';
 import * as rtdsClient from '../../clients/rtds/index.js';
@@ -31,6 +32,20 @@ import {
   WINDOW_DURATION_SECONDS,
   SUPPORTED_CRYPTOS,
 } from './types.js';
+
+// On-chain CTF contract constants (Polygon)
+const CTF_ADDRESS = '0x4d97dcd97ec945f40cf65f87097ace5ea0476045';
+const POLYGON_RPC = 'https://polygon-rpc.com';
+// Function selectors (first 4 bytes of keccak256 of signature)
+// payoutDenominator(bytes32) = 0xdd34de67
+// payoutNumerators(bytes32,uint256) = 0x0504c814
+const DENOM_SELECTOR = '0xdd34de67';
+const NUM_SELECTOR = '0x0504c814';
+
+// On-chain resolution timing
+const ONCHAIN_FIRST_ATTEMPT_DELAY_MS = 60000;  // 60s after close (resolution typically at T+55s)
+const ONCHAIN_RETRY_INTERVAL_MS = 15000;        // Retry every 15s
+const ONCHAIN_MAX_WAIT_MS = 180000;             // Give up after 3 minutes
 
 // Module state
 let log = null;
@@ -97,6 +112,99 @@ export async function init(cfg = {}) {
 }
 
 /**
+ * Make a raw JSON-RPC call to Polygon via HTTPS.
+ *
+ * @param {string} method - RPC method (e.g., 'eth_call')
+ * @param {Array} params - RPC params
+ * @returns {Promise<string>} Raw hex result
+ */
+function polygonRpc(method, params) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+    const url = new URL(POLYGON_RPC);
+    const req = https.request({
+      hostname: url.hostname,
+      path: url.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(JSON.stringify(parsed.error)));
+          else resolve(parsed.result);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * ABI-encode a bytes32 value (zero-padded to 32 bytes).
+ * @param {string} hex - 0x-prefixed hex string (conditionId)
+ * @returns {string} 64-char hex string (no 0x prefix)
+ */
+function encodeBytes32(hex) {
+  return hex.replace(/^0x/, '').padStart(64, '0');
+}
+
+/**
+ * ABI-encode a uint256 value.
+ * @param {number} n - Integer
+ * @returns {string} 64-char hex string (no 0x prefix)
+ */
+function encodeUint256(n) {
+  return n.toString(16).padStart(64, '0');
+}
+
+/**
+ * Read on-chain resolution from the CTF contract.
+ *
+ * Calls payoutDenominator(conditionId) and payoutNumerators(conditionId, 0/1).
+ * If payoutDenominator > 0, the market is resolved.
+ * payoutNumerators[0] > payoutNumerators[1] → UP won, else DOWN.
+ *
+ * @param {string} conditionId - 0x-prefixed conditionId from Gamma API
+ * @returns {Promise<{resolved: boolean, direction: string|null}>}
+ */
+async function readOnchainResolution(conditionId) {
+  const condBytes = encodeBytes32(conditionId);
+
+  // payoutDenominator(bytes32 conditionId)
+  const denomCalldata = DENOM_SELECTOR + condBytes;
+  const denomResult = await polygonRpc('eth_call', [
+    { to: CTF_ADDRESS, data: denomCalldata }, 'latest'
+  ]);
+
+  const denom = BigInt(denomResult);
+  if (denom === 0n) {
+    return { resolved: false, direction: null };
+  }
+
+  // payoutNumerators(bytes32 conditionId, uint256 index)
+  const num0Calldata = NUM_SELECTOR + condBytes + encodeUint256(0);
+  const num1Calldata = NUM_SELECTOR + condBytes + encodeUint256(1);
+
+  const [num0Result, num1Result] = await Promise.all([
+    polygonRpc('eth_call', [{ to: CTF_ADDRESS, data: num0Calldata }, 'latest']),
+    polygonRpc('eth_call', [{ to: CTF_ADDRESS, data: num1Calldata }, 'latest']),
+  ]);
+
+  const p0 = BigInt(num0Result);
+  const p1 = BigInt(num1Result);
+
+  return {
+    resolved: true,
+    direction: p0 > p1 ? 'up' : 'down',
+  };
+}
+
+/**
  * Scan for windows approaching close and schedule captures
  *
  * @returns {Promise<void>}
@@ -142,6 +250,7 @@ function startCapture(windowId, symbol, epoch, closeTimeMs) {
     closeTimeMs,
     strikePrice: null,
     oracleOpenPrice: null,
+    conditionId: null,
     oraclePrices: {},
     pythPrices: {},
     feedPricesAtClose: {},
@@ -150,6 +259,7 @@ function startCapture(windowId, symbol, epoch, closeTimeMs) {
     captureStarted: true,
     captureComplete: false,
     resolvedDirection: null,
+    onchainResolvedDirection: null,
     timers: [],
   };
 
@@ -321,6 +431,11 @@ async function captureIntervalPrices(capture, intervalMs) {
       if (capture.strikePrice === null && market.referencePrice) {
         capture.strikePrice = market.referencePrice;
       }
+
+      // Capture conditionId for on-chain resolution lookup
+      if (capture.conditionId === null && market.conditionId) {
+        capture.conditionId = market.conditionId;
+      }
     }
   } catch (err) {
     log.debug('market_fetch_failed_at_interval', {
@@ -418,6 +533,10 @@ async function captureAtClose(capture) {
       if (capture.strikePrice === null && market.referencePrice) {
         capture.strikePrice = market.referencePrice;
       }
+
+      if (capture.conditionId === null && market.conditionId) {
+        capture.conditionId = market.conditionId;
+      }
     }
   } catch (err) {
     log.debug('market_fetch_failed_at_close', {
@@ -446,28 +565,37 @@ async function captureAtClose(capture) {
   // Persist immediately with self-resolved direction
   await persistWindowCloseEvent(capture);
 
-  // Schedule optional Gamma API cross-validation (non-blocking)
-  scheduleResolutionCrossCheck(capture);
+  // Schedule on-chain resolution verification (non-blocking)
+  // Reads CTF payoutNumerators ~60s after close for ground truth
+  scheduleOnchainResolutionCheck(capture);
 }
 
 /**
- * Schedule optional Gamma API cross-validation after self-resolution.
+ * Schedule on-chain resolution verification after self-resolution.
  *
  * The primary resolution is computed immediately from CL@close >= CL@open.
- * This cross-check polls the Gamma API to verify our resolution matches
- * the on-chain outcome. If it disagrees, we log a warning and update the row.
+ * This reads the CTF contract's payoutNumerators on Polygon ~60s after close
+ * to get the ground-truth resolution. Stores both perceived and actual.
  *
  * @param {Object} capture - Capture state object
  */
-function scheduleResolutionCrossCheck(capture) {
+function scheduleOnchainResolutionCheck(capture) {
+  if (!capture.conditionId) {
+    log.warn('onchain_check_skipped_no_condition_id', {
+      window_id: capture.windowId,
+    });
+    cleanupCapture(capture.windowId);
+    return;
+  }
+
   const timer = setTimeout(() => {
-    attemptResolutionCrossCheck(capture, 0).catch(err => {
-      log.debug('resolution_cross_check_error', {
+    attemptOnchainResolutionCheck(capture, 0).catch(err => {
+      log.debug('onchain_resolution_check_error', {
         window_id: capture.windowId,
         error: err.message,
       });
     });
-  }, config.resolutionFirstAttemptDelayMs);
+  }, ONCHAIN_FIRST_ATTEMPT_DELAY_MS);
 
   if (timer.unref) {
     timer.unref();
@@ -476,46 +604,70 @@ function scheduleResolutionCrossCheck(capture) {
 }
 
 /**
- * Cross-validate our self-resolved direction against Gamma API.
+ * Read on-chain CTF resolution and compare with our perceived direction.
  *
- * Polls Gamma API for market.closed status. If the market has resolved,
- * checks whether the CLOB's post-resolution UP token price confirms our
- * self-resolved direction. Logs a warning if they disagree.
+ * Reads payoutDenominator/payoutNumerators from the CTF contract.
+ * If resolved, updates the DB row with onchain_resolved_direction.
+ * Logs comparison between perceived (RTDS-based) and actual (on-chain).
  *
  * @param {Object} capture - Capture state object
  * @param {number} elapsedMs - Time elapsed since first attempt
  * @returns {Promise<void>}
  */
-async function attemptResolutionCrossCheck(capture, elapsedMs) {
+async function attemptOnchainResolutionCheck(capture, elapsedMs) {
   try {
-    const market = await windowManager.fetchMarket(capture.symbol, capture.epoch);
+    const result = await readOnchainResolution(capture.conditionId);
 
-    if (market && market.closed) {
-      // Market has officially resolved — cross-check with CLOB
-      let clobDirection = null;
-      if (market.upPrice > 0.9) clobDirection = 'up';
-      else if (market.downPrice > 0.9) clobDirection = 'down';
+    if (result.resolved) {
+      capture.onchainResolvedDirection = result.direction;
 
-      if (clobDirection && capture.resolvedDirection && clobDirection !== capture.resolvedDirection) {
-        log.error('resolution_cross_check_mismatch', {
+      const match = capture.resolvedDirection === result.direction;
+
+      if (match) {
+        log.info('onchain_resolution_confirmed', {
           window_id: capture.windowId,
-          self_resolved: capture.resolvedDirection,
-          clob_resolved: clobDirection,
-          oracle_close: capture.oraclePrices.close,
-          oracle_open: capture.oracleOpenPrice,
+          direction: result.direction,
+          elapsed_ms: elapsedMs,
         });
       } else {
-        log.info('resolution_cross_check_confirmed', {
+        log.error('onchain_resolution_mismatch', {
           window_id: capture.windowId,
-          direction: capture.resolvedDirection,
+          perceived: capture.resolvedDirection,
+          onchain: result.direction,
+          oracle_close: capture.oraclePrices.close,
+          oracle_open: capture.oracleOpenPrice,
           elapsed_ms: elapsedMs,
         });
       }
+
+      // Update DB with on-chain ground truth
+      try {
+        await persistence.run(`
+          UPDATE window_close_events
+          SET onchain_resolved_direction = $1,
+              condition_id = $2,
+              updated_at = NOW()
+          WHERE window_id = $3
+        `, [result.direction, capture.conditionId, capture.windowId]);
+
+        log.info('onchain_resolution_persisted', {
+          window_id: capture.windowId,
+          onchain_direction: result.direction,
+          perceived_direction: capture.resolvedDirection,
+          match,
+        });
+      } catch (dbErr) {
+        log.error('onchain_resolution_persist_failed', {
+          window_id: capture.windowId,
+          error: dbErr.message,
+        });
+      }
+
       cleanupCapture(capture.windowId);
       return;
     }
   } catch (err) {
-    log.debug('resolution_cross_check_failed', {
+    log.debug('onchain_resolution_read_failed', {
       window_id: capture.windowId,
       elapsed_ms: elapsedMs,
       error: err.message,
@@ -523,25 +675,24 @@ async function attemptResolutionCrossCheck(capture, elapsedMs) {
   }
 
   // Retry if within max wait
-  if (elapsedMs + config.resolutionRetryIntervalMs <= config.resolutionMaxWaitMs) {
+  if (elapsedMs + ONCHAIN_RETRY_INTERVAL_MS <= ONCHAIN_MAX_WAIT_MS) {
     const retryTimer = setTimeout(() => {
-      attemptResolutionCrossCheck(capture, elapsedMs + config.resolutionRetryIntervalMs).catch(err => {
-        log.debug('resolution_cross_check_retry_error', {
+      attemptOnchainResolutionCheck(capture, elapsedMs + ONCHAIN_RETRY_INTERVAL_MS).catch(err => {
+        log.debug('onchain_resolution_retry_error', {
           window_id: capture.windowId,
           error: err.message,
         });
       });
-    }, config.resolutionRetryIntervalMs);
+    }, ONCHAIN_RETRY_INTERVAL_MS);
 
     if (retryTimer.unref) {
       retryTimer.unref();
     }
     capture.timers.push(retryTimer);
   } else {
-    // Timed out — no cross-validation available but we already persisted
-    log.debug('resolution_cross_check_timeout', {
+    log.warn('onchain_resolution_timeout', {
       window_id: capture.windowId,
-      max_wait_ms: config.resolutionMaxWaitMs,
+      max_wait_ms: ONCHAIN_MAX_WAIT_MS,
     });
     cleanupCapture(capture.windowId);
   }
@@ -638,7 +789,7 @@ async function persistWindowCloseEvent(capture) {
         market_down_price_5s, market_down_price_1s,
         strike_price, resolved_direction,
         market_consensus_direction, market_consensus_confidence, surprise_resolution,
-        oracle_price_at_open
+        oracle_price_at_open, condition_id
       ) VALUES (
         $1, $2, $3, $4,
         $5, $6, $7, $8, $9, $10,
@@ -646,7 +797,7 @@ async function persistWindowCloseEvent(capture) {
         $15, $16, $17, $18, $19,
         $20, $21, $22, $23, $24,
         $25, $26, $27, $28, $29,
-        $30
+        $30, $31
       )
       ON CONFLICT (window_id) DO UPDATE SET
         oracle_resolution_time = COALESCE(EXCLUDED.oracle_resolution_time, window_close_events.oracle_resolution_time),
@@ -663,6 +814,7 @@ async function persistWindowCloseEvent(capture) {
         market_consensus_direction = COALESCE(EXCLUDED.market_consensus_direction, window_close_events.market_consensus_direction),
         market_consensus_confidence = COALESCE(EXCLUDED.market_consensus_confidence, window_close_events.market_consensus_confidence),
         surprise_resolution = COALESCE(EXCLUDED.surprise_resolution, window_close_events.surprise_resolution),
+        condition_id = COALESCE(EXCLUDED.condition_id, window_close_events.condition_id),
         updated_at = NOW()
     `, [
       capture.windowId,                                          // $1
@@ -695,6 +847,7 @@ async function persistWindowCloseEvent(capture) {
       consensus.confidence,                                      // $28
       consensus.isSurprise,                                      // $29
       capture.oracleOpenPrice ?? null,                           // $30
+      capture.conditionId ?? null,                                // $31
     ]);
 
     capture.captureComplete = true;
@@ -712,8 +865,9 @@ async function persistWindowCloseEvent(capture) {
       surprise: consensus.isSurprise,
     });
 
-    // Cleanup active capture
-    cleanupCapture(capture.windowId);
+    // NOTE: Don't cleanup here — the on-chain resolution check will cleanup
+    // after it completes (or times out). If no conditionId is available,
+    // scheduleOnchainResolutionCheck handles cleanup immediately.
 
   } catch (err) {
     stats.windowsFailed++;
@@ -846,8 +1000,9 @@ export const _testing = {
   fetchOracleOpenPrice,
   captureIntervalPrices,
   captureAtClose,
-  scheduleResolutionCrossCheck,
-  attemptResolutionCrossCheck,
+  scheduleOnchainResolutionCheck,
+  attemptOnchainResolutionCheck,
+  readOnchainResolution,
   determineResolution,
   calculateMarketConsensus,
   persistWindowCloseEvent,

@@ -259,6 +259,7 @@ export async function fetchMarket(crypto, epoch) {
         slug,
         question: market.question,
         referencePrice,  // Strike price for probability calculation
+        conditionId: market.conditionId || null,
         upTokenId: tokenIds[0],
         downTokenId: tokenIds[1],
         upPrice: parseFloat(prices[0]) || 0.5,
