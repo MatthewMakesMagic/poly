@@ -462,7 +462,10 @@ const config = {
     snapshotIntervalMs: 5000,
     feeRate: 0.0,
     cryptos: ['btc'],
-    // Variation grid: every combo is evaluated at T-60s on every window
+    // Signal evaluation times (seconds before window close)
+    // Each time gets the full variation grid, so we learn which timing works best
+    signalTimesBeforeCloseSec: [10, 30, 60, 90, 120],
+    // Variation grid: every combo is evaluated at each signal time
     variations: [
       { label: 'base',          vwapDeltaThreshold: 75,  positionSizeDollars: 100  },
       { label: 'tight-sm',      vwapDeltaThreshold: 25,  positionSizeDollars: 50   },

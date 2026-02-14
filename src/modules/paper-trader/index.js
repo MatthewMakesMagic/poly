@@ -3,12 +3,13 @@
  *
  * Main coordinator for realistic VWAP edge testing with streaming L2 data.
  * Evaluates a grid of parameter variations (threshold x position size) at
- * T-60s on every window, so every window produces data across many combos.
+ * multiple signal times (T-10s, T-30s, T-60s, T-90s, T-120s) on every
+ * window, so every window produces data across many combos and timings.
  *
  * For each 15-minute window:
  * 1. Subscribe CLOB WS to UP/DOWN tokens
  * 2. Capture VWAP at window open
- * 3. At T-60s: evaluate market state once, loop variations, simulate fills
+ * 3. At each signal time: evaluate market state, loop variations, simulate fills
  * 4. At T+65s: settle all trades for the window
  *
  * @module modules/paper-trader
@@ -59,6 +60,9 @@ const DEFAULT_VARIATIONS = [
   { label: 'base', vwapDeltaThreshold: 75, positionSizeDollars: 100 },
 ];
 
+// Default signal evaluation times (seconds before window close)
+const DEFAULT_SIGNAL_TIMES = [60];
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE INTERFACE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -81,7 +85,7 @@ export async function init(cfg = {}) {
     scanIntervalMs: ptConfig.scanIntervalMs ?? DEFAULT_CONFIG.scanIntervalMs,
     feeRate: ptConfig.feeRate ?? DEFAULT_CONFIG.feeRate,
     cryptos: ptConfig.cryptos ?? DEFAULT_CONFIG.cryptos,
-    signalTimeBeforeCloseMs: ptConfig.signalTimeBeforeCloseMs ?? DEFAULT_CONFIG.signalTimeBeforeCloseMs,
+    signalTimesBeforeCloseSec: ptConfig.signalTimesBeforeCloseSec ?? DEFAULT_SIGNAL_TIMES,
     settlementDelayAfterCloseMs: ptConfig.settlementDelayAfterCloseMs ?? DEFAULT_CONFIG.settlementDelayAfterCloseMs,
     latencyProbeTimeBeforeCloseMs: ptConfig.latencyProbeTimeBeforeCloseMs ?? DEFAULT_CONFIG.latencyProbeTimeBeforeCloseMs,
     variations: ptConfig.variations ?? DEFAULT_VARIATIONS,
@@ -119,8 +123,10 @@ export async function init(cfg = {}) {
     config: {
       cryptos: config.cryptos,
       feeRate: config.feeRate,
+      signalTimes: config.signalTimesBeforeCloseSec,
       variationCount: config.variations.length,
       variations: config.variations.map(v => v.label),
+      maxTradesPerWindow: config.signalTimesBeforeCloseSec.length * config.variations.length,
     },
   });
 }
@@ -144,8 +150,10 @@ export function getState() {
     config: {
       cryptos: config.cryptos,
       feeRate: config.feeRate,
+      signalTimes: config.signalTimesBeforeCloseSec,
       variationCount: config.variations.length,
       variations: config.variations.map(v => `${v.label}(d${v.vwapDeltaThreshold}/$${v.positionSizeDollars})`),
+      maxTradesPerWindow: config.signalTimesBeforeCloseSec.length * config.variations.length,
     },
   };
 }
@@ -282,16 +290,18 @@ async function scanAndTrack() {
       windowState.timers.push(latencyTimer);
     }
 
-    // Schedule signal evaluation at T-60s
-    const signalDelay = closeTimeMs - config.signalTimeBeforeCloseMs - nowMs;
-    if (signalDelay > 0) {
-      const signalTimer = setTimeout(() => {
-        evaluateSignal(windowState).catch(err => {
-          if (log) log.error('signal_eval_error', { window_id: windowId, error: err.message });
-        });
-      }, signalDelay);
-      if (signalTimer.unref) signalTimer.unref();
-      windowState.timers.push(signalTimer);
+    // Schedule signal evaluation at each configured time (T-120s, T-90s, T-60s, T-30s, T-10s)
+    for (const offsetSec of config.signalTimesBeforeCloseSec) {
+      const signalDelay = closeTimeMs - (offsetSec * 1000) - nowMs;
+      if (signalDelay > 0) {
+        const signalTimer = setTimeout(() => {
+          evaluateSignal(windowState, offsetSec).catch(err => {
+            if (log) log.error('signal_eval_error', { window_id: windowId, offset_sec: offsetSec, error: err.message });
+          });
+        }, signalDelay);
+        if (signalTimer.unref) signalTimer.unref();
+        windowState.timers.push(signalTimer);
+      }
     }
 
     // Schedule settlement at T+65s
@@ -309,23 +319,28 @@ async function scanAndTrack() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SIGNAL EVALUATION (T-60s) — SWEEP ALL VARIATIONS
+// SIGNAL EVALUATION — SWEEP ALL VARIATIONS AT EACH SIGNAL TIME
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Evaluate all parameter variations for a window
+ * Evaluate all parameter variations for a window at a specific signal time
  *
+ * Called once per signal time (T-120s, T-90s, T-60s, T-30s, T-10s).
  * 1. Compute market state once (VWAP vs CLOB)
  * 2. Persist book snapshot once
  * 3. Loop each variation: check threshold, simulate fill at that size, persist trade
+ *
+ * @param {Object} windowState - Window tracking state
+ * @param {number} signalOffsetSec - Seconds before close this eval runs (e.g., 60)
  */
-async function evaluateSignal(windowState) {
+async function evaluateSignal(windowState, signalOffsetSec) {
   const { windowId, crypto, market } = windowState;
   stats.signalsEvaluated++;
 
   log.info('signal_eval_start', {
     window_id: windowId,
     crypto,
+    signal_offset_sec: signalOffsetSec,
     variation_count: config.variations.length,
   });
 
@@ -423,6 +438,7 @@ async function evaluateSignal(windowState) {
         INSERT INTO paper_trades_v2 (
           window_id, symbol, signal_time, signal_type,
           variant_label, position_size_dollars, vwap_delta_threshold,
+          signal_offset_sec,
           vwap_direction, clob_direction, vwap_delta, vwap_price, chainlink_price, clob_up_price,
           exchange_count, total_volume,
           entry_side, entry_token_id, entry_book_snapshot_id,
@@ -432,12 +448,13 @@ async function evaluateSignal(windowState) {
         ) VALUES (
           $1, $2, NOW(), 'vwap_edge',
           $3, $4, $5,
-          $6, $7, $8, $9, $10, $11,
-          $12, $13,
-          $14, $15, $16,
-          $17, $18, $19, $20,
-          $21, $22, $23,
-          $24, $25
+          $6,
+          $7, $8, $9, $10, $11, $12,
+          $13, $14,
+          $15, $16, $17,
+          $18, $19, $20, $21,
+          $22, $23, $24,
+          $25, $26
         )
         RETURNING id
       `, [
@@ -446,26 +463,27 @@ async function evaluateSignal(windowState) {
         label,                             // $3
         positionSizeDollars,               // $4
         vwapDeltaThreshold,                // $5
-        marketState.vwapDirection,         // $6
-        marketState.clobDirection,          // $7
-        marketState.vwapDelta,             // $8
-        marketState.vwapPrice,             // $9
-        marketState.chainlinkPrice,        // $10
-        marketState.clobUpPrice,           // $11
-        marketState.exchangeCount,         // $12
-        marketState.totalVolume,           // $13
-        marketState.entrySide,             // $14
-        marketState.entryTokenId,          // $15
-        bookSnapshotId,                    // $16
-        fillResult.vwapPrice,              // $17
-        fillResult.totalShares,            // $18
-        fillResult.totalCost,              // $19
-        fillResult.slippage,               // $20
-        fillResult.levelsConsumed,         // $21
-        fillResult.marketImpact,           // $22
-        fillResult.fees,                   // $23
-        latencyMs,                         // $24
-        adjustedEntryPrice,                // $25
+        signalOffsetSec,                   // $6
+        marketState.vwapDirection,         // $7
+        marketState.clobDirection,          // $8
+        marketState.vwapDelta,             // $9
+        marketState.vwapPrice,             // $10
+        marketState.chainlinkPrice,        // $11
+        marketState.clobUpPrice,           // $12
+        marketState.exchangeCount,         // $13
+        marketState.totalVolume,           // $14
+        marketState.entrySide,             // $15
+        marketState.entryTokenId,          // $16
+        bookSnapshotId,                    // $17
+        fillResult.vwapPrice,              // $18
+        fillResult.totalShares,            // $19
+        fillResult.totalCost,              // $20
+        fillResult.slippage,               // $21
+        fillResult.levelsConsumed,         // $22
+        fillResult.marketImpact,           // $23
+        fillResult.fees,                   // $24
+        latencyMs,                         // $25
+        adjustedEntryPrice,                // $26
       ]);
 
       windowState.tradeIds.push(result.lastInsertRowid);
@@ -481,6 +499,7 @@ async function evaluateSignal(windowState) {
 
   log.info('signal_eval_complete', {
     window_id: windowId,
+    signal_offset_sec: signalOffsetSec,
     variations_checked: config.variations.length,
     variations_fired: firedCount,
     trade_ids: windowState.tradeIds,
