@@ -73,6 +73,16 @@ function createHealthServer() {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'unhealthy', error: 'internal_error' }));
       }
+    } else if (req.method === 'GET' && req.url === '/api/paper-trader') {
+      try {
+        const state = orchestrator.getState();
+        const pt = state.modules?.['paper-trader'] || { error: 'module not found in state' };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(pt, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     } else if (req.method === 'GET' && req.url === '/health') {
       // V3 Stage 5: Strict health check - 200 only when ALL checks pass
       try {
