@@ -80,6 +80,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'clob-price-logger', module: null, configKey: null },
   { name: 'exchange-feed-collector', module: null, configKey: null },
   { name: 'exchange-trade-collector', module: null, configKey: null },
+  // Paper trader V2 - VWAP edge testing with streaming L2
+  { name: 'paper-trader', module: null, configKey: null },
 ];
 
 /**

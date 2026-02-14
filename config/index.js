@@ -457,6 +457,15 @@ const config = {
     maxTradesPerBuffer: 5000,
   },
 
+  // Paper trader V2 (VWAP edge testing with streaming L2)
+  paperTrader: {
+    positionSizeDollars: 100,
+    vwapDeltaThreshold: 75,
+    snapshotIntervalMs: 5000,
+    feeRate: 0.0,
+    cryptos: ['btc'],
+  },
+
   // Backtest configuration
   backtest: {
     tickBatchSize: 10000,
