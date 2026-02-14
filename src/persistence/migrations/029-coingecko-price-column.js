@@ -5,11 +5,18 @@
  * CoinGecko VWAP aggregates across 1,700+ exchanges with outlier filtering,
  * providing a better Chainlink proxy than our 21-exchange VWAP for non-BTC.
  */
-import persistence from '../index.js';
+import { exec } from '../database.js';
 
 export async function up() {
-  await persistence.run(`
+  await exec(`
     ALTER TABLE vwap_snapshots
     ADD COLUMN IF NOT EXISTS coingecko_price DECIMAL(20, 8)
+  `);
+}
+
+export async function down() {
+  await exec(`
+    ALTER TABLE vwap_snapshots
+    DROP COLUMN IF EXISTS coingecko_price
   `);
 }
