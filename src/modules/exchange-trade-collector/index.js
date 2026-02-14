@@ -14,6 +14,7 @@ import { child } from '../logger/index.js';
 import persistence from '../../persistence/index.js';
 import * as rtdsClient from '../../clients/rtds/index.js';
 import { TOPICS } from '../../clients/rtds/types.js';
+import * as coingeckoClient from '../../clients/coingecko/index.js';
 import { CcxtWsClient } from '../../clients/ccxt-ws/index.js';
 import {
   ExchangeTradeCollectorError,
@@ -289,6 +290,17 @@ async function persistSnapshots() {
 
       const spread = chainlinkPrice != null ? composite.vwap - chainlinkPrice : null;
 
+      // Get current CoinGecko aggregated price (1,700+ exchange VWAP)
+      let coingeckoPrice = null;
+      try {
+        const cgData = coingeckoClient.getCurrentPrice(symbol);
+        if (cgData) {
+          coingeckoPrice = cgData.price;
+        }
+      } catch {
+        // OK — CG may not be available yet
+      }
+
       rows.push({
         timestamp: now,
         symbol,
@@ -299,13 +311,14 @@ async function persistSnapshots() {
         vwap_cl_spread: spread,
         window_ms: config.vwapWindowMs,
         exchange_detail: JSON.stringify(composite.exchanges),
+        coingecko_price: coingeckoPrice,
       });
     }
 
     if (rows.length === 0) return;
 
     // Multi-row INSERT
-    const colCount = 9;
+    const colCount = 10;
     const values = [];
     const params = [];
 
@@ -313,12 +326,12 @@ async function persistSnapshots() {
       const r = rows[i];
       const offset = i * colCount;
       values.push(
-        `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8}, $${offset+9})`
+        `($${offset+1}, $${offset+2}, $${offset+3}, $${offset+4}, $${offset+5}, $${offset+6}, $${offset+7}, $${offset+8}, $${offset+9}, $${offset+10})`
       );
       params.push(
         r.timestamp, r.symbol, r.composite_vwap, r.composite_volume,
         r.exchange_count, r.chainlink_price, r.vwap_cl_spread,
-        r.window_ms, r.exchange_detail,
+        r.window_ms, r.exchange_detail, r.coingecko_price,
       );
     }
 
@@ -326,7 +339,7 @@ async function persistSnapshots() {
       INSERT INTO vwap_snapshots (
         timestamp, symbol, composite_vwap, composite_volume,
         exchange_count, chainlink_price, vwap_cl_spread,
-        window_ms, exchange_detail
+        window_ms, exchange_detail, coingecko_price
       ) VALUES ${values.join(', ')}
     `;
 
@@ -386,6 +399,13 @@ export async function init(cfg = {}) {
     cleanupIntervalHours: etcConfig.cleanupIntervalHours ?? DEFAULT_CONFIG.cleanupIntervalHours,
     maxTradesPerBuffer: etcConfig.maxTradesPerBuffer ?? DEFAULT_CONFIG.maxTradesPerBuffer,
   };
+
+  // Initialize CoinGecko client (1,700+ exchange VWAP)
+  try {
+    await coingeckoClient.init({ apiKey: process.env.COINGECKO_API_KEY });
+  } catch (err) {
+    log.warn('coingecko_init_failed', { error: err.message });
+  }
 
   // Initialize in-memory VWAP state
   vwapState = {};
@@ -497,6 +517,9 @@ export async function shutdown() {
     await wsClient.shutdown();
     wsClient = null;
   }
+
+  // Shutdown CoinGecko client
+  await coingeckoClient.shutdown();
 
   // Clear state
   vwapState = {};
