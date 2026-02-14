@@ -459,11 +459,27 @@ const config = {
 
   // Paper trader V2 (VWAP edge testing with streaming L2)
   paperTrader: {
-    positionSizeDollars: 100,
-    vwapDeltaThreshold: 75,
     snapshotIntervalMs: 5000,
     feeRate: 0.0,
     cryptos: ['btc'],
+    // Variation grid: every combo is evaluated at T-60s on every window
+    variations: [
+      { label: 'base',          vwapDeltaThreshold: 75,  positionSizeDollars: 100  },
+      { label: 'tight-sm',      vwapDeltaThreshold: 25,  positionSizeDollars: 50   },
+      { label: 'tight-md',      vwapDeltaThreshold: 25,  positionSizeDollars: 100  },
+      { label: 'tight-lg',      vwapDeltaThreshold: 25,  positionSizeDollars: 250  },
+      { label: 'mid-sm',        vwapDeltaThreshold: 50,  positionSizeDollars: 50   },
+      { label: 'mid-md',        vwapDeltaThreshold: 50,  positionSizeDollars: 100  },
+      { label: 'mid-lg',        vwapDeltaThreshold: 50,  positionSizeDollars: 250  },
+      { label: 'base-sm',       vwapDeltaThreshold: 75,  positionSizeDollars: 50   },
+      { label: 'base-lg',       vwapDeltaThreshold: 75,  positionSizeDollars: 250  },
+      { label: 'base-xl',       vwapDeltaThreshold: 75,  positionSizeDollars: 500  },
+      { label: 'wide-md',       vwapDeltaThreshold: 100, positionSizeDollars: 100  },
+      { label: 'wide-lg',       vwapDeltaThreshold: 100, positionSizeDollars: 250  },
+      { label: 'wide-xl',       vwapDeltaThreshold: 100, positionSizeDollars: 500  },
+      { label: 'ultra-md',      vwapDeltaThreshold: 150, positionSizeDollars: 100  },
+      { label: 'ultra-xl',      vwapDeltaThreshold: 150, positionSizeDollars: 500  },
+    ],
   },
 
   // Backtest configuration
