@@ -31,6 +31,7 @@ console.log(`[STARTUP] LIVE_TRADING_ENABLED (after dotenv): "${process.env.LIVE_
 import { createServer } from 'http';
 import config from '../config/index.js';
 import * as orchestrator from '../src/modules/orchestrator/index.js';
+import persistence from '../src/persistence/index.js';
 import { child } from '../src/modules/logger/index.js';
 import { buildStatusResponse, buildHealthResponse } from './health-endpoint.mjs';
 
@@ -59,7 +60,7 @@ let httpServer = null;
  * @returns {http.Server} HTTP server instance
  */
 function createHealthServer() {
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     // Log at debug level to avoid spam
     log.debug('http_request', { method: req.method, url: req.url });
 
@@ -79,6 +80,76 @@ function createHealthServer() {
         const pt = state.modules?.['paper-trader'] || { error: 'module not found in state' };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(pt, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    } else if (req.method === 'GET' && req.url === '/api/paper-trader/trades') {
+      // DB query: paper trade history + summary stats
+      try {
+        const summary = await persistence.get(`
+          SELECT
+            COUNT(*) as total_trades,
+            COUNT(*) FILTER (WHERE won = true) as wins,
+            COUNT(*) FILTER (WHERE won = false) as losses,
+            COUNT(*) FILTER (WHERE settlement_time IS NULL) as pending,
+            COALESCE(SUM(net_pnl), 0) as cumulative_pnl,
+            COUNT(DISTINCT window_id) as windows_evaluated,
+            COUNT(DISTINCT signal_offset_sec) as distinct_timings,
+            MIN(signal_time) as first_trade_at,
+            MAX(signal_time) as last_trade_at
+          FROM paper_trades_v2
+        `);
+        const byVariant = await persistence.all(`
+          SELECT variant_label, signal_offset_sec,
+            COUNT(*) as trades,
+            COUNT(*) FILTER (WHERE won = true) as wins,
+            COUNT(*) FILTER (WHERE won = false) as losses,
+            ROUND(COALESCE(SUM(net_pnl), 0)::numeric, 2) as pnl,
+            ROUND(AVG(sim_slippage)::numeric, 6) as avg_slippage,
+            ROUND(AVG(sim_levels_consumed)::numeric, 1) as avg_levels
+          FROM paper_trades_v2
+          GROUP BY variant_label, signal_offset_sec
+          ORDER BY signal_offset_sec, variant_label
+        `);
+        const recent = await persistence.all(`
+          SELECT id, window_id, variant_label, signal_offset_sec,
+            entry_side, vwap_delta, clob_up_price,
+            sim_entry_price, sim_slippage, sim_levels_consumed,
+            won, net_pnl, signal_time, settlement_time
+          FROM paper_trades_v2
+          ORDER BY signal_time DESC
+          LIMIT 20
+        `);
+        const snapshots = await persistence.get(`
+          SELECT COUNT(*) as total,
+            COUNT(*) FILTER (WHERE snapshot_type = 'periodic') as periodic,
+            COUNT(*) FILTER (WHERE snapshot_type = 'signal') as signal,
+            COUNT(*) FILTER (WHERE snapshot_type = 'settlement') as settlement,
+            MIN(timestamp) as first_at,
+            MAX(timestamp) as last_at
+          FROM l2_book_snapshots
+        `);
+        const latency = await persistence.get(`
+          SELECT COUNT(*) as total,
+            ROUND(AVG(round_trip_ms)::numeric, 1) as avg_ms,
+            MIN(round_trip_ms) as min_ms,
+            MAX(round_trip_ms) as max_ms
+          FROM latency_measurements
+        `);
+        const signalEvals = await persistence.all(`
+          SELECT
+            signal_offset_sec,
+            COUNT(*) as evals,
+            COUNT(*) FILTER (WHERE won IS NOT NULL) as settled,
+            COUNT(*) FILTER (WHERE won = true) as wins,
+            ROUND(AVG(ABS(vwap_delta))::numeric, 2) as avg_abs_delta
+          FROM paper_trades_v2
+          GROUP BY signal_offset_sec
+          ORDER BY signal_offset_sec
+        `);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ summary, byVariant, signalEvals, recent, snapshots, latency }, null, 2));
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
