@@ -84,6 +84,11 @@ function createHealthServer() {
         res.end(JSON.stringify({ error: err.message }));
       }
     } else if (req.method === 'GET' && req.url === '/health') {
+      // Simple liveness check — always 200 if process is running
+      // Railway uses this to route traffic; strict checks are at /health/strict
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+    } else if (req.method === 'GET' && req.url === '/health/strict') {
       // V3 Stage 5: Strict health check - 200 only when ALL checks pass
       try {
         const health = buildHealthResponse();
