@@ -1,15 +1,14 @@
 /**
- * Paper Trader V2 Module
+ * Paper Trader V2 Module — Multi-Strategy, Multi-Asset
  *
- * Main coordinator for realistic VWAP edge testing with streaming L2 data.
- * Evaluates a grid of parameter variations (threshold x position size) at
- * multiple signal times (T-10s, T-30s, T-60s, T-90s, T-120s) on every
- * window, so every window produces data across many combos and timings.
+ * Main coordinator for paper trading across 10 strategies, 4 instruments,
+ * and 5 signal timings. Evaluates a grid of strategy × variation at each
+ * signal time on every window.
  *
  * For each 15-minute window:
  * 1. Subscribe CLOB WS to UP/DOWN tokens
- * 2. Capture VWAP at window open (from vwap_snapshots DB, not live — survives redeployments)
- * 3. At each signal time: evaluate market state, loop variations, simulate fills
+ * 2. Capture VWAP (composite, CoinGecko, VWAP20) at window open from DB
+ * 3. At each signal time: build context, loop strategies + variations, simulate fills
  * 4. At T+65s: settle all trades for the window
  *
  * @module modules/paper-trader
@@ -20,9 +19,12 @@ import persistence from '../../persistence/index.js';
 import * as clobWs from '../../clients/clob-ws/index.js';
 import * as windowManager from '../window-manager/index.js';
 import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
+import * as coingeckoClient from '../../clients/coingecko/index.js';
+import * as rtdsClient from '../../clients/rtds/index.js';
+import { TOPICS } from '../../clients/rtds/types.js';
 import { simulateFill } from './fill-simulator.js';
 import * as latencyMeasurer from './latency-measurer.js';
-import * as vwapStrategy from './vwap-strategy.js';
+import { strategies } from './strategy-registry.js';
 import {
   PaperTraderError,
   PaperTraderErrorCodes,
@@ -57,7 +59,7 @@ let stats = {
 
 // Default variations if none configured
 const DEFAULT_VARIATIONS = [
-  { label: 'base', vwapDeltaThreshold: 75, positionSizeDollars: 100 },
+  { label: 'pct-3-sm', vwapDeltaThresholdPct: 0.03, positionSizeDollars: 100 },
 ];
 
 // Default signal evaluation times (seconds before window close)
@@ -89,6 +91,7 @@ export async function init(cfg = {}) {
     settlementDelayAfterCloseMs: ptConfig.settlementDelayAfterCloseMs ?? DEFAULT_CONFIG.settlementDelayAfterCloseMs,
     latencyProbeTimeBeforeCloseMs: ptConfig.latencyProbeTimeBeforeCloseMs ?? DEFAULT_CONFIG.latencyProbeTimeBeforeCloseMs,
     variations: ptConfig.variations ?? DEFAULT_VARIATIONS,
+    strategyVariations: ptConfig.strategyVariations ?? {},
   };
 
   // Initialize CLOB WS client (non-fatal — WS connects in background)
@@ -127,15 +130,28 @@ export async function init(cfg = {}) {
   }
 
   initialized = true;
-  console.log('[paper-trader] initialized OK —', config.signalTimesBeforeCloseSec.length, 'signal times x', config.variations.length, 'variations =', config.signalTimesBeforeCloseSec.length * config.variations.length, 'max trades/window');
+
+  // Count total strategy × variation combos
+  let totalVariations = 0;
+  for (const s of strategies) {
+    const vars = config.strategyVariations[s.name] || config.variations;
+    totalVariations += vars.length;
+  }
+
+  console.log(
+    `[paper-trader] initialized OK — ${strategies.length} strategies, ` +
+    `${config.cryptos.length} cryptos, ` +
+    `${config.signalTimesBeforeCloseSec.length} signal times, ` +
+    `~${totalVariations} variations/signal`
+  );
   log.info('paper_trader_initialized', {
     config: {
       cryptos: config.cryptos,
       feeRate: config.feeRate,
       signalTimes: config.signalTimesBeforeCloseSec,
-      variationCount: config.variations.length,
-      variations: config.variations.map(v => v.label),
-      maxTradesPerWindow: config.signalTimesBeforeCloseSec.length * config.variations.length,
+      strategyCount: strategies.length,
+      strategyNames: strategies.map(s => s.name),
+      totalVariations,
     },
   });
 }
@@ -160,9 +176,9 @@ export function getState() {
       cryptos: config.cryptos,
       feeRate: config.feeRate,
       signalTimes: config.signalTimesBeforeCloseSec,
+      strategyCount: strategies.length,
+      strategyNames: strategies.map(s => s.name),
       variationCount: config.variations.length,
-      variations: config.variations.map(v => `${v.label}(d${v.vwapDeltaThreshold}/$${v.positionSizeDollars})`),
-      maxTradesPerWindow: config.signalTimesBeforeCloseSec.length * config.variations.length,
     },
   };
 }
@@ -253,13 +269,16 @@ async function scanAndTrack() {
       clobWs.subscribeToken(market.downTokenId, `${crypto}-DOWN`);
     }
 
-    // Capture VWAP at window open — query DB for the true value at epoch time
-    // This is critical: on redeployment, the live VWAP is "now" not "window open"
+    // Capture all open prices from DB — composite VWAP, CoinGecko, and VWAP20
     let vwapAtOpen = null;
+    let cgAtOpen = null;
+    let vwap20AtOpen = null;
     let vwapSource = 'none';
+
     try {
       const row = await persistence.get(`
-        SELECT composite_vwap FROM vwap_snapshots
+        SELECT composite_vwap, coingecko_price, exchange_detail
+        FROM vwap_snapshots
         WHERE symbol = $1
           AND timestamp >= to_timestamp($2) - interval '5 seconds'
           AND timestamp <= to_timestamp($2) + interval '5 seconds'
@@ -267,15 +286,41 @@ async function scanAndTrack() {
         LIMIT 1
       `, [crypto, currentEpoch]);
 
-      if (row && row.composite_vwap != null) {
-        vwapAtOpen = parseFloat(row.composite_vwap);
-        vwapSource = 'db';
+      if (row) {
+        if (row.composite_vwap != null) {
+          vwapAtOpen = parseFloat(row.composite_vwap);
+          vwapSource = 'db';
+        }
+        if (row.coingecko_price != null) {
+          cgAtOpen = parseFloat(row.coingecko_price);
+        }
+        // Recompute VWAP20 from exchange_detail JSONB (excluding LBank)
+        if (row.exchange_detail) {
+          try {
+            const detail = typeof row.exchange_detail === 'string'
+              ? JSON.parse(row.exchange_detail)
+              : row.exchange_detail;
+            let pv = 0, v = 0;
+            for (const [exchange, data] of Object.entries(detail)) {
+              if (exchange.toLowerCase() === 'lbank') continue;
+              if (data.vwap && data.volume) {
+                pv += data.vwap * data.volume;
+                v += data.volume;
+              }
+            }
+            if (v > 0) {
+              vwap20AtOpen = pv / v;
+            }
+          } catch {
+            // exchange_detail parse failed — non-fatal
+          }
+        }
       }
     } catch (err) {
       log.warn('vwap_at_open_db_query_failed', { window_id: windowId, error: err.message });
     }
 
-    // Fallback to live VWAP only if DB had no data (e.g., first minutes after fresh deploy)
+    // Fallback to live VWAP only if DB had no data
     if (vwapAtOpen == null) {
       try {
         const composite = exchangeTradeCollector.getCompositeVWAP(crypto);
@@ -288,6 +333,26 @@ async function scanAndTrack() {
       }
     }
 
+    // Fallback for CG at open
+    if (cgAtOpen == null) {
+      try {
+        const cgData = coingeckoClient.getCurrentPrice(crypto);
+        if (cgData) cgAtOpen = cgData.price;
+      } catch {
+        // CG may not be available
+      }
+    }
+
+    // Fallback for VWAP20 at open
+    if (vwap20AtOpen == null) {
+      try {
+        const vwap20 = exchangeTradeCollector.getVWAP20(crypto);
+        if (vwap20) vwap20AtOpen = vwap20.vwap;
+      } catch {
+        // VWAP20 may not be available
+      }
+    }
+
     // Create window state
     const windowState = {
       windowId,
@@ -296,6 +361,8 @@ async function scanAndTrack() {
       closeTimeMs,
       market,
       vwapAtOpen,
+      cgAtOpen,
+      vwap20AtOpen,
       tradeIds: [],  // Multiple trades (one per fired variation)
       timers: [],
     };
@@ -308,6 +375,8 @@ async function scanAndTrack() {
       crypto,
       close_time: new Date(closeTimeMs).toISOString(),
       vwap_at_open: vwapAtOpen,
+      cg_at_open: cgAtOpen,
+      vwap20_at_open: vwap20AtOpen,
       vwap_source: vwapSource,
       up_token: market.upTokenId?.substring(0, 16) + '...',
     });
@@ -353,16 +422,17 @@ async function scanAndTrack() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SIGNAL EVALUATION — SWEEP ALL VARIATIONS AT EACH SIGNAL TIME
+// SIGNAL EVALUATION — MULTI-STRATEGY SWEEP AT EACH SIGNAL TIME
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Evaluate all parameter variations for a window at a specific signal time
+ * Evaluate all strategies and their variations for a window at a specific signal time
  *
  * Called once per signal time (T-120s, T-90s, T-60s, T-30s, T-10s).
- * 1. Compute market state once (VWAP vs CLOB)
- * 2. Persist book snapshot once
- * 3. Loop each variation: check threshold, simulate fill at that size, persist trade
+ * 1. Build strategy context (VWAP sources, CLOB book, Chainlink)
+ * 2. Loop each strategy in registry
+ * 3. For each: check appliesTo, evaluate market state, loop variations
+ * 4. For each firing variation: simulate fill, persist trade
  *
  * @param {Object} windowState - Window tracking state
  * @param {number} signalOffsetSec - Seconds before close this eval runs (e.g., 60)
@@ -371,175 +441,211 @@ async function evaluateSignal(windowState, signalOffsetSec) {
   const { windowId, crypto, market } = windowState;
   stats.signalsEvaluated++;
 
-  log.info('signal_eval_start', {
-    window_id: windowId,
-    crypto,
-    signal_offset_sec: signalOffsetSec,
-    variation_count: config.variations.length,
-  });
-
   // 1. Get live book from CLOB WS
   const upBook = clobWs.getBook(market.upTokenId);
   if (!upBook) {
-    log.warn('signal_eval_no_book', { window_id: windowId });
+    log.warn('signal_eval_no_book', { window_id: windowId, crypto });
     return;
   }
 
-  // 2. Evaluate market state once
-  const marketState = vwapStrategy.evaluateMarketState(windowState, upBook);
-  if (!marketState) {
-    log.info('signal_eval_no_market_state', {
+  // 2. Gather all VWAP sources
+  let compositeVwap = null;
+  try {
+    compositeVwap = exchangeTradeCollector.getCompositeVWAP(crypto);
+  } catch { /* ok */ }
+
+  let coingeckoPrice = null;
+  try {
+    const cgData = coingeckoClient.getCurrentPrice(crypto);
+    if (cgData) coingeckoPrice = cgData;
+  } catch { /* ok */ }
+
+  let vwap20 = null;
+  try {
+    vwap20 = exchangeTradeCollector.getVWAP20(crypto);
+  } catch { /* ok */ }
+
+  let chainlinkPrice = null;
+  try {
+    const clData = rtdsClient.getCurrentPrice(crypto, TOPICS.CRYPTO_PRICES_CHAINLINK);
+    if (clData) chainlinkPrice = clData.price;
+  } catch { /* ok */ }
+
+  // 3. Build strategy context
+  const ctx = {
+    windowState,
+    upBook,
+    signalOffsetSec,
+    vwapSources: {
+      composite: compositeVwap,
+      coingecko: coingeckoPrice,
+      vwap20: vwap20,
+    },
+    openPrices: {
+      composite: windowState.vwapAtOpen,
+      coingecko: windowState.cgAtOpen,
+      vwap20: windowState.vwap20AtOpen,
+    },
+    chainlinkPrice,
+  };
+
+  // Cache for book snapshots and latency probes per entryTokenId
+  const bookSnapshotCache = new Map();
+  const latencyCache = new Map();
+  const entryBookCache = new Map();
+
+  let totalFired = 0;
+  let strategiesEvaluated = 0;
+
+  // 4. Loop each strategy
+  for (const strategy of strategies) {
+    // Check if strategy applies to this crypto/timing
+    if (!strategy.appliesTo(crypto, signalOffsetSec)) continue;
+
+    // Evaluate market state
+    const marketState = strategy.evaluateMarketState(ctx);
+    if (!marketState) continue;
+
+    strategiesEvaluated++;
+
+    // Get variations for this strategy
+    const variations = config.strategyVariations[strategy.name] || config.variations;
+
+    // Loop variations
+    for (const variation of variations) {
+      if (!strategy.shouldFire(marketState, variation)) continue;
+
+      const { entryTokenId } = marketState;
+      const { positionSizeDollars, label } = variation;
+
+      // Get/cache book snapshot for this entryTokenId
+      if (!bookSnapshotCache.has(entryTokenId)) {
+        const snapId = await persistBookSnapshot(entryTokenId, crypto, 'signal', true);
+        bookSnapshotCache.set(entryTokenId, snapId);
+      }
+      const bookSnapshotId = bookSnapshotCache.get(entryTokenId);
+
+      // Get/cache latency probe for this entryTokenId
+      if (!latencyCache.has(entryTokenId)) {
+        let latMs = null;
+        try {
+          latMs = await latencyMeasurer.probeRestLatency(entryTokenId);
+        } catch { /* ok */ }
+        latencyCache.set(entryTokenId, latMs);
+      }
+      const latencyMs = latencyCache.get(entryTokenId);
+
+      // Get/cache entry book for this entryTokenId
+      if (!entryBookCache.has(entryTokenId)) {
+        entryBookCache.set(entryTokenId, clobWs.getBook(entryTokenId));
+      }
+      const entryBook = entryBookCache.get(entryTokenId);
+
+      if (!entryBook) continue;
+
+      // Simulate fill
+      const fillResult = simulateFill(entryBook, positionSizeDollars, {
+        feeRate: config.feeRate,
+      });
+
+      if (!fillResult.success) continue;
+
+      totalFired++;
+      stats.variationsFired++;
+
+      // Build strategy metadata
+      const strategyMetadata = {};
+      if (marketState.vwapSource) strategyMetadata.vwapSource = marketState.vwapSource;
+      if (marketState.vwapDeltaPct != null) strategyMetadata.vwapDeltaPct = marketState.vwapDeltaPct;
+      if (marketState.stalenessMs != null) strategyMetadata.stalenessMs = marketState.stalenessMs;
+      if (marketState.imbalanceRatio != null) strategyMetadata.imbalanceRatio = marketState.imbalanceRatio;
+      if (marketState.clobConviction != null) strategyMetadata.clobConviction = marketState.clobConviction;
+      if (marketState.agreeingSignals) strategyMetadata.agreeingSignals = marketState.agreeingSignals.map(s => s.name);
+
+      const vwapSourceLabel = marketState.vwapSource || 'composite';
+
+      // Persist paper trade
+      try {
+        const result = await persistence.runReturningId(`
+          INSERT INTO paper_trades_v2 (
+            window_id, symbol, signal_time, signal_type,
+            variant_label, position_size_dollars, vwap_delta_threshold,
+            signal_offset_sec,
+            vwap_direction, clob_direction, vwap_delta, vwap_price, chainlink_price, clob_up_price,
+            exchange_count, total_volume,
+            entry_side, entry_token_id, entry_book_snapshot_id,
+            sim_entry_price, sim_shares, sim_cost, sim_slippage,
+            sim_levels_consumed, sim_market_impact, sim_fee,
+            latency_ms, adjusted_entry_price,
+            strategy_metadata, vwap_source
+          ) VALUES (
+            $1, $2, NOW(), $3,
+            $4, $5, $6,
+            $7,
+            $8, $9, $10, $11, $12, $13,
+            $14, $15,
+            $16, $17, $18,
+            $19, $20, $21, $22,
+            $23, $24, $25,
+            $26, $27,
+            $28, $29
+          )
+          RETURNING id
+        `, [
+          windowId,                                // $1
+          crypto,                                  // $2
+          strategy.name,                           // $3 signal_type
+          label,                                   // $4
+          positionSizeDollars,                     // $5
+          marketState.absVwapDeltaPct ?? marketState.vwapDeltaPct ?? null, // $6
+          signalOffsetSec,                         // $7
+          marketState.vwapDirection ?? null,        // $8
+          marketState.clobDirection ?? null,        // $9
+          marketState.vwapDelta ?? null,            // $10
+          marketState.vwapPrice ?? null,            // $11
+          marketState.chainlinkPrice ?? null,       // $12
+          marketState.clobUpPrice ?? null,          // $13
+          marketState.exchangeCount ?? null,        // $14
+          marketState.totalVolume ?? null,          // $15
+          marketState.entrySide,                   // $16
+          marketState.entryTokenId,                // $17
+          bookSnapshotId,                          // $18
+          fillResult.vwapPrice,                    // $19
+          fillResult.totalShares,                  // $20
+          fillResult.totalCost,                    // $21
+          fillResult.slippage,                     // $22
+          fillResult.levelsConsumed,               // $23
+          fillResult.marketImpact,                 // $24
+          fillResult.fees,                         // $25
+          latencyMs,                               // $26
+          fillResult.vwapPrice,                    // $27 adjusted_entry_price
+          JSON.stringify(strategyMetadata),         // $28 strategy_metadata
+          vwapSourceLabel,                         // $29 vwap_source
+        ]);
+
+        windowState.tradeIds.push(result.lastInsertRowid);
+        stats.tradesPending++;
+      } catch (err) {
+        log.error('paper_trade_persist_failed', {
+          window_id: windowId,
+          strategy: strategy.name,
+          variant: label,
+          error: err.message,
+        });
+      }
+    }
+  }
+
+  if (totalFired > 0 || strategiesEvaluated > 0) {
+    log.info('signal_eval_complete', {
       window_id: windowId,
       crypto,
+      signal_offset_sec: signalOffsetSec,
+      strategies_evaluated: strategiesEvaluated,
+      variations_fired: totalFired,
       clob_mid: upBook.mid,
     });
-    return;
   }
-
-  // Log the market state regardless of whether any variation fires
-  log.info('signal_eval_market_state', {
-    window_id: windowId,
-    vwap_direction: marketState.vwapDirection,
-    clob_direction: marketState.clobDirection,
-    directions_disagree: marketState.directionsDisagree,
-    vwap_delta: marketState.vwapDelta,
-    abs_vwap_delta: marketState.absVwapDelta,
-    vwap_price: marketState.vwapPrice,
-    chainlink_price: marketState.chainlinkPrice,
-    clob_up_price: marketState.clobUpPrice,
-    exchange_count: marketState.exchangeCount,
-  });
-
-  // 3. Persist full book snapshot once (shared across all variations)
-  const bookSnapshotId = await persistBookSnapshot(
-    marketState.entryTokenId,
-    crypto,
-    'signal',
-    true
-  );
-
-  // 4. Probe API latency once
-  let latencyMs = null;
-  try {
-    latencyMs = await latencyMeasurer.probeRestLatency(marketState.entryTokenId);
-  } catch (err) {
-    log.warn('signal_latency_probe_failed', { error: err.message });
-  }
-
-  // 5. Get the entry book for fill simulation
-  const entryBook = clobWs.getBook(marketState.entryTokenId);
-  if (!entryBook) {
-    log.warn('signal_no_entry_book', {
-      window_id: windowId,
-      entry_token_id: marketState.entryTokenId?.substring(0, 16),
-    });
-    return;
-  }
-
-  // 6. Loop each variation
-  let firedCount = 0;
-  for (const variation of config.variations) {
-    const { label, vwapDeltaThreshold, positionSizeDollars } = variation;
-
-    // Check if this variation's threshold is met
-    if (!vwapStrategy.shouldFire(marketState, vwapDeltaThreshold)) {
-      continue;
-    }
-
-    // Simulate fill at this variation's position size
-    const fillResult = simulateFill(entryBook, positionSizeDollars, {
-      feeRate: config.feeRate,
-    });
-
-    if (!fillResult.success) {
-      log.warn('variation_fill_failed', {
-        window_id: windowId,
-        variant: label,
-        position_size: positionSizeDollars,
-        unfilled: fillResult.unfilled,
-      });
-      continue;
-    }
-
-    firedCount++;
-    stats.variationsFired++;
-
-    const adjustedEntryPrice = fillResult.vwapPrice;
-
-    // Persist paper trade for this variation
-    try {
-      const result = await persistence.runReturningId(`
-        INSERT INTO paper_trades_v2 (
-          window_id, symbol, signal_time, signal_type,
-          variant_label, position_size_dollars, vwap_delta_threshold,
-          signal_offset_sec,
-          vwap_direction, clob_direction, vwap_delta, vwap_price, chainlink_price, clob_up_price,
-          exchange_count, total_volume,
-          entry_side, entry_token_id, entry_book_snapshot_id,
-          sim_entry_price, sim_shares, sim_cost, sim_slippage,
-          sim_levels_consumed, sim_market_impact, sim_fee,
-          latency_ms, adjusted_entry_price
-        ) VALUES (
-          $1, $2, NOW(), 'vwap_edge',
-          $3, $4, $5,
-          $6,
-          $7, $8, $9, $10, $11, $12,
-          $13, $14,
-          $15, $16, $17,
-          $18, $19, $20, $21,
-          $22, $23, $24,
-          $25, $26
-        )
-        RETURNING id
-      `, [
-        windowId,                          // $1
-        crypto,                            // $2
-        label,                             // $3
-        positionSizeDollars,               // $4
-        vwapDeltaThreshold,                // $5
-        signalOffsetSec,                   // $6
-        marketState.vwapDirection,         // $7
-        marketState.clobDirection,          // $8
-        marketState.vwapDelta,             // $9
-        marketState.vwapPrice,             // $10
-        marketState.chainlinkPrice,        // $11
-        marketState.clobUpPrice,           // $12
-        marketState.exchangeCount,         // $13
-        marketState.totalVolume,           // $14
-        marketState.entrySide,             // $15
-        marketState.entryTokenId,          // $16
-        bookSnapshotId,                    // $17
-        fillResult.vwapPrice,              // $18
-        fillResult.totalShares,            // $19
-        fillResult.totalCost,              // $20
-        fillResult.slippage,               // $21
-        fillResult.levelsConsumed,         // $22
-        fillResult.marketImpact,           // $23
-        fillResult.fees,                   // $24
-        latencyMs,                         // $25
-        adjustedEntryPrice,                // $26
-      ]);
-
-      windowState.tradeIds.push(result.lastInsertRowid);
-      stats.tradesPending++;
-    } catch (err) {
-      log.error('paper_trade_persist_failed', {
-        window_id: windowId,
-        variant: label,
-        error: err.message,
-      });
-    }
-  }
-
-  log.info('signal_eval_complete', {
-    window_id: windowId,
-    signal_offset_sec: signalOffsetSec,
-    variations_checked: config.variations.length,
-    variations_fired: firedCount,
-    trade_ids: windowState.tradeIds,
-    directions_disagree: marketState.directionsDisagree,
-    abs_vwap_delta: marketState.absVwapDelta,
-  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -624,7 +730,7 @@ async function settleAllTrades(windowState, resolvedDirection) {
 
   // Fetch all unsettled trades for this window
   const trades = await persistence.all(`
-    SELECT id, entry_side, sim_shares, sim_cost, sim_fee, variant_label
+    SELECT id, entry_side, sim_shares, sim_cost, sim_fee, variant_label, signal_type
     FROM paper_trades_v2
     WHERE window_id = $1 AND settlement_time IS NULL
   `, [windowId]);
@@ -674,7 +780,6 @@ async function settleAllTrades(windowState, resolvedDirection) {
     window_id: windowId,
     resolved_direction: resolvedDirection,
     trades_settled: trades.length,
-    variants_settled: trades.map(t => t.variant_label),
     window_wins: windowWins,
     window_losses: windowLosses,
     window_pnl: windowPnl,

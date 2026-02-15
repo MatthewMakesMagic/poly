@@ -457,32 +457,41 @@ const config = {
     maxTradesPerBuffer: 5000,
   },
 
-  // Paper trader V2 (VWAP edge testing with streaming L2)
+  // Paper trader V2 (multi-strategy, multi-asset)
   paperTrader: {
     snapshotIntervalMs: 5000,
     feeRate: 0.0,
-    cryptos: ['btc'],
+    cryptos: ['btc', 'eth', 'sol', 'xrp'],
     // Signal evaluation times (seconds before window close)
-    // Each time gets the full variation grid, so we learn which timing works best
     signalTimesBeforeCloseSec: [10, 30, 60, 90, 120],
-    // Variation grid: every combo is evaluated at each signal time
+    // Default variations for VWAP strategies (percentage-based thresholds)
     variations: [
-      { label: 'base',          vwapDeltaThreshold: 75,  positionSizeDollars: 100  },
-      { label: 'tight-sm',      vwapDeltaThreshold: 25,  positionSizeDollars: 50   },
-      { label: 'tight-md',      vwapDeltaThreshold: 25,  positionSizeDollars: 100  },
-      { label: 'tight-lg',      vwapDeltaThreshold: 25,  positionSizeDollars: 250  },
-      { label: 'mid-sm',        vwapDeltaThreshold: 50,  positionSizeDollars: 50   },
-      { label: 'mid-md',        vwapDeltaThreshold: 50,  positionSizeDollars: 100  },
-      { label: 'mid-lg',        vwapDeltaThreshold: 50,  positionSizeDollars: 250  },
-      { label: 'base-sm',       vwapDeltaThreshold: 75,  positionSizeDollars: 50   },
-      { label: 'base-lg',       vwapDeltaThreshold: 75,  positionSizeDollars: 250  },
-      { label: 'base-xl',       vwapDeltaThreshold: 75,  positionSizeDollars: 500  },
-      { label: 'wide-md',       vwapDeltaThreshold: 100, positionSizeDollars: 100  },
-      { label: 'wide-lg',       vwapDeltaThreshold: 100, positionSizeDollars: 250  },
-      { label: 'wide-xl',       vwapDeltaThreshold: 100, positionSizeDollars: 500  },
-      { label: 'ultra-md',      vwapDeltaThreshold: 150, positionSizeDollars: 100  },
-      { label: 'ultra-xl',      vwapDeltaThreshold: 150, positionSizeDollars: 500  },
+      { label: 'pct-3-sm',  vwapDeltaThresholdPct: 0.03, positionSizeDollars: 100 },
+      { label: 'pct-6-md',  vwapDeltaThresholdPct: 0.06, positionSizeDollars: 100 },
+      { label: 'pct-10-md', vwapDeltaThresholdPct: 0.10, positionSizeDollars: 100 },
     ],
+    // Strategy-specific variations
+    strategyVariations: {
+      clob_stale: [
+        { label: 'stale-5s',  minStalenessMs: 5000,  minDeltaPct: 0.03, positionSizeDollars: 100 },
+        { label: 'stale-10s', minStalenessMs: 10000, minDeltaPct: 0.03, positionSizeDollars: 100 },
+        { label: 'stale-30s', minStalenessMs: 30000, minDeltaPct: 0.03, positionSizeDollars: 100 },
+      ],
+      book_imbal: [
+        { label: 'imb-60', imbalanceThreshold: 0.60, positionSizeDollars: 100 },
+        { label: 'imb-70', imbalanceThreshold: 0.70, positionSizeDollars: 100 },
+        { label: 'imb-80', imbalanceThreshold: 0.80, positionSizeDollars: 100 },
+      ],
+      early_inv: [
+        { label: 'inv-soft',   minConviction: 0.05, maxConviction: 0.20, positionSizeDollars: 100 },
+        { label: 'inv-mid',    minConviction: 0.10, maxConviction: 0.30, positionSizeDollars: 100 },
+        { label: 'inv-strong', minConviction: 0.15, maxConviction: 0.40, positionSizeDollars: 100 },
+      ],
+      combined: [
+        { label: 'comb-2', minAgreement: 2, positionSizeDollars: 100 },
+        { label: 'comb-3', minAgreement: 3, positionSizeDollars: 100 },
+      ],
+    },
   },
 
   // Backtest configuration

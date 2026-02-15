@@ -1,13 +1,11 @@
 /**
- * VWAP Strategy
+ * VWAP Strategy (backward-compatible wrapper)
  *
- * Encapsulates the backtested VWAP edge strategy logic:
- * When 21-exchange composite VWAP disagrees with CLOB direction at T-60s
- * and VWAP delta > threshold, the backtest shows strong win rates.
+ * Delegates to vwap-contrarian-strategy.js internally. This file exists
+ * to maintain backward compatibility for any code that imports vwap-strategy.
  *
- * Two-phase evaluation:
- * 1. evaluateMarketState() — compute raw VWAP vs CLOB data (called once per window)
- * 2. shouldFire() — check if a specific threshold is met (called per variation)
+ * The new vwap-contrarian-strategy supports parameterized VWAP sources
+ * (composite, coingecko, vwap20) and direction filters (both, down-only).
  *
  * @module modules/paper-trader/vwap-strategy
  */
@@ -17,10 +15,10 @@ import * as rtdsClient from '../../clients/rtds/index.js';
 import { TOPICS } from '../../clients/rtds/types.js';
 
 /**
- * Evaluate the raw market state for VWAP edge signal
+ * Evaluate the raw market state for VWAP edge signal (legacy interface)
  *
- * Computes VWAP delta, directions, and whether they disagree.
- * Does NOT apply a threshold — that's done per-variation by shouldFire().
+ * Keeps the original interface: takes windowState + clobBook directly,
+ * computes using composite VWAP and absolute dollar thresholds.
  *
  * @param {Object} windowState - Window state from paper trader
  * @param {Object} clobBook - Current CLOB book for UP token
@@ -29,32 +27,26 @@ import { TOPICS } from '../../clients/rtds/types.js';
 export function evaluateMarketState(windowState, clobBook) {
   const { crypto, vwapAtOpen, market } = windowState;
 
-  // 1. Get current composite VWAP
   const composite = exchangeTradeCollector.getCompositeVWAP(crypto);
   if (!composite) return null;
 
   const currentVwap = composite.vwap;
 
-  // 2. Compute VWAP delta and direction
   if (vwapAtOpen == null || vwapAtOpen <= 0) return null;
 
   const vwapDelta = currentVwap - vwapAtOpen;
   const vwapDirection = vwapDelta >= 0 ? 'up' : 'down';
   const absVwapDelta = Math.abs(vwapDelta);
 
-  // 3. Get CLOB direction from UP token mid price
   if (!clobBook || clobBook.mid == null) return null;
 
   const clobUpPrice = clobBook.mid;
   const clobDirection = clobUpPrice >= 0.5 ? 'up' : 'down';
 
-  // 4. CLOB mid not extreme (market hasn't already decided)
   if (clobUpPrice < 0.05 || clobUpPrice > 0.95) return null;
 
-  // 5. Determine if VWAP and CLOB disagree
   const directionsDisagree = vwapDirection !== clobDirection;
 
-  // Get Chainlink price for reference
   let chainlinkPrice = null;
   try {
     const clData = rtdsClient.getCurrentPrice(crypto, TOPICS.CRYPTO_PRICES_CHAINLINK);
@@ -63,7 +55,6 @@ export function evaluateMarketState(windowState, clobBook) {
     // RTDS may not be available
   }
 
-  // Entry side = VWAP direction (buy the token that VWAP predicts will win)
   const entrySide = vwapDirection;
   const entryTokenId = entrySide === 'up'
     ? market.upTokenId
@@ -87,7 +78,7 @@ export function evaluateMarketState(windowState, clobBook) {
 }
 
 /**
- * Check if a specific variation's threshold is met
+ * Check if a specific variation's threshold is met (legacy absolute dollar threshold)
  *
  * @param {Object} marketState - From evaluateMarketState()
  * @param {number} vwapDeltaThreshold - Minimum |vwapDelta| to fire

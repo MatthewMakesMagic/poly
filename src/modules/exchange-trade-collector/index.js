@@ -218,6 +218,72 @@ export function getCompositeVWAP(symbol) {
 }
 
 /**
+ * Get composite VWAP excluding specific exchanges
+ *
+ * Same logic as getCompositeVWAP() but skips exchanges in the exclude set.
+ * Used for VWAP20 (all minus LBank) to get a diversified signal.
+ *
+ * @param {string} symbol
+ * @param {string[]} excludeExchanges - Exchange names to exclude (lowercase)
+ * @returns {{ vwap: number, totalVolume: number, exchangeCount: number, exchanges: Object } | null}
+ */
+export function getCompositeVWAPExcluding(symbol, excludeExchanges = []) {
+  const exchangeBuckets = vwapState[symbol];
+  if (!exchangeBuckets) return null;
+
+  const excludeSet = new Set(excludeExchanges.map(e => e.toLowerCase()));
+
+  let totalPV = 0;
+  let totalV = 0;
+  let exchangeCount = 0;
+  const exchanges = {};
+
+  for (const [exchange, bucket] of Object.entries(exchangeBuckets)) {
+    if (excludeSet.has(exchange.toLowerCase())) continue;
+
+    const result = getBucketVwap(bucket);
+    if (!result) continue;
+
+    totalPV += bucket.sumPV;
+    totalV += bucket.sumV;
+    exchangeCount++;
+
+    exchanges[exchange] = {
+      vwap: result.vwap,
+      volume: result.volume,
+    };
+  }
+
+  if (totalV <= 0 || exchangeCount === 0) return null;
+
+  const compositeVwap = totalPV / totalV;
+
+  for (const ex of Object.values(exchanges)) {
+    ex.weight = ex.volume / totalV;
+  }
+
+  return {
+    vwap: compositeVwap,
+    totalVolume: totalV,
+    exchangeCount,
+    exchanges,
+  };
+}
+
+/**
+ * Get VWAP20 — composite VWAP excluding LBank
+ *
+ * LBank dominates ~93-97% of our composite volume, making it effectively
+ * a single-exchange signal. VWAP20 excludes LBank for a more diversified view.
+ *
+ * @param {string} symbol
+ * @returns {{ vwap: number, totalVolume: number, exchangeCount: number, exchanges: Object } | null}
+ */
+export function getVWAP20(symbol) {
+  return getCompositeVWAPExcluding(symbol, ['lbank']);
+}
+
+/**
  * Get predicted oracle price using measured transfer function
  *
  * Transfer function (from oracle architecture analysis):
