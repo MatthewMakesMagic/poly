@@ -258,6 +258,7 @@ async function scanAndTrack() {
     try {
       market = await windowManager.fetchMarket(crypto, currentEpoch);
     } catch (err) {
+      log.warn('market_fetch_failed', { crypto, epoch: currentEpoch, error: err.message });
       continue;
     }
 
@@ -328,8 +329,8 @@ async function scanAndTrack() {
           vwapAtOpen = composite.vwap;
           vwapSource = 'live_fallback';
         }
-      } catch {
-        // VWAP may not be available yet
+      } catch (err) {
+        log.warn('vwap_open_fallback_failed', { window_id: windowId, crypto, error: err.message });
       }
     }
 
@@ -338,8 +339,8 @@ async function scanAndTrack() {
       try {
         const cgData = coingeckoClient.getCurrentPrice(crypto);
         if (cgData) cgAtOpen = cgData.price;
-      } catch {
-        // CG may not be available
+      } catch (err) {
+        log.warn('cg_open_fallback_failed', { window_id: windowId, crypto, error: err.message });
       }
     }
 
@@ -348,8 +349,8 @@ async function scanAndTrack() {
       try {
         const vwap20 = exchangeTradeCollector.getVWAP20(crypto);
         if (vwap20) vwap20AtOpen = vwap20.vwap;
-      } catch {
-        // VWAP20 may not be available
+      } catch (err) {
+        log.warn('vwap20_open_fallback_failed', { window_id: windowId, crypto, error: err.message });
       }
     }
 
@@ -452,24 +453,32 @@ async function evaluateSignal(windowState, signalOffsetSec) {
   let compositeVwap = null;
   try {
     compositeVwap = exchangeTradeCollector.getCompositeVWAP(crypto);
-  } catch { /* ok */ }
+  } catch (err) {
+    log.warn('vwap_composite_fetch_failed', { window_id: windowId, crypto, error: err.message });
+  }
 
   let coingeckoPrice = null;
   try {
     const cgData = coingeckoClient.getCurrentPrice(crypto);
     if (cgData) coingeckoPrice = cgData;
-  } catch { /* ok */ }
+  } catch (err) {
+    log.warn('coingecko_fetch_failed', { window_id: windowId, crypto, error: err.message });
+  }
 
   let vwap20 = null;
   try {
     vwap20 = exchangeTradeCollector.getVWAP20(crypto);
-  } catch { /* ok */ }
+  } catch (err) {
+    log.warn('vwap20_fetch_failed', { window_id: windowId, crypto, error: err.message });
+  }
 
   let chainlinkPrice = null;
   try {
     const clData = rtdsClient.getCurrentPrice(crypto, TOPICS.CRYPTO_PRICES_CHAINLINK);
     if (clData) chainlinkPrice = clData.price;
-  } catch { /* ok */ }
+  } catch (err) {
+    log.warn('chainlink_fetch_failed', { window_id: windowId, crypto, error: err.message });
+  }
 
   // 3. Build strategy context
   const ctx = {
@@ -518,6 +527,18 @@ async function evaluateSignal(windowState, signalOffsetSec) {
       const { entryTokenId } = marketState;
       const { positionSizeDollars, label } = variation;
 
+      // Guard: entryTokenId must exist (DOWN tokens can be null for some markets)
+      if (!entryTokenId) {
+        log.warn('signal_eval_null_entry_token', {
+          window_id: windowId,
+          crypto,
+          strategy: strategy.name,
+          entry_side: marketState.entrySide,
+          variant: label,
+        });
+        continue;
+      }
+
       // Get/cache book snapshot for this entryTokenId
       if (!bookSnapshotCache.has(entryTokenId)) {
         const snapId = await persistBookSnapshot(entryTokenId, crypto, 'signal', true);
@@ -530,7 +551,9 @@ async function evaluateSignal(windowState, signalOffsetSec) {
         let latMs = null;
         try {
           latMs = await latencyMeasurer.probeRestLatency(entryTokenId);
-        } catch { /* ok */ }
+        } catch (err) {
+          log.warn('latency_probe_failed', { window_id: windowId, token_id: entryTokenId?.substring(0, 16), error: err.message });
+        }
         latencyCache.set(entryTokenId, latMs);
       }
       const latencyMs = latencyCache.get(entryTokenId);

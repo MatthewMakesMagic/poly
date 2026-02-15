@@ -460,7 +460,7 @@ const config = {
   // Paper trader V2 (multi-strategy, multi-asset)
   paperTrader: {
     snapshotIntervalMs: 5000,
-    feeRate: 0.0,
+    feeRate: 0.02,
     cryptos: ['btc', 'eth', 'sol', 'xrp'],
     // Signal evaluation times (seconds before window close)
     signalTimesBeforeCloseSec: [10, 30, 60, 90, 120],
