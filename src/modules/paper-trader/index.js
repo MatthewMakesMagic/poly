@@ -8,7 +8,7 @@
  *
  * For each 15-minute window:
  * 1. Subscribe CLOB WS to UP/DOWN tokens
- * 2. Capture VWAP at window open
+ * 2. Capture VWAP at window open (from vwap_snapshots DB, not live — survives redeployments)
  * 3. At each signal time: evaluate market state, loop variations, simulate fills
  * 4. At T+65s: settle all trades for the window
  *
@@ -253,15 +253,39 @@ async function scanAndTrack() {
       clobWs.subscribeToken(market.downTokenId, `${crypto}-DOWN`);
     }
 
-    // Capture VWAP at window open
+    // Capture VWAP at window open — query DB for the true value at epoch time
+    // This is critical: on redeployment, the live VWAP is "now" not "window open"
     let vwapAtOpen = null;
+    let vwapSource = 'none';
     try {
-      const composite = exchangeTradeCollector.getCompositeVWAP(crypto);
-      if (composite) {
-        vwapAtOpen = composite.vwap;
+      const row = await persistence.get(`
+        SELECT composite_vwap FROM vwap_snapshots
+        WHERE symbol = $1
+          AND timestamp >= to_timestamp($2) - interval '5 seconds'
+          AND timestamp <= to_timestamp($2) + interval '5 seconds'
+        ORDER BY ABS(EXTRACT(EPOCH FROM timestamp) - $2)
+        LIMIT 1
+      `, [crypto, currentEpoch]);
+
+      if (row && row.composite_vwap != null) {
+        vwapAtOpen = parseFloat(row.composite_vwap);
+        vwapSource = 'db';
       }
-    } catch {
-      // VWAP may not be available yet
+    } catch (err) {
+      log.warn('vwap_at_open_db_query_failed', { window_id: windowId, error: err.message });
+    }
+
+    // Fallback to live VWAP only if DB had no data (e.g., first minutes after fresh deploy)
+    if (vwapAtOpen == null) {
+      try {
+        const composite = exchangeTradeCollector.getCompositeVWAP(crypto);
+        if (composite) {
+          vwapAtOpen = composite.vwap;
+          vwapSource = 'live_fallback';
+        }
+      } catch {
+        // VWAP may not be available yet
+      }
     }
 
     // Create window state
@@ -284,6 +308,7 @@ async function scanAndTrack() {
       crypto,
       close_time: new Date(closeTimeMs).toISOString(),
       vwap_at_open: vwapAtOpen,
+      vwap_source: vwapSource,
       up_token: market.upTokenId?.substring(0, 16) + '...',
     });
 
