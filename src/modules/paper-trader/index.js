@@ -91,8 +91,12 @@ export async function init(cfg = {}) {
     variations: ptConfig.variations ?? DEFAULT_VARIATIONS,
   };
 
-  // Initialize CLOB WS client
-  await clobWs.init(cfg);
+  // Initialize CLOB WS client (non-fatal — WS connects in background)
+  try {
+    await clobWs.init(cfg);
+  } catch (err) {
+    log.warn('clob_ws_init_failed_non_fatal', { error: err.message });
+  }
 
   // Initialize latency measurer
   latencyMeasurer.init(child({ module: 'paper-trader-latency' }));
@@ -115,10 +119,15 @@ export async function init(cfg = {}) {
   }, config.snapshotIntervalMs);
   if (snapshotIntervalId.unref) snapshotIntervalId.unref();
 
-  // Initial scan
-  await scanAndTrack();
+  // Initial scan (non-fatal — will retry on interval)
+  try {
+    await scanAndTrack();
+  } catch (err) {
+    log.warn('initial_scan_failed_non_fatal', { error: err.message });
+  }
 
   initialized = true;
+  console.log('[paper-trader] initialized OK —', config.signalTimesBeforeCloseSec.length, 'signal times x', config.variations.length, 'variations =', config.signalTimesBeforeCloseSec.length * config.variations.length, 'max trades/window');
   log.info('paper_trader_initialized', {
     config: {
       cryptos: config.cryptos,
