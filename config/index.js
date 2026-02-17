@@ -491,6 +491,16 @@ const config = {
         { label: 'comb-2', minAgreement: 2, positionSizeDollars: 100 },
         { label: 'comb-3', minAgreement: 3, positionSizeDollars: 100 },
       ],
+      btc_lead: [
+        { label: 'btc-3', btcDeltaThresholdPct: 0.03, positionSizeDollars: 100 },
+        { label: 'btc-6', btcDeltaThresholdPct: 0.06, positionSizeDollars: 100 },
+        { label: 'btc-10', btcDeltaThresholdPct: 0.10, positionSizeDollars: 100 },
+      ],
+      spread_widen: [
+        { label: 'spr-3', minSpread: 0.03, minDeltaPct: 0.03, positionSizeDollars: 100 },
+        { label: 'spr-5', minSpread: 0.05, minDeltaPct: 0.03, positionSizeDollars: 100 },
+        { label: 'spr-8', minSpread: 0.08, minDeltaPct: 0.03, positionSizeDollars: 100 },
+      ],
     },
   },
 
