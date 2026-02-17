@@ -647,6 +647,7 @@ async function evaluateSignal(windowState, signalOffsetSec) {
             $26, $27,
             $28, $29
           )
+          ON CONFLICT (window_id, signal_type, signal_offset_sec, variant_label) DO NOTHING
           RETURNING id
         `, [
           windowId,                                // $1
@@ -680,8 +681,10 @@ async function evaluateSignal(windowState, signalOffsetSec) {
           vwapSourceLabel,                         // $29 vwap_source
         ]);
 
-        windowState.tradeIds.push(result.lastInsertRowid);
-        stats.tradesPending++;
+        if (result.lastInsertRowid) {
+          windowState.tradeIds.push(result.lastInsertRowid);
+          stats.tradesPending++;
+        }
       } catch (err) {
         log.error('paper_trade_persist_failed', {
           window_id: windowId,
