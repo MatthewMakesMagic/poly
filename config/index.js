@@ -501,6 +501,16 @@ const config = {
         { label: 'spr-5', minSpread: 0.05, minDeltaPct: 0.03, positionSizeDollars: 100 },
         { label: 'spr-8', minSpread: 0.08, minDeltaPct: 0.03, positionSizeDollars: 100 },
       ],
+      contra_depth: [
+        { label: 'cd-c25-d5',  minConviction: 0.25, minDepthDollars: 5,  positionSizeDollars: 100 },
+        { label: 'cd-c25-d10', minConviction: 0.25, minDepthDollars: 10, positionSizeDollars: 100 },
+        { label: 'cd-c30-d5',  minConviction: 0.30, minDepthDollars: 5,  positionSizeDollars: 100 },
+      ],
+      xover_spread: [
+        { label: 'xs-c25-s10', minConviction: 0.25, minContrarianSpread: 0.10, positionSizeDollars: 100 },
+        { label: 'xs-c25-s20', minConviction: 0.25, minContrarianSpread: 0.20, positionSizeDollars: 100 },
+        { label: 'xs-c30-s15', minConviction: 0.30, minContrarianSpread: 0.15, positionSizeDollars: 100 },
+      ],
     },
   },
 

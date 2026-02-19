@@ -397,3 +397,102 @@ Added conviction-filtered variations to paper trader (deployed Feb 19):
 - `f-d8-c25`: delta ≥ 8%, conviction < 25% (wider band)
 
 Running alongside unfiltered variants for direct A/B comparison. All VWAP strategies (vwap_edge, vwap_cg_edge, down_only, down_cg, vwap20_edge, down_v20) now test both filtered and unfiltered.
+
+---
+
+## Update 2026-02-19 (cont.): Crossover Pattern — Decided CLOB Wrong
+
+### Discovery
+
+Separate from the near-fair conviction edge, there is a second distinct pattern: **CLOB strongly decided one direction, but resolves the other way.** These "crossover" windows are where the VWAP contrarian strategy captures massive asymmetric payoffs.
+
+At T-10, CLOB gets the final resolution wrong:
+- CLOB says UP (>0.70): wrong **20.6%** of the time (7/34 windows)
+- CLOB says DOWN (<0.30): wrong **7.9%** of the time (3/38 windows)
+
+### Crossover trade performance (all offsets)
+
+| Offset | Trades | Won | Win % | Avg Entry | Total PnL | Avg Win PnL |
+|--------|--------|-----|-------|-----------|-----------|-------------|
+| T-120 | 58 | 48 | 82.8% | $0.37 | +$14,478 | $323 |
+| T-90 | 46 | 40 | 87.0% | $0.33 | +$12,857 | $337 |
+| T-60 | 29 | 24 | 82.8% | $0.40 | +$7,293 | $325 |
+| T-30 | 22 | 20 | 90.9% | $0.37 | +$4,734 | $247 |
+| T-10 | 19 | 17 | 89.5% | $0.44 | +$4,194 | $259 |
+
+**$43,556 total PnL from crossover trades.** 83-91% win rates at every timing.
+
+### T-10 crossover fills (vwap_edge contrarian entries)
+
+| Window | Symbol | CLOB UP | Entry | Shares | Slip | Levels | Ask Depth | PnL |
+|--------|--------|---------|-------|--------|------|--------|-----------|-----|
+| eth-1771275600 | ETH | 0.905 | $0.136 | 736 | 0.046 | 5 | $21.71 | +$634 |
+| eth-1771210800 | ETH | 0.110 | $0.173 | 577 | 0.063 | 6 | $2.10 | +$475 |
+| eth-1771207200 | ETH | 0.830 | $0.226 | 442 | 0.006 | 2 | $63.66 | +$340 |
+| sol-1771467300 | SOL | 0.790 | $0.240 | 417 | 0.020 | 5 | $40.93 | +$315 |
+| btc-1771173900 | BTC | 0.240 | $0.251 | 399 | 0.011 | 2 | $16.50 | +$297 |
+| eth-1771497000 | ETH | 0.730 | $0.695 | 144 | 0.245 | 8 | $14.27 | +$42 |
+| eth-1771280100 | ETH | 0.940 | $0.980 | 102 | 0.000 | 1 | $2.91 | $0 |
+
+5/7 had entries below $0.26 with real book depth ($2-$64 within 1%).
+
+### Liquidity finding: separate order books
+
+UP and DOWN are **separate order books** on Polymarket. When CLOB strongly favors UP, MMs may pull DOWN-side quotes entirely. The eth-1771280100 crossover (CLOB UP 0.940) had zero DOWN liquidity — best DOWN ask was $0.98.
+
+But eth-1771275600 (also CLOB UP 0.905) had real DOWN depth at $0.13-$0.15 with 167+59+184 shares. The difference is whether a MM is providing two-sided liquidity at that moment.
+
+**Practical filter**: check contrarian token's best ask before entering. If best ask > $0.50, the book is empty — skip.
+
+### Entry price evolution across offsets (same crossover windows)
+
+| Offset | Avg Entry | Avg CLOB Conviction | Trades |
+|--------|-----------|-------------------|--------|
+| T-90 | $0.434 | 0.120 | 1 |
+| T-60 | $0.459 | 0.108 | 2 |
+| T-30 | $0.447 | 0.249 | 4 |
+| T-10 | $0.386 | 0.335 | 7 |
+
+Entries get **cheaper** closer to close as CLOB moves further, pushing the contrarian token to extreme lows. More windows qualify at T-10 (7 vs 1-4) since crossovers reveal themselves late.
+
+### Two distinct patterns in VWAP contrarian
+
+| Pattern | CLOB state | Win rate | Avg PnL/win | Frequency |
+|---------|-----------|----------|-------------|-----------|
+| Near-fair contrarian | 0.30-0.70 | 69% | ~$150 | Common |
+| Crossover contrarian | >0.70 or <0.30 | 86% | ~$310 | ~15-20% of ETH windows |
+
+The conviction filter (`maxClobConviction < 0.20`) targets pattern 1. The unfiltered variants catch pattern 2. Both run in parallel for A/B comparison.
+
+### Crossover frequency by instrument
+
+| Symbol | Windows with T-10 data | Crossovers | Rate |
+|--------|----------------------|------------|------|
+| ETH | 26 | 5 | **19.2%** |
+| BTC | 17 | 1 | 5.9% |
+| SOL | 30 | 1 | 3.3% |
+| XRP | 23 | 0 | 0.0% |
+
+ETH has the highest crossover rate — MMs reprice ETH slowest.
+
+---
+
+## Update 2026-02-19 (cont.): New Strategies Deployed
+
+### Strategy: `contra_depth` (Contrarian Book Depth)
+
+When CLOB is strongly decided (conviction > 0.25) but the contrarian token still has real ask depth (>$5-10), MMs are quoting the "losing" side with real money. This is itself predictive — presence of contrarian liquidity signals informed disagreement. Entry = contrarian side.
+
+Variations: `cd-c25-d5`, `cd-c25-d10`, `cd-c30-d5` (conviction × depth thresholds).
+
+### Strategy: `xover_spread` (Crossover Spread Predictor)
+
+When CLOB is decided but the contrarian token's spread is widening (>$0.10-0.20), MMs are pulling quotes. Observed: eth-1771497000 DOWN spread went from $0.02 at T-90 to $0.36 at T-10 before resolution flipped. Wide contrarian spread = crossover incoming. Entry = contrarian side.
+
+Variations: `xs-c25-s10`, `xs-c25-s20`, `xs-c30-s15` (conviction × spread thresholds).
+
+### Other Considerations (Briefly Discussed, Not Implemented)
+
+**Cross-asset clustering**: When multiple cryptos (BTC + ETH + XRP) all show VWAP-CLOB disagreement simultaneously, the signal may be stronger — a macro move affecting all assets. Could track agreement count across active windows and boost confidence when 2+ assets align. Not implemented — needs more data to validate frequency and incremental edge.
+
+**Pre-positioning (Ruled Out)**: Limit buy orders on the contrarian token don't work — the contrarian token is already priced cheap (that's the edge). A limit order below the current ask would only fill if the price drops further, meaning you'd be buying something that's becoming MORE worthless. The entry has to be a market/taker order when the signal fires.

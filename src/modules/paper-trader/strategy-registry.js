@@ -1,7 +1,7 @@
 /**
  * Strategy Registry
  *
- * Creates 10 named strategy entries by wrapping the 5 strategy modules
+ * Creates 13 named strategy entries by wrapping the 7 strategy modules
  * with their configuration (vwapSource, directionFilter, crypto filter).
  *
  * Each entry has:
@@ -19,6 +19,8 @@ import * as bookImbalance from './book-imbalance-strategy.js';
 import * as earlyContrarian from './early-contrarian-strategy.js';
 import * as combined from './combined-strategy.js';
 import * as spreadWiden from './spread-widening-strategy.js';
+import * as contrarianDepth from './contrarian-depth-strategy.js';
+import * as crossoverSpread from './crossover-spread-strategy.js';
 
 function createVwapEntry(name, vwapSource, directionFilter, cryptoFilter) {
   return {
@@ -78,5 +80,21 @@ export const strategies = [
     evaluateMarketState: (ctx) => spreadWiden.evaluateMarketState(ctx),
     shouldFire: (state, v) => spreadWiden.shouldFire(state, v),
     appliesTo: (crypto, offset) => spreadWiden.appliesTo(crypto, offset),
+  },
+
+  // Contrarian book depth (ETH, XRP — bet with MMs quoting the "losing" side)
+  {
+    name: 'contra_depth',
+    evaluateMarketState: (ctx) => contrarianDepth.evaluateMarketState(ctx),
+    shouldFire: (state, v) => contrarianDepth.shouldFire(state, v),
+    appliesTo: (crypto, offset) => contrarianDepth.appliesTo(crypto, offset),
+  },
+
+  // Crossover spread predictor (ETH, XRP — wide contrarian spread = crossover incoming)
+  {
+    name: 'xover_spread',
+    evaluateMarketState: (ctx) => crossoverSpread.evaluateMarketState(ctx),
+    shouldFire: (state, v) => crossoverSpread.shouldFire(state, v),
+    appliesTo: (crypto, offset) => crossoverSpread.appliesTo(crypto, offset),
   },
 ];
