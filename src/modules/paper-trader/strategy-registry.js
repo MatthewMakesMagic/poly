@@ -18,7 +18,6 @@ import * as clobStaleness from './clob-staleness-strategy.js';
 import * as bookImbalance from './book-imbalance-strategy.js';
 import * as earlyContrarian from './early-contrarian-strategy.js';
 import * as combined from './combined-strategy.js';
-import * as btcLead from './btc-lead-strategy.js';
 import * as spreadWiden from './spread-widening-strategy.js';
 
 function createVwapEntry(name, vwapSource, directionFilter, cryptoFilter) {
@@ -73,15 +72,7 @@ export const strategies = [
     appliesTo: (crypto, offset) => combined.appliesTo(crypto, offset),
   },
 
-  // BTC lead (altcoins follow BTC)
-  {
-    name: 'btc_lead',
-    evaluateMarketState: (ctx) => btcLead.evaluateMarketState(ctx),
-    shouldFire: (state, v) => btcLead.shouldFire(state, v),
-    appliesTo: (crypto, offset) => btcLead.appliesTo(crypto, offset),
-  },
-
-  // Spread widening (SOL/XRP only)
+  // Spread widening (XRP only — SOL killed, no edge)
   {
     name: 'spread_widen',
     evaluateMarketState: (ctx) => spreadWiden.evaluateMarketState(ctx),

@@ -450,7 +450,7 @@ const config = {
 
   // Exchange trade collector (WebSocket VWAP)
   exchangeTradeCollector: {
-    cryptos: ['btc', 'eth', 'sol', 'xrp'],
+    cryptos: ['btc', 'eth', 'xrp'],
     vwapWindowMs: 10000,
     snapshotIntervalMs: 1000,
     retentionDays: 30,
@@ -461,7 +461,7 @@ const config = {
   paperTrader: {
     snapshotIntervalMs: 5000,
     feeRate: 0.02,
-    cryptos: ['btc', 'eth', 'sol', 'xrp'],
+    cryptos: ['btc', 'eth', 'xrp'],
     // Signal evaluation times (seconds before window close)
     signalTimesBeforeCloseSec: [10, 30, 60, 90, 120],
     // Default variations for VWAP strategies (percentage-based thresholds)
@@ -490,11 +490,6 @@ const config = {
       combined: [
         { label: 'comb-2', minAgreement: 2, positionSizeDollars: 100 },
         { label: 'comb-3', minAgreement: 3, positionSizeDollars: 100 },
-      ],
-      btc_lead: [
-        { label: 'btc-3', btcDeltaThresholdPct: 0.03, positionSizeDollars: 100 },
-        { label: 'btc-6', btcDeltaThresholdPct: 0.06, positionSizeDollars: 100 },
-        { label: 'btc-10', btcDeltaThresholdPct: 0.10, positionSizeDollars: 100 },
       ],
       spread_widen: [
         { label: 'spr-3', minSpread: 0.03, minDeltaPct: 0.03, positionSizeDollars: 100 },

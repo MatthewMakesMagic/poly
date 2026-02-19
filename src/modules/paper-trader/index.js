@@ -489,28 +489,7 @@ async function evaluateSignal(windowState, signalOffsetSec) {
     log.warn('chainlink_fetch_failed', { window_id: windowId, crypto, error: err.message });
   }
 
-  // 3. Build BTC context for non-BTC cryptos (btc_lead strategy)
-  let btcData = null;
-  if (crypto !== 'btc') {
-    try {
-      const btcComposite = exchangeTradeCollector.getCompositeVWAP('btc');
-      // Find the active BTC window to get its open VWAP
-      let btcOpenVwap = null;
-      for (const [, ws] of activeWindows) {
-        if (ws.crypto === 'btc') {
-          btcOpenVwap = ws.vwapAtOpen;
-          break;
-        }
-      }
-      if (btcComposite && btcOpenVwap != null) {
-        btcData = { currentVwap: btcComposite.vwap, openVwap: btcOpenVwap };
-      }
-    } catch (err) {
-      log.warn('btc_context_fetch_failed', { window_id: windowId, error: err.message });
-    }
-  }
-
-  // 4. Build strategy context
+  // 3. Build strategy context
   const ctx = {
     windowState,
     upBook,
@@ -526,7 +505,6 @@ async function evaluateSignal(windowState, signalOffsetSec) {
       vwap20: windowState.vwap20AtOpen,
     },
     chainlinkPrice,
-    btcData,
   };
 
   // Cache for book snapshots and latency probes per entryTokenId
@@ -615,8 +593,6 @@ async function evaluateSignal(windowState, signalOffsetSec) {
       if (marketState.imbalanceRatio != null) strategyMetadata.imbalanceRatio = marketState.imbalanceRatio;
       if (marketState.clobConviction != null) strategyMetadata.clobConviction = marketState.clobConviction;
       if (marketState.agreeingSignals) strategyMetadata.agreeingSignals = marketState.agreeingSignals.map(s => s.name);
-      if (marketState.btcDeltaPct != null) strategyMetadata.btcDeltaPct = marketState.btcDeltaPct;
-      if (marketState.btcDirection) strategyMetadata.btcDirection = marketState.btcDirection;
       if (marketState.spread != null) strategyMetadata.spread = marketState.spread;
 
       const vwapSourceLabel = marketState.vwapSource || 'composite';

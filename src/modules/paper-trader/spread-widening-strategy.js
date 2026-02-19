@@ -94,6 +94,6 @@ export function shouldFire(state, variation) {
  * @returns {boolean}
  */
 export function appliesTo(crypto, signalOffsetSec) {
-  // SOL and XRP only
-  return crypto === 'sol' || crypto === 'xrp';
+  // XRP only (SOL killed — no edge)
+  return crypto === 'xrp';
 }
