@@ -307,3 +307,93 @@ Recommended strategy:
 - At T-5s or later: if CL < strike → buy DOWN at market
 - Expected win rate: 100% (in sample), EV: $0.53-0.92 per trade
 - False positive protection: CL has never bounced back above strike in final 5 seconds in our data
+
+---
+
+## Update 2026-02-19: CLOB Conviction Filter
+
+### Discovery
+
+5 days of paper trading (Feb 14-19, ~670 windows) revealed that the VWAP contrarian edge appeared to collapse day-over-day:
+
+| Day | ETH vwap_edge windows | Win % |
+|-----|----------------------|-------|
+| Feb 16 | 17 | 64.7% |
+| Feb 17 | 20 | 45.0% |
+| Feb 18 | 25 | 24.0% |
+| Feb 19 | 4 | 0.0% |
+
+Investigation showed this was **not an edge collapse** — it was a mix shift. Splitting windows by CLOB conviction (how far CLOB has moved from 0.50):
+
+| Day | Near-fair windows | NF win% | Decided windows | Decided win% |
+|-----|-------------------|---------|-----------------|--------------|
+| Feb 16 | 6 | **83.3%** | 11 | 54.5% |
+| Feb 17 | 6 | **83.3%** | 14 | 28.6% |
+| Feb 18 | 7 | **71.4%** | 18 | 5.6% |
+
+The near-fair filter held at 71-83% every day. The overall average dropped because later days had more "decided" CLOB windows (already repriced) dragging the average down.
+
+### The Filter
+
+**CLOB conviction = abs(clob_up_price - 0.50)**
+
+When CLOB is near 0.50, MMs haven't repriced the VWAP move → contrarian bet has value.
+When CLOB has already moved to 0.25 or 0.75, the information is already in the price.
+
+| CLOB conviction | ETH windows | Won | Win % | PnL |
+|-----------------|-------------|-----|-------|-----|
+| 0-15% | 15 | 10 | 66.7% | +$1,174 |
+| 15-20% | 4 | 3 | 75.0% | +$1,858 |
+| 20-25% | 8 | 4 | 50.0% | +$1,826 |
+| 25-30% | 11 | 5 | 45.5% | +$3,011 |
+| **30%+** | **25** | **3** | **16.3%** | **-$12,130** |
+
+Clean cutoff at ~20-25%. Conviction < 0.20 = profitable zone.
+
+### Interaction with delta strength (ETH, near-fair CLOB only)
+
+| Delta | Windows | Won | Win % | PnL |
+|-------|---------|-----|-------|-----|
+| Strong (≥10%) | 10 | 8 | **80.0%** | +$5,446 |
+| Medium (6-10%) | 5 | 3 | 60.0% | +$1,348 |
+| Weak (<6%) | 7 | 5 | 71.4% | +$153 |
+
+### Signal timing (ETH, near-fair CLOB only)
+
+| Offset | Win % | PnL | Note |
+|--------|-------|-----|------|
+| T-120 | 54.1% | +$859 | VWAP may not have moved enough |
+| T-90 | 45.5% | +$328 | |
+| **T-60** | **67.9%** | **+$1,486** | **Sweet spot** |
+| T-30 | 23.5% | -$1,164 | CLOB has started repricing |
+| T-10 | 53.8% | +$129 | |
+
+### Entry side asymmetry (ETH, near-fair)
+
+| Side | Windows | Won | Win % |
+|------|---------|-----|-------|
+| DOWN | 11 | 9 | **81.8%** |
+| UP | 11 | 7 | 63.6% |
+
+### Cross-instrument
+
+| Symbol | Near-fair win% | Decided win% |
+|--------|---------------|--------------|
+| ETH | **69.2%** | 26.9% |
+| XRP | **53.6%** | 17.3% |
+| BTC | 41.3% | 27.1% |
+
+### Other findings from 5-day paper run
+
+- **btc_lead strategy**: Dead (21% window win rate). Killed.
+- **SOL**: Dead across all strategies (10-15%). Killed from all trading.
+- **spread_widen**: 55-59% trade win rate but negative PnL due to expensive entries ($0.73-0.76).
+
+### Implementation
+
+Added conviction-filtered variations to paper trader (deployed Feb 19):
+- `f-d3-c20`: delta ≥ 3%, conviction < 20% (loose delta, strict conviction)
+- `f-d8-c20`: delta ≥ 8%, conviction < 20% (the golden combo)
+- `f-d8-c25`: delta ≥ 8%, conviction < 25% (wider band)
+
+Running alongside unfiltered variants for direct A/B comparison. All VWAP strategies (vwap_edge, vwap_cg_edge, down_only, down_cg, vwap20_edge, down_v20) now test both filtered and unfiltered.

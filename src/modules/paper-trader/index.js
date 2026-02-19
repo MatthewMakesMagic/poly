@@ -591,7 +591,10 @@ async function evaluateSignal(windowState, signalOffsetSec) {
       if (marketState.vwapDeltaPct != null) strategyMetadata.vwapDeltaPct = marketState.vwapDeltaPct;
       if (marketState.stalenessMs != null) strategyMetadata.stalenessMs = marketState.stalenessMs;
       if (marketState.imbalanceRatio != null) strategyMetadata.imbalanceRatio = marketState.imbalanceRatio;
-      if (marketState.clobConviction != null) strategyMetadata.clobConviction = marketState.clobConviction;
+      // Compute CLOB conviction (distance from fair value) for all strategies
+      if (marketState.clobUpPrice != null) {
+        strategyMetadata.clobConviction = Math.abs(marketState.clobUpPrice - 0.50);
+      }
       if (marketState.agreeingSignals) strategyMetadata.agreeingSignals = marketState.agreeingSignals.map(s => s.name);
       if (marketState.spread != null) strategyMetadata.spread = marketState.spread;
 

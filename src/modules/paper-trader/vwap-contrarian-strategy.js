@@ -104,6 +104,13 @@ export function shouldFire(state, variation, directionFilter = null) {
   // Direction filter: if 'down', only fire on DOWN signals
   if (directionFilter === 'down' && state.vwapDirection !== 'down') return false;
 
+  // CLOB conviction gate: only fire when CLOB hasn't already repriced
+  // abs(clobUpPrice - 0.50) < maxClobConviction means CLOB is still near fair value
+  if (variation.maxClobConviction != null) {
+    const conviction = Math.abs(state.clobUpPrice - 0.50);
+    if (conviction >= variation.maxClobConviction) return false;
+  }
+
   // Check percentage threshold
   const threshold = variation.vwapDeltaThresholdPct ?? 0.03;
   return state.absVwapDeltaPct >= threshold;

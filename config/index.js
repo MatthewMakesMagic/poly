@@ -466,9 +466,14 @@ const config = {
     signalTimesBeforeCloseSec: [10, 30, 60, 90, 120],
     // Default variations for VWAP strategies (percentage-based thresholds)
     variations: [
+      // Unfiltered (baseline — keep for comparison)
       { label: 'pct-3-sm',  vwapDeltaThresholdPct: 0.03, positionSizeDollars: 100 },
       { label: 'pct-6-md',  vwapDeltaThresholdPct: 0.06, positionSizeDollars: 100 },
       { label: 'pct-10-md', vwapDeltaThresholdPct: 0.10, positionSizeDollars: 100 },
+      // CLOB conviction-filtered (only fire when CLOB near fair value)
+      { label: 'f-d3-c20',  vwapDeltaThresholdPct: 0.03, maxClobConviction: 0.20, positionSizeDollars: 100 },
+      { label: 'f-d8-c20',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.20, positionSizeDollars: 100 },
+      { label: 'f-d8-c25',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.25, positionSizeDollars: 100 },
     ],
     // Strategy-specific variations
     strategyVariations: {
