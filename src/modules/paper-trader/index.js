@@ -489,14 +489,10 @@ async function evaluateSignal(windowState, signalOffsetSec) {
     log.warn('chainlink_fetch_failed', { window_id: windowId, crypto, error: err.message });
   }
 
-  // Get DOWN token book for contrarian strategies
-  const downBook = market.downTokenId ? clobWs.getBook(market.downTokenId) : null;
-
   // 3. Build strategy context
   const ctx = {
     windowState,
     upBook,
-    downBook,
     signalOffsetSec,
     vwapSources: {
       composite: compositeVwap,
@@ -601,11 +597,6 @@ async function evaluateSignal(windowState, signalOffsetSec) {
       }
       if (marketState.agreeingSignals) strategyMetadata.agreeingSignals = marketState.agreeingSignals.map(s => s.name);
       if (marketState.spread != null) strategyMetadata.spread = marketState.spread;
-      if (marketState.contrarianDepthDollars != null) strategyMetadata.contrarianDepthDollars = marketState.contrarianDepthDollars;
-      if (marketState.contrarianBestAsk != null) strategyMetadata.contrarianBestAsk = marketState.contrarianBestAsk;
-      if (marketState.contrarianAskLevels != null) strategyMetadata.contrarianAskLevels = marketState.contrarianAskLevels;
-      if (marketState.contrarianSpread != null) strategyMetadata.contrarianSpread = marketState.contrarianSpread;
-      if (marketState.conviction != null) strategyMetadata.conviction = marketState.conviction;
 
       const vwapSourceLabel = marketState.vwapSource || 'composite';
 
