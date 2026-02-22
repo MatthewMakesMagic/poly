@@ -24,6 +24,7 @@ import * as rtdsClient from '../../clients/rtds/index.js';
 import { TOPICS } from '../../clients/rtds/types.js';
 import { simulateFill } from './fill-simulator.js';
 import * as latencyMeasurer from './latency-measurer.js';
+import * as tickRecorder from './tick-recorder.js';
 import { strategies } from './strategy-registry.js';
 import {
   PaperTraderError,
@@ -178,6 +179,7 @@ export function getState() {
     activeWindows: Array.from(activeWindows.keys()),
     clobWs: clobWs.getState(),
     latencyStats: latencyMeasurer.getStats(),
+    tickRecorder: tickRecorder.getStats(),
     stats: { ...stats, windowWinRate },
     config: {
       cryptos: config.cryptos,
@@ -209,6 +211,9 @@ export async function shutdown() {
     clearInterval(snapshotIntervalId);
     snapshotIntervalId = null;
   }
+
+  // Flush tick recorder buffers before cleanup
+  await tickRecorder.flushAll();
 
   // Clear all active window timers
   for (const [windowId, ws] of activeWindows) {
@@ -277,6 +282,12 @@ async function scanAndTrack() {
     clobWs.subscribeToken(market.upTokenId, `${crypto}-UP`);
     if (market.downTokenId) {
       clobWs.subscribeToken(market.downTokenId, `${crypto}-DOWN`);
+    }
+
+    // Start continuous L2 tick recording
+    tickRecorder.startRecording(market.upTokenId, crypto, windowId, clobWs);
+    if (market.downTokenId) {
+      tickRecorder.startRecording(market.downTokenId, crypto, windowId, clobWs);
     }
 
     // Capture all open prices from DB — composite VWAP, CoinGecko, and VWAP20
@@ -957,13 +968,21 @@ async function persistBookSnapshot(tokenId, symbol, snapshotType, includeFullBoo
 /**
  * Clean up a finished window
  */
-function cleanupWindow(windowId) {
+async function cleanupWindow(windowId) {
   const ws = activeWindows.get(windowId);
   if (ws) {
     for (const timer of ws.timers) {
       clearTimeout(timer);
     }
     ws.timers = [];
+
+    // Stop tick recording before unsubscribing (flushes remaining buffer)
+    if (ws.market?.upTokenId) {
+      await tickRecorder.stopRecording(ws.market.upTokenId);
+    }
+    if (ws.market?.downTokenId) {
+      await tickRecorder.stopRecording(ws.market.downTokenId);
+    }
 
     if (ws.market?.upTokenId) {
       clobWs.unsubscribeToken(ws.market.upTokenId);
