@@ -461,14 +461,12 @@ const config = {
   paperTrader: {
     snapshotIntervalMs: 5000,
     feeRate: 0.02,
-    cryptos: ['btc'],
+    cryptos: ['btc', 'eth'],
     // Signal evaluation times (seconds before window close)
-    signalTimesBeforeCloseSec: [120],
-    // CLOB conviction-filtered variations only (proven edge)
+    signalTimesBeforeCloseSec: [60, 90, 120],
+    // Single unfiltered variation for live engine validation
     variations: [
-      { label: 'f-d3-c20',  vwapDeltaThresholdPct: 0.03, maxClobConviction: 0.20, positionSizeDollars: 2 },
-      { label: 'f-d8-c20',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.20, positionSizeDollars: 2 },
-      { label: 'f-d8-c25',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.25, positionSizeDollars: 2 },
+      { label: 'live-v1', vwapDeltaThresholdPct: 0.03, positionSizeDollars: 2 },
     ],
     // Thesis-based exit monitoring
     thesisExit: {
