@@ -22,9 +22,11 @@ import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
 import * as coingeckoClient from '../../clients/coingecko/index.js';
 import * as rtdsClient from '../../clients/rtds/index.js';
 import { TOPICS } from '../../clients/rtds/types.js';
+import * as polymarketClient from '../../clients/polymarket/index.js';
 import { simulateFill } from './fill-simulator.js';
 import * as latencyMeasurer from './latency-measurer.js';
 import * as tickRecorder from './tick-recorder.js';
+import * as thesisExitMonitor from './thesis-exit-monitor.js';
 import { strategies } from './strategy-registry.js';
 import {
   PaperTraderError,
@@ -45,6 +47,37 @@ let activeWindows = new Map();
 let scanIntervalId = null;
 let snapshotIntervalId = null;
 
+// Observability
+let lastPositionLogMs = 0;
+
+// USDC balance cache (refreshed every 30s)
+let cachedUsdcBalance = null;
+let lastBalanceCheckMs = 0;
+
+/**
+ * Check if live execution is enabled and ready
+ */
+function isLiveExecution() {
+  return config?.tradingMode === 'LIVE' && polymarketClient.getState()?.ready;
+}
+
+/**
+ * Get cached USDC balance, refreshing every 30s
+ */
+async function getCachedUsdcBalance() {
+  const now = Date.now();
+  if (cachedUsdcBalance == null || now - lastBalanceCheckMs > 30000) {
+    try {
+      cachedUsdcBalance = await polymarketClient.getUSDCBalance();
+      lastBalanceCheckMs = now;
+    } catch (err) {
+      if (log) log.warn('usdc_balance_check_failed', { error: err.message });
+      // Keep stale value if we have one
+    }
+  }
+  return cachedUsdcBalance;
+}
+
 // Statistics
 let stats = {
   windowsTracked: 0,
@@ -58,6 +91,8 @@ let stats = {
   snapshotErrors: 0,
   windowsWon: 0,
   windowsLost: 0,
+  thesisExits: 0,
+  thesisExitPnl: 0,
 };
 
 // Default variations if none configured
@@ -71,6 +106,96 @@ const DEFAULT_SIGNAL_TIMES = [60];
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE INTERFACE
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Settle orphaned trades from prior runs where the process died mid-window.
+ * Finds unsettled trades older than 20 minutes (window has closed), joins with
+ * window_close_events to get resolution, and settles them.
+ */
+async function recoverOrphanedTrades() {
+  const orphans = await persistence.all(`
+    SELECT pt.id, pt.window_id, pt.entry_side, pt.entry_token_id, pt.sim_shares, pt.sim_cost,
+           pt.sim_fee, pt.signal_type, pt.variant_label, pt.exited_early, pt.exit_pnl,
+           pt.live_order_status, pt.live_fill_shares, pt.live_cost,
+           COALESCE(wce.onchain_resolved_direction, wce.resolved_direction) as resolved_direction
+    FROM paper_trades_v2 pt
+    LEFT JOIN window_close_events wce ON pt.window_id = wce.window_id
+    WHERE pt.settlement_time IS NULL
+      AND pt.created_at < NOW() - interval '20 minutes'
+    ORDER BY pt.created_at ASC
+  `);
+
+  if (orphans.length === 0) {
+    log.info('startup_recovery_none');
+    return;
+  }
+
+  let settled = 0, unresolvable = 0, recoveryPnl = 0;
+
+  for (const trade of orphans) {
+    if (!trade.resolved_direction) {
+      unresolvable++;
+      continue;
+    }
+
+    // For live-filled trades, check actual token balance for external settlement detection
+    if (trade.live_order_status === 'filled' && !trade.exited_early && polymarketClient.getState()?.ready) {
+      try {
+        const balance = await polymarketClient.getBalance(trade.entry_token_id);
+        if (balance === 0) {
+          log.info('recovery_live_position_settled_externally', {
+            trade_id: trade.id,
+            window_id: trade.window_id,
+          });
+        } else if (balance > 0) {
+          log.warn('recovery_live_position_still_open', {
+            trade_id: trade.id,
+            window_id: trade.window_id,
+            balance,
+          });
+        }
+      } catch (err) {
+        log.warn('recovery_balance_check_failed', { trade_id: trade.id, error: err.message });
+      }
+    }
+
+    const won = trade.entry_side === trade.resolved_direction;
+    let netPnl;
+
+    if (trade.exited_early) {
+      netPnl = parseFloat(trade.exit_pnl) || 0;
+    } else if (trade.live_order_status === 'filled') {
+      // Use live cost for settlement
+      const liveShares = parseFloat(trade.live_fill_shares);
+      const liveCost = parseFloat(trade.live_cost);
+      const fee = parseFloat(trade.sim_fee) || 0;
+      const payout = won ? liveShares * 1.0 : 0;
+      netPnl = payout - liveCost - fee;
+    } else {
+      const shares = parseFloat(trade.sim_shares);
+      const cost = parseFloat(trade.sim_cost);
+      const fee = parseFloat(trade.sim_fee) || 0;
+      const payout = won ? shares * 1.0 : 0;
+      netPnl = payout - cost - fee;
+    }
+
+    await persistence.run(`
+      UPDATE paper_trades_v2
+      SET settlement_time = NOW(), resolved_direction = $1, won = $2,
+          gross_pnl = $3, net_pnl = $3
+      WHERE id = $4
+    `, [trade.resolved_direction, won, netPnl, trade.id]);
+
+    settled++;
+    recoveryPnl += netPnl;
+
+    if (won) stats.tradesWon++; else stats.tradesLost++;
+    stats.cumulativePnl += netPnl;
+  }
+
+  log.info('startup_recovery_complete', { settled, unresolvable, recovery_pnl: recoveryPnl });
+  console.log(`[paper-trader] startup recovery: settled ${settled} orphaned trades (PnL: $${recoveryPnl.toFixed(2)}), ${unresolvable} unresolvable`);
+}
 
 /**
  * Initialize the paper trader module
@@ -95,7 +220,14 @@ export async function init(cfg = {}) {
     latencyProbeTimeBeforeCloseMs: ptConfig.latencyProbeTimeBeforeCloseMs ?? DEFAULT_CONFIG.latencyProbeTimeBeforeCloseMs,
     variations: ptConfig.variations ?? DEFAULT_VARIATIONS,
     strategyVariations: ptConfig.strategyVariations ?? {},
+    thesisExit: ptConfig.thesisExit ?? { enabled: false },
+    tradingMode: cfg.tradingMode || 'PAPER',
   };
+
+  // Initialize thesis exit monitor
+  if (config.thesisExit.enabled) {
+    thesisExitMonitor.init({ ...config.thesisExit, feeRate: config.feeRate, tradingMode: config.tradingMode });
+  }
 
   // Initialize CLOB WS client (non-fatal — WS connects in background)
   try {
@@ -106,6 +238,14 @@ export async function init(cfg = {}) {
 
   // Initialize latency measurer
   latencyMeasurer.init(child({ module: 'paper-trader-latency' }));
+
+  // Recover orphaned trades from prior runs
+  try {
+    await recoverOrphanedTrades();
+  } catch (err) {
+    log.warn('startup_recovery_failed', { error: err.message });
+    console.warn(`[paper-trader] startup recovery failed: ${err.message}`);
+  }
 
   // Start scan interval
   scanIntervalId = setInterval(() => {
@@ -141,6 +281,7 @@ export async function init(cfg = {}) {
     totalVariations += vars.length;
   }
 
+  console.log(`[paper-trader] execution mode: ${config.tradingMode}, polymarket ready: ${polymarketClient.getState()?.ready}`);
   console.log(
     `[paper-trader] initialized OK — ${strategies.length} strategies, ` +
     `${config.cryptos.length} cryptos, ` +
@@ -180,6 +321,7 @@ export function getState() {
     clobWs: clobWs.getState(),
     latencyStats: latencyMeasurer.getStats(),
     tickRecorder: tickRecorder.getStats(),
+    thesisExitStats: thesisExitMonitor.getStats(),
     stats: { ...stats, windowWinRate },
     config: {
       cryptos: config.cryptos,
@@ -223,6 +365,9 @@ export async function shutdown() {
   }
   activeWindows = new Map();
 
+  // Shutdown thesis exit monitor
+  thesisExitMonitor.shutdown();
+
   // Shutdown CLOB WS
   await clobWs.shutdown();
 
@@ -244,7 +389,12 @@ export async function shutdown() {
     snapshotErrors: 0,
     windowsWon: 0,
     windowsLost: 0,
+    thesisExits: 0,
+    thesisExitPnl: 0,
   };
+  lastPositionLogMs = 0;
+  cachedUsdcBalance = null;
+  lastBalanceCheckMs = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -381,6 +531,7 @@ async function scanAndTrack() {
       epoch: currentEpoch,
       closeTimeMs,
       market,
+      referencePrice: market.referencePrice || null,
       vwapAtOpen,
       cgAtOpen,
       vwap20AtOpen,
@@ -440,6 +591,29 @@ async function scanAndTrack() {
       windowState.timers.push(settlementTimer);
     }
   }
+
+  // Periodic open-position summary (every 60s)
+  if (Date.now() - lastPositionLogMs > 60000) {
+    try {
+      const openCount = await persistence.get(`
+        SELECT COUNT(*) as cnt,
+               COALESCE(SUM(CASE WHEN exited_early THEN 1 ELSE 0 END), 0) as exited,
+               COALESCE(SUM(CASE WHEN live_order_status = 'filled' THEN 1 ELSE 0 END), 0) as live_filled
+        FROM paper_trades_v2 WHERE settlement_time IS NULL
+      `);
+      log.info('open_positions', {
+        unsettled: parseInt(openCount?.cnt || 0),
+        exited_early: parseInt(openCount?.exited || 0),
+        active_windows: activeWindows.size,
+        live_filled: parseInt(openCount?.live_filled || 0),
+        usdc_balance: cachedUsdcBalance,
+        trading_mode: config.tradingMode,
+      });
+    } catch (err) {
+      log.warn('open_positions_query_failed', { error: err.message });
+    }
+    lastPositionLogMs = Date.now();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -461,6 +635,18 @@ async function scanAndTrack() {
 async function evaluateSignal(windowState, signalOffsetSec) {
   const { windowId, crypto, market } = windowState;
   stats.signalsEvaluated++;
+
+  // Position count guard — prevent double-entry on restart
+  const existingTradeCount = await persistence.get(`
+    SELECT COUNT(*) as cnt FROM paper_trades_v2
+    WHERE window_id = $1 AND settlement_time IS NULL
+  `, [windowId]);
+
+  const maxTradesPerWindow = strategies.length * config.variations.length * config.signalTimesBeforeCloseSec.length;
+  if (parseInt(existingTradeCount?.cnt || 0) >= maxTradesPerWindow) {
+    log.info('signal_eval_skipped_max_trades', { window_id: windowId, existing: existingTradeCount.cnt });
+    return;
+  }
 
   // 1. Get live book from CLOB WS
   const upBook = clobWs.getBook(market.upTokenId);
@@ -674,6 +860,92 @@ async function evaluateSignal(windowState, signalOffsetSec) {
         if (result.lastInsertRowid) {
           windowState.tradeIds.push(result.lastInsertRowid);
           stats.tradesPending++;
+
+          // Attempt real FOK buy in LIVE mode
+          let liveFilled = false;
+          if (isLiveExecution()) {
+            try {
+              const usdcBalance = await getCachedUsdcBalance();
+              if (usdcBalance != null && usdcBalance < positionSizeDollars * 1.5) {
+                log.warn('live_order_skipped_low_balance', {
+                  trade_id: result.lastInsertRowid,
+                  usdc_balance: usdcBalance,
+                  required: positionSizeDollars * 1.5,
+                });
+                await persistence.run(
+                  `UPDATE paper_trades_v2 SET live_order_status = 'rejected' WHERE id = $1`,
+                  [result.lastInsertRowid]
+                );
+              } else {
+                const bestAsk = entryBook.bestAsk;
+                if (bestAsk) {
+                  const orderResult = await polymarketClient.buy(
+                    marketState.entryTokenId, positionSizeDollars, bestAsk, 'FOK'
+                  );
+                  if (orderResult.filled) {
+                    liveFilled = true;
+                    await persistence.run(`
+                      UPDATE paper_trades_v2
+                      SET live_order_id = $1, live_fill_price = $2, live_fill_shares = $3,
+                          live_cost = $4, live_tx_hash = $5, live_order_status = 'filled'
+                      WHERE id = $6
+                    `, [
+                      orderResult.orderId,
+                      orderResult.priceFilled,
+                      orderResult.shares,
+                      orderResult.cost,
+                      orderResult.tx,
+                      result.lastInsertRowid,
+                    ]);
+                    log.info('live_order_filled', {
+                      trade_id: result.lastInsertRowid,
+                      order_id: orderResult.orderId,
+                      fill_price: orderResult.priceFilled,
+                      shares: orderResult.shares,
+                      cost: orderResult.cost,
+                    });
+                    // Force balance refresh after spending
+                    lastBalanceCheckMs = 0;
+                  } else {
+                    await persistence.run(
+                      `UPDATE paper_trades_v2 SET live_order_status = 'rejected' WHERE id = $1`,
+                      [result.lastInsertRowid]
+                    );
+                    log.info('live_order_rejected', {
+                      trade_id: result.lastInsertRowid,
+                      status: orderResult.status,
+                    });
+                  }
+                }
+              }
+            } catch (err) {
+              await persistence.run(
+                `UPDATE paper_trades_v2 SET live_order_status = 'error' WHERE id = $1`,
+                [result.lastInsertRowid]
+              ).catch(() => {});
+              log.error('live_order_error', {
+                trade_id: result.lastInsertRowid,
+                error: err.message,
+              });
+            }
+          }
+
+          // Start thesis exit monitoring for this trade
+          // In LIVE mode, only monitor if the real order filled (we have a position to exit)
+          // In PAPER mode, always monitor (existing behavior)
+          const shouldMonitor = config.tradingMode === 'PAPER' || liveFilled;
+          if (config.thesisExit.enabled && shouldMonitor) {
+            thesisExitMonitor.startMonitoring(windowState, {
+              tradeId: result.lastInsertRowid,
+              strategyName: strategy.name,
+              entrySide: marketState.entrySide,
+              shares: fillResult.totalShares,
+              cost: fillResult.totalCost,
+              fee: fillResult.fees,
+              entryTokenId: marketState.entryTokenId,
+              entryTime: Date.now(),
+            });
+          }
         }
       } catch (err) {
         log.error('paper_trade_persist_failed', {
@@ -778,9 +1050,11 @@ async function handleSettlementRetry(windowState) {
 async function settleAllTrades(windowState, resolvedDirection) {
   const { windowId, tradeIds, crypto } = windowState;
 
-  // Fetch all unsettled trades for this window
+  // Fetch all unsettled trades for this window (includes early-exited)
   const trades = await persistence.all(`
-    SELECT id, entry_side, sim_shares, sim_cost, sim_fee, variant_label, signal_type
+    SELECT id, entry_side, sim_shares, sim_cost, sim_fee, variant_label, signal_type,
+           exited_early, exit_pnl,
+           live_order_status, live_fill_shares, live_cost, exit_live_proceeds
     FROM paper_trades_v2
     WHERE window_id = $1 AND settlement_time IS NULL
   `, [windowId]);
@@ -797,22 +1071,64 @@ async function settleAllTrades(windowState, resolvedDirection) {
 
   for (const trade of trades) {
     const won = trade.entry_side === resolvedDirection;
-    const shares = parseFloat(trade.sim_shares);
-    const cost = parseFloat(trade.sim_cost);
-    const fee = parseFloat(trade.sim_fee) || 0;
-    const payout = won ? shares * 1.0 : 0;
-    const grossPnl = payout - cost;
-    const netPnl = grossPnl - fee;
+    let netPnl;
 
-    await persistence.run(`
-      UPDATE paper_trades_v2
-      SET settlement_time = NOW(),
-          resolved_direction = $1,
-          won = $2,
-          gross_pnl = $3,
-          net_pnl = $4
-      WHERE id = $5
-    `, [resolvedDirection, won, grossPnl, netPnl, trade.id]);
+    if (trade.exited_early) {
+      // Already exited — use live exit proceeds if available, otherwise sim exit_pnl
+      if (trade.live_order_status === 'filled' && trade.exit_live_proceeds != null) {
+        netPnl = parseFloat(trade.exit_live_proceeds) - parseFloat(trade.live_cost);
+      } else {
+        netPnl = parseFloat(trade.exit_pnl) || 0;
+      }
+      const grossPnl = netPnl;
+
+      await persistence.run(`
+        UPDATE paper_trades_v2
+        SET settlement_time = NOW(),
+            resolved_direction = $1,
+            won = $2,
+            gross_pnl = $3,
+            net_pnl = $4
+        WHERE id = $5
+      `, [resolvedDirection, won, grossPnl, netPnl, trade.id]);
+    } else if (trade.live_order_status === 'filled') {
+      // Live trade held to expiry — Polymarket auto-settles:
+      // winning shares redeem for $1 each, losing shares = $0
+      const liveShares = parseFloat(trade.live_fill_shares);
+      const liveCost = parseFloat(trade.live_cost);
+      const payout = won ? liveShares * 1.0 : 0;
+      const grossPnl = payout - liveCost;
+      const fee = parseFloat(trade.sim_fee) || 0; // use sim fee as proxy
+      netPnl = grossPnl - fee;
+
+      await persistence.run(`
+        UPDATE paper_trades_v2
+        SET settlement_time = NOW(),
+            resolved_direction = $1,
+            won = $2,
+            gross_pnl = $3,
+            net_pnl = $4
+        WHERE id = $5
+      `, [resolvedDirection, won, grossPnl, netPnl, trade.id]);
+    } else {
+      // Paper-only or rejected — use existing sim settlement logic
+      const shares = parseFloat(trade.sim_shares);
+      const cost = parseFloat(trade.sim_cost);
+      const fee = parseFloat(trade.sim_fee) || 0;
+      const payout = won ? shares * 1.0 : 0;
+      const grossPnl = payout - cost;
+      netPnl = grossPnl - fee;
+
+      await persistence.run(`
+        UPDATE paper_trades_v2
+        SET settlement_time = NOW(),
+            resolved_direction = $1,
+            won = $2,
+            gross_pnl = $3,
+            net_pnl = $4
+        WHERE id = $5
+      `, [resolvedDirection, won, grossPnl, netPnl, trade.id]);
+    }
 
     stats.tradesPending = Math.max(0, stats.tradesPending - 1);
     if (won) {
@@ -846,10 +1162,13 @@ async function settleAllTrades(windowState, resolvedDirection) {
     ? ((stats.windowsWon / totalWindows) * 100).toFixed(1)
     : null;
 
+  const earlyExitCount = trades.filter(t => t.exited_early).length;
+
   log.info('window_settled', {
     window_id: windowId,
     resolved_direction: resolvedDirection,
     trades_settled: trades.length,
+    early_exits: earlyExitCount,
     window_wins: windowWins,
     window_losses: windowLosses,
     window_pnl: windowPnl,
@@ -971,6 +1290,9 @@ async function persistBookSnapshot(tokenId, symbol, snapshotType, includeFullBoo
 async function cleanupWindow(windowId) {
   const ws = activeWindows.get(windowId);
   if (ws) {
+    // Stop thesis monitoring before cleanup
+    thesisExitMonitor.stopMonitoring(windowId);
+
     for (const timer of ws.timers) {
       clearTimeout(timer);
     }

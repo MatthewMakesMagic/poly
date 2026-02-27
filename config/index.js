@@ -461,46 +461,23 @@ const config = {
   paperTrader: {
     snapshotIntervalMs: 5000,
     feeRate: 0.02,
-    cryptos: ['btc', 'eth', 'xrp', 'sol'],
+    cryptos: ['btc'],
     // Signal evaluation times (seconds before window close)
-    signalTimesBeforeCloseSec: [10, 30, 60, 90, 120],
-    // Default variations for VWAP strategies (percentage-based thresholds)
+    signalTimesBeforeCloseSec: [120],
+    // CLOB conviction-filtered variations only (proven edge)
     variations: [
-      // Unfiltered (baseline — keep for comparison)
-      { label: 'pct-3-sm',  vwapDeltaThresholdPct: 0.03, positionSizeDollars: 100 },
-      { label: 'pct-6-md',  vwapDeltaThresholdPct: 0.06, positionSizeDollars: 100 },
-      { label: 'pct-10-md', vwapDeltaThresholdPct: 0.10, positionSizeDollars: 100 },
-      // CLOB conviction-filtered (only fire when CLOB near fair value)
-      { label: 'f-d3-c20',  vwapDeltaThresholdPct: 0.03, maxClobConviction: 0.20, positionSizeDollars: 100 },
-      { label: 'f-d8-c20',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.20, positionSizeDollars: 100 },
-      { label: 'f-d8-c25',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.25, positionSizeDollars: 100 },
+      { label: 'f-d3-c20',  vwapDeltaThresholdPct: 0.03, maxClobConviction: 0.20, positionSizeDollars: 2 },
+      { label: 'f-d8-c20',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.20, positionSizeDollars: 2 },
+      { label: 'f-d8-c25',  vwapDeltaThresholdPct: 0.08, maxClobConviction: 0.25, positionSizeDollars: 2 },
     ],
-    // Strategy-specific variations
-    strategyVariations: {
-      clob_stale: [
-        { label: 'stale-5s',  minStalenessMs: 5000,  minDeltaPct: 0.03, positionSizeDollars: 100 },
-        { label: 'stale-10s', minStalenessMs: 10000, minDeltaPct: 0.03, positionSizeDollars: 100 },
-        { label: 'stale-30s', minStalenessMs: 30000, minDeltaPct: 0.03, positionSizeDollars: 100 },
-      ],
-      book_imbal: [
-        { label: 'imb-60', imbalanceThreshold: 0.60, positionSizeDollars: 100 },
-        { label: 'imb-70', imbalanceThreshold: 0.70, positionSizeDollars: 100 },
-        { label: 'imb-80', imbalanceThreshold: 0.80, positionSizeDollars: 100 },
-      ],
-      early_inv: [
-        { label: 'inv-soft',   minConviction: 0.05, maxConviction: 0.20, positionSizeDollars: 100 },
-        { label: 'inv-mid',    minConviction: 0.10, maxConviction: 0.30, positionSizeDollars: 100 },
-        { label: 'inv-strong', minConviction: 0.15, maxConviction: 0.40, positionSizeDollars: 100 },
-      ],
-      combined: [
-        { label: 'comb-2', minAgreement: 2, positionSizeDollars: 100 },
-        { label: 'comb-3', minAgreement: 3, positionSizeDollars: 100 },
-      ],
-      spread_widen: [
-        { label: 'spr-3', minSpread: 0.03, minDeltaPct: 0.03, positionSizeDollars: 100 },
-        { label: 'spr-5', minSpread: 0.05, minDeltaPct: 0.03, positionSizeDollars: 100 },
-        { label: 'spr-8', minSpread: 0.08, minDeltaPct: 0.03, positionSizeDollars: 100 },
-      ],
+    // Thesis-based exit monitoring
+    thesisExit: {
+      enabled: true,
+      checkIntervalMs: 500,
+      rules: {
+        composite: { thresholdPct: 0.0, minTimeSec: 3 },
+        coingecko: { thresholdPct: 0.03, minTimeSec: 30 },
+      },
     },
   },
 

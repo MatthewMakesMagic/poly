@@ -24,6 +24,77 @@
  * @param {number} [options.feeRate=0.0] - Fee rate (0.0 = no fees)
  * @returns {Object} Fill simulation result
  */
+/**
+ * Simulate selling (exiting) shares against an L2 book
+ *
+ * For UP positions: walks bids descending (best bid first), accumulates proceeds.
+ * For DOWN positions: walks asks ascending, converts to down-bid price (1 - upAskPrice).
+ *
+ * @param {Object} book - Order book from CLOB WS client
+ * @param {number} shares - Number of shares to sell
+ * @param {'up'|'down'} side - Which side the position is on
+ * @param {Object} [options={}] - Options
+ * @param {number} [options.feeRate=0.0] - Fee rate
+ * @returns {Object} Exit simulation result
+ */
+export function simulateExit(book, shares, side, options = {}) {
+  const { feeRate = 0.0 } = options;
+
+  if (!book || shares <= 0) {
+    return { success: false, fillPrice: 0, proceeds: 0, fee: 0, netProceeds: 0, filled: 0, unfilled: shares };
+  }
+
+  let remaining = shares;
+  let proceeds = 0;
+
+  if (side === 'up') {
+    // Walk bids descending (getBook returns bids sorted descending)
+    const bids = book.bids || [];
+    if (bids.length === 0) {
+      return { success: false, fillPrice: 0, proceeds: 0, fee: 0, netProceeds: 0, filled: 0, unfilled: shares };
+    }
+    for (const [price, size] of bids) {
+      const fill = Math.min(remaining, size);
+      proceeds += fill * price;
+      remaining -= fill;
+      if (remaining <= 0) break;
+    }
+  } else {
+    // DOWN position: walk asks ascending, down-bid = 1.0 - upAskPrice
+    const asks = book.asks || [];
+    if (asks.length === 0) {
+      return { success: false, fillPrice: 0, proceeds: 0, fee: 0, netProceeds: 0, filled: 0, unfilled: shares };
+    }
+    for (const [upAskPrice, size] of asks) {
+      const downBidPrice = 1.0 - upAskPrice;
+      if (downBidPrice <= 0) continue;
+      const fill = Math.min(remaining, size);
+      proceeds += fill * downBidPrice;
+      remaining -= fill;
+      if (remaining <= 0) break;
+    }
+  }
+
+  const filled = shares - remaining;
+  if (filled <= 0) {
+    return { success: false, fillPrice: 0, proceeds: 0, fee: 0, netProceeds: 0, filled: 0, unfilled: shares };
+  }
+
+  const fillPrice = proceeds / filled;
+  const fee = proceeds * feeRate;
+  const netProceeds = proceeds - fee;
+
+  return {
+    success: true,
+    fillPrice,
+    proceeds,
+    fee,
+    netProceeds,
+    filled,
+    unfilled: remaining,
+  };
+}
+
 export function simulateFill(book, dollars, options = {}) {
   const { feeRate = 0.0 } = options;
 
