@@ -62,6 +62,20 @@ Production bugs discovered and fixed during first live trading session.
 **Fix:** Downgraded to DEBUG level.
 **Files:** `src/modules/oracle-tracker/index.js`, `src/modules/tick-logger/index.js`, `src/modules/lag-tracker/index.js`, `src/modules/window-manager/index.js`
 
+## Bug 9: addPosition Param Naming Mismatch — TRUE Root Cause of All CB Trips
+**Commit:** `1c3f1c9`
+**Symptom:** Every order placed successfully on Polymarket, but `addPosition()` immediately threw → CB tripped → trading halted. This was the ACTUAL root cause behind every `POSITION_TRACKING_FAILED` CB trip (Bug 6, Bug 7 were symptoms).
+**Root Cause:** Execution loop passed snake_case params (`window_id`, `market_id`, `token_id`, `entry_price`) but `addPosition()` destructures camelCase (`windowId`, `marketId`, `tokenId`, `entryPrice`). All fields were `undefined` → validation always threw.
+**Fix:** Changed execution loop to pass camelCase params matching the function signature.
+**File:** `src/modules/orchestrator/execution-loop.js`
+
+## Bug 10: Edge Threshold Config Not Read From Strategy Definition
+**Commit:** `c3d8e4b`
+**Symptom:** Min edge threshold stayed at 0.10 despite `launch.json` being updated to 0.25. Trades with edge 0.11 still firing.
+**Root Cause:** The composed strategy executor reads `strategyConfig.edge.min_edge_threshold` from the strategy JSON definition (`config/strategies/probability-only.json`), not from `launch.json`. The strategy JSON had no `edge` config, so the code fell back to `?? 0.10`.
+**Fix:** Added `edge` config to the strategy JSON definition.
+**File:** `config/strategies/probability-only.json`
+
 ## Unresolved: Oracle Resolution Mismatch
 **Doc:** `docs/potentialResolutionOracle.md`
 **Symptom:** ETH showed DOWN in our DB but Polymarket settled UP. `onchain_resolved_direction` always NULL.
