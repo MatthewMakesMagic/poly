@@ -792,7 +792,7 @@ export class ExecutionLoop {
               for (const pos of expiredPositions) {
                 try {
                   await this.modules['position-manager'].closePosition(pos.id, {
-                    closePrice: pos.current_price || pos.entry_price,
+                    closePrice: Number(pos.current_price || pos.entry_price),
                     reason: 'window_expired',
                   });
                 } catch (closeErr) {
