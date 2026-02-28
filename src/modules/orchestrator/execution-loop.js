@@ -312,6 +312,13 @@ export class ExecutionLoop {
             // Skip windows with <5s remaining
             if (timeRemainingMs < 5000) continue;
 
+            // Skip windows that haven't started yet (time_remaining > window duration)
+            const windowDurationMs = 15 * 60 * 1000; // 900s for 15-min windows
+            if (timeRemainingMs > windowDurationMs) {
+              this.log.debug('vwap_skip_future_window', { window_id: windowId, time_remaining_ms: timeRemainingMs });
+              continue;
+            }
+
             // Get current composite VWAP
             const compositeVwap = typeof etc.getCompositeVWAP === 'function'
               ? etc.getCompositeVWAP(crypto)
