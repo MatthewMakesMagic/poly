@@ -150,7 +150,9 @@ function validateDatabaseUrl(isLive) {
   }
 
   // F7 FIX: LIVE mode requires SSL - check both sslmode and ssl parameters
-  if (isLive) {
+  // Railway internal networking (.railway.internal) is already encrypted — skip SSL check
+  const isRailwayInternal = parsed.hostname && parsed.hostname.endsWith('.railway.internal');
+  if (isLive && !isRailwayInternal) {
     const sslMode = parsed.searchParams.get('sslmode');
     const sslParam = parsed.searchParams.get('ssl');
 
