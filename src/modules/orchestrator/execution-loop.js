@@ -523,7 +523,7 @@ export class ExecutionLoop {
                   // V3 Stage 5: Halt-on-uncertainty - if recording fails after successful order, trip CB
                   if (this.modules['position-manager'] && orderResult.status !== 'rejected') {
                     try {
-                      const position = this.modules['position-manager'].openPosition({
+                      const position = await this.modules['position-manager'].addPosition({
                         window_id: signal.window_id,
                         market_id: signal.market_id,
                         token_id: signal.token_id,
