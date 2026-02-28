@@ -26,4 +26,5 @@ function createVwapEntry(name, vwapSource, directionFilter, cryptoFilter) {
 
 export const strategies = [
   createVwapEntry('down_only', 'composite', 'down', null),
+  createVwapEntry('vwap_edge', 'composite', null, null),
 ];
