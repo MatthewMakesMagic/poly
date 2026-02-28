@@ -145,7 +145,7 @@ export async function placeOrder(params, log) {
     requestedAt: new Date().toISOString(),
   };
 
-  const intentId = writeAhead.logIntent(
+  const intentId = await writeAhead.logIntent(
     writeAhead.INTENT_TYPES.PLACE_ORDER,
     windowId,
     intentPayload
@@ -513,7 +513,7 @@ export async function cancelOrder(orderId, log) {
   }
 
   // 3. Log intent BEFORE API call
-  const intentId = writeAhead.logIntent(
+  const intentId = await writeAhead.logIntent(
     writeAhead.INTENT_TYPES.CANCEL_ORDER,
     order.window_id,
     { orderId, orderStatus: order.status, requestedAt: new Date().toISOString() }

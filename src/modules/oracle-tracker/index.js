@@ -140,7 +140,7 @@ function handleOracleTick(tick) {
     }
     updateBuffer.push(updateRecord);
 
-    log.info('oracle_update_detected', {
+    log.debug('oracle_update_detected', {
       symbol: updateRecord.symbol,
       price: updateRecord.price,
       deviation_pct: updateRecord.deviation_from_previous_pct,
@@ -200,7 +200,7 @@ async function flushBuffer() {
     stats.batchesInserted++;
     stats.lastFlushAt = new Date().toISOString();
 
-    log.info('buffer_flushed', { record_count: records.length, duration_ms: durationMs });
+    log.debug('buffer_flushed', { record_count: records.length, duration_ms: durationMs });
   } catch (err) {
     stats.insertErrors++;
     log.error('persistence_failed', { error: err.message, record_count: records.length });

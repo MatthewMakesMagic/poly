@@ -183,7 +183,7 @@ export async function addPosition(params, log, riskConfig = null) {
     requestedAt: new Date().toISOString(),
   };
 
-  const intentId = writeAhead.logIntent(
+  const intentId = await writeAhead.logIntent(
     writeAhead.INTENT_TYPES.OPEN_POSITION,
     windowId,
     intentPayload
@@ -422,7 +422,7 @@ export async function closePosition(positionId, params, log) {
     requestedAt: new Date().toISOString(),
   };
 
-  const intentId = writeAhead.logIntent(
+  const intentId = await writeAhead.logIntent(
     writeAhead.INTENT_TYPES.CLOSE_POSITION,
     position.window_id,
     intentPayload

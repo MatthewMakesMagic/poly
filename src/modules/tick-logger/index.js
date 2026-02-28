@@ -268,7 +268,7 @@ async function batchInsert(ticks) {
     stats.batchesInserted++;
     stats.lastFlushAt = new Date().toISOString();
 
-    log.info('batch_inserted', { tick_count: allTicks.length, duration_ms: durationMs, retried: retryTicks.length });
+    log.debug('batch_inserted', { tick_count: allTicks.length, duration_ms: durationMs, retried: retryTicks.length });
   } catch (err) {
     stats.insertErrors++;
     log.error('insert_failed', { error: err.message, tick_count: allTicks.length });

@@ -68,7 +68,7 @@ export function parseReferencePrice(question) {
 
   // Log warning for unparseable questions
   if (log) {
-    log.warn('reference_price_parse_failed', { question });
+    log.debug('reference_price_parse_failed', { question });
   }
 
   return null;

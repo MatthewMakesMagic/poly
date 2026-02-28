@@ -206,7 +206,7 @@ async function flushBuffer() {
     stats.batchesInserted++;
     stats.lastFlushAt = new Date().toISOString();
 
-    log.info('buffer_flushed', { signal_count: readySignals.length, duration_ms: durationMs });
+    log.debug('buffer_flushed', { signal_count: readySignals.length, duration_ms: durationMs });
   } catch (err) {
     stats.insertErrors++;
     log.error('persistence_failed', {
