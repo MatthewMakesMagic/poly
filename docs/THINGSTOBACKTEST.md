@@ -23,3 +23,15 @@
 **Backtest design**: Replay CLOB price history within each window for all 5,502 windows. For each trade, check if a stop loss at [-30%, -50%, -70%] would have triggered before expiry. Compare: (a) how many losses does the stop save, (b) how many eventual wins does it kill, (c) net EV impact. Pay special attention to the cheap entry bucket ($0-$0.20) where mid-window price swings are extreme.
 
 **Data**: `clob_price_snapshots` or `price_ticks` tables for intra-window CLOB prices, joined with `window_close_events` for resolution.
+
+## 3. VWAP/CoinGecko as Confirmation Signal
+
+**Current**: The BS model uses a single Chainlink oracle snapshot to estimate p_up. No VWAP or exchange composite data is used in the probability model.
+
+**Thesis**: Chainlink is itself a VWAP — aggregated from exchanges with ~2s smoothing half-life. Raw VWAP (or CoinGecko's broader composite) shows the direction Chainlink is *about to move* before it gets there. This is a 2-8 second lookahead on the settlement oracle.
+
+**Prior evidence**: Paper trading showed VWAP-disagrees-with-CLOB at T-60s → 85.7% win rate. BS model alone → 85.4% on same windows. Similar overall, but likely wrong on *different* trades. Combining (model edge + VWAP confirms direction) should filter false signals where model sees edge but underlying price is reverting.
+
+**Backtest design**: For each historical window at T-60s, compute: (a) BS model edge (current), (b) VWAP direction (CoinGecko or composite vs open), (c) whether they agree. Compare EV for: model-only, VWAP-only, model+VWAP-agree, model-fires-but-VWAP-disagrees. The last bucket is the key — if those trades lose disproportionately, VWAP confirmation is worth adding.
+
+**Data**: `paper_trades_v2` has `vwap_price`, `vwap_direction`, `chainlink_price` per signal. `window_close_events` has oracle prices and resolutions. RTDS ticks in `price_ticks` have CoinGecko composite history.
