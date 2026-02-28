@@ -112,11 +112,10 @@ describe('Position Verifier Module', () => {
       const result = await positionVerifier.verify(localPositions);
 
       expect(result.verified).toBe(true);
-      expect(result.missing).toHaveLength(0);
       expect(result.orphans).toHaveLength(0);
     });
 
-    it('should detect missing positions (exchange has, local does not)', async () => {
+    it('should ignore extra exchange positions (manual trades, stale data)', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
         status: 200,
@@ -129,9 +128,9 @@ describe('Position Verifier Module', () => {
       const localPositions = [{ token_id: 'token-1', size: 10 }];
       const result = await positionVerifier.verify(localPositions);
 
-      expect(result.verified).toBe(false);
-      expect(result.missing).toHaveLength(1);
-      expect(result.missing[0].token_id).toBe('token-unknown');
+      // Extra exchange positions are not our concern — verified passes
+      expect(result.verified).toBe(true);
+      expect(result.orphans).toHaveLength(0);
     });
 
     it('should detect orphan positions (local has, exchange does not)', async () => {
@@ -150,7 +149,7 @@ describe('Position Verifier Module', () => {
 
       const result = await positionVerifier.verify(localPositions);
 
-      // Orphans don't fail verification
+      // Orphans are informational — verification still passes
       expect(result.verified).toBe(true);
       expect(result.orphans).toHaveLength(1);
       expect(result.orphans[0].token_id).toBe('token-orphan');

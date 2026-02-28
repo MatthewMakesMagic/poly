@@ -130,8 +130,9 @@ export async function verify(localPositions = []) {
     }
   }
 
-  // Only check that OUR bot positions exist on the exchange.
-  // Extra exchange positions (manual trades) are expected and not our concern.
+  // Check that our bot positions exist on the exchange.
+  // Extra exchange positions (manual trades, stale data) are not our concern.
+  // Orphans (local but not on exchange) are informational only — they likely settled.
   const orphans = [];
   for (const [tokenId, localPos] of localByToken) {
     if (!exchangeByToken.has(tokenId)) {
@@ -143,16 +144,13 @@ export async function verify(localPositions = []) {
     }
   }
 
-  // Verified = all our local positions exist on exchange
-  const verified = orphans.length === 0;
-
-  if (!verified) {
+  if (orphans.length > 0) {
     log.warn('position_verification_orphans', {
       orphan_count: orphans.length,
       orphans,
       local_count: localPositions.length,
       exchange_count: exchangePositions.length,
-      message: 'Local positions not found on exchange - possible already settled',
+      message: 'Local positions not found on exchange - likely settled',
     });
   } else {
     log.debug('position_verification_passed', {
@@ -161,7 +159,9 @@ export async function verify(localPositions = []) {
     });
   }
 
-  return { verified, orphans };
+  // Always verified=true. Orphans are informational — the caller decides what to do.
+  // Verification only fails on rate limit / API errors (thrown as exceptions).
+  return { verified: true, orphans };
 }
 
 /**

@@ -755,21 +755,67 @@ export class ExecutionLoop {
         }
       }
 
-      // 4c. Position verification before SL/TP evaluation (V3 Stage 5)
+      // 4c. Position verification — scoped to CURRENT active windows only
+      // Only verify positions whose window_id matches an active window.
+      // Positions from expired windows get auto-closed as settled.
       let verificationPassed = true;
-      if (this.modules['position-verifier'] && this.modules['position-manager']) {
+      if (this.modules['position-manager']) {
         try {
           const openPositions = await this.modules['position-manager'].getPositions();
-          if (openPositions.length > 0) {
-            const verifyResult = await this.modules['position-verifier'].verify(openPositions);
 
-            if (verifyResult.orphans?.length > 0) {
-              // Local positions not found on exchange — likely already settled
-              // Log but don't halt trading
-              this.log.warn('position_verification_orphans_detected', {
-                orphans: verifyResult.orphans,
-                message: 'Local positions not found on exchange - may have settled',
+          if (openPositions.length > 0) {
+            // Build set of active window IDs
+            const activeWindowIds = new Set(
+              (windows || []).map(w => w.window_id || w.id).filter(Boolean)
+            );
+
+            // Partition: current-window positions vs expired-window positions
+            const currentPositions = [];
+            const expiredPositions = [];
+            for (const pos of openPositions) {
+              if (activeWindowIds.has(pos.window_id)) {
+                currentPositions.push(pos);
+              } else {
+                expiredPositions.push(pos);
+              }
+            }
+
+            // Auto-close expired-window positions — their window is gone, they've settled
+            if (expiredPositions.length > 0) {
+              this.log.info('auto_closing_expired_positions', {
+                count: expiredPositions.length,
+                position_ids: expiredPositions.map(p => p.id),
+                window_ids: expiredPositions.map(p => p.window_id),
+                active_window_ids: [...activeWindowIds],
+                reason: 'Window no longer active — position settled or expired',
               });
+              for (const pos of expiredPositions) {
+                try {
+                  await this.modules['position-manager'].closePosition(pos.id, {
+                    closePrice: pos.current_price || pos.entry_price,
+                    reason: 'window_expired',
+                  });
+                } catch (closeErr) {
+                  this.log.warn('expired_position_close_failed', {
+                    position_id: pos.id,
+                    window_id: pos.window_id,
+                    error: closeErr.message,
+                  });
+                }
+              }
+            }
+
+            // Only verify current-window positions against the exchange
+            if (currentPositions.length > 0 && this.modules['position-verifier']) {
+              const verifyResult = await this.modules['position-verifier'].verify(currentPositions);
+
+              if (verifyResult.orphans?.length > 0) {
+                // Current-window position not found on exchange — log but don't halt
+                this.log.warn('position_verification_orphans_detected', {
+                  orphans: verifyResult.orphans,
+                  message: 'Active-window positions not found on exchange - may have just settled',
+                });
+              }
             }
           }
         } catch (verifyErr) {
