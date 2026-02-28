@@ -187,7 +187,7 @@ export async function placeOrder(params, log) {
 
     // 10. Build order record
     const orderRecord = {
-      order_id: result.orderID,
+      order_id: result.orderId,
       intent_id: intentId,
       position_id: null, // Will be set by position manager
       window_id: windowId,
