@@ -281,6 +281,89 @@ describe('Position Manager Module', () => {
         })
       ).rejects.toThrow('Position size 150 exceeds maximum 100');
     });
+
+    // BUG 11: positionLimitPerMarket=null coerces to 0 in JS comparison
+    // 0 >= null → 0 >= 0 → true → every position blocked
+    it('allows positions when positionLimitPerMarket is null (disabled)', async () => {
+      await positionManager.shutdown();
+
+      await positionManager.init({
+        risk: {
+          maxPositionSize: 100,
+          maxExposure: 500,
+          positionLimitPerMarket: null, // DISABLED — should allow all positions
+        },
+      });
+
+      // This should NOT throw — null limit means no limit
+      const position = await positionManager.addPosition({
+        windowId: 'window-1',
+        marketId: 'market-1',
+        tokenId: 'token-1',
+        side: 'long',
+        size: 2,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      expect(persistence.runReturningId).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO positions'),
+        expect.any(Array)
+      );
+    });
+
+    it('allows positions when positionLimitPerMarket is undefined', async () => {
+      await positionManager.shutdown();
+
+      await positionManager.init({
+        risk: {
+          maxPositionSize: 100,
+          maxExposure: 500,
+          // positionLimitPerMarket not provided at all
+        },
+      });
+
+      const position = await positionManager.addPosition({
+        windowId: 'window-2',
+        marketId: 'market-2',
+        tokenId: 'token-2',
+        side: 'long',
+        size: 2,
+        entryPrice: 0.5,
+        strategyId: 'strategy-1',
+      });
+
+      expect(persistence.runReturningId).toHaveBeenCalled();
+    });
+
+    it('enforces positionLimitPerMarket when set to a real number', async () => {
+      await positionManager.shutdown();
+
+      await positionManager.init({
+        risk: {
+          maxPositionSize: 100,
+          maxExposure: 500,
+          positionLimitPerMarket: 1,
+        },
+      });
+
+      // Mock: calculateTotalExposure returns 0, then countPositionsByMarket returns 1
+      persistence.get
+        .mockResolvedValueOnce({ total: 0 })  // calculateTotalExposure
+        .mockResolvedValueOnce({ count: 1 }); // countPositionsByMarket
+
+      await expect(
+        positionManager.addPosition({
+          windowId: 'window-1',
+          marketId: 'market-1',
+          tokenId: 'token-1',
+          side: 'long',
+          size: 2,
+          entryPrice: 0.5,
+          strategyId: 'strategy-1',
+        })
+      ).rejects.toThrow('already has 1 positions, limit is 1');
+    });
   });
 
   describe('validation', () => {

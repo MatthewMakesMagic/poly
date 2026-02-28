@@ -84,18 +84,21 @@ function validateOrderParams(params) {
  * @param {boolean} isFoK - Whether order was Fill-or-Kill
  * @returns {string} Internal order status
  */
-function mapPolymarketStatus(polymarketStatus, isFoK = false) {
+function mapPolymarketStatus(polymarketStatus, isImmediateOrder = false) {
   switch (polymarketStatus) {
     case 'live':
       return OrderStatus.OPEN;
     case 'matched':
       return OrderStatus.FILLED;
+    case 'cancelled':
+    case 'expired':
+    case 'killed':
+      // For immediate orders (FOK/IOC), unfilled = rejected
+      return isImmediateOrder ? OrderStatus.REJECTED : OrderStatus.CANCELLED;
     default:
-      // For FOK orders that weren't matched, they're rejected
-      if (isFoK) {
-        return OrderStatus.REJECTED;
-      }
-      return OrderStatus.OPEN;
+      // Unknown status: immediate orders treat as rejected, others as cancelled
+      // Never silently map unknown statuses to OPEN
+      return isImmediateOrder ? OrderStatus.REJECTED : OrderStatus.CANCELLED;
   }
 }
 
@@ -286,7 +289,7 @@ export async function placeOrder(params, log) {
       price,
     });
 
-    // 14. Return result with timestamps for trade-event module (Story 5.2, AC1, AC7)
+    // 14. Return result with timestamps and fill data
     return {
       orderId: result.orderId,
       status,
@@ -294,6 +297,10 @@ export async function placeOrder(params, log) {
       intentId,
       orderSubmittedToExchange: true, // CRITICAL: caller must know money may have left the account
       dbWriteFailed,
+      // Actual fill data from exchange (not request values)
+      fillPrice: result.priceFilled ?? null,
+      filledSize: result.shares ?? null,
+      fillCost: result.cost ?? null,
       timestamps: {
         orderSubmittedAt,
         orderAckedAt,
@@ -320,6 +327,8 @@ export async function placeOrder(params, log) {
     });
 
     // Re-throw with additional context
+    // orderSubmittedToExchange: false — this catch only fires when the API call itself fails,
+    // meaning the order never reached the exchange. Caller uses this to decide release vs confirm.
     throw new OrderManagerError(
       OrderManagerErrorCodes.SUBMISSION_FAILED,
       `Order submission failed: ${err.message}`,
@@ -327,6 +336,7 @@ export async function placeOrder(params, log) {
         intentId,
         originalError: err.message,
         code: err.code,
+        orderSubmittedToExchange: false,
         params,
       }
     );
@@ -584,6 +594,35 @@ export async function cancelOrder(orderId, log) {
       { orderId, originalError: err.message, intentId }
     );
   }
+}
+
+/**
+ * Cancel all open orders. Used by circuit breaker escalation.
+ *
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Results { cancelled: string[], failed: { orderId, error }[] }
+ */
+export async function cancelAll(log) {
+  const openOrders = await getOpenOrders();
+  const cancelled = [];
+  const failed = [];
+
+  for (const order of openOrders) {
+    try {
+      await cancelOrder(order.order_id, log);
+      cancelled.push(order.order_id);
+    } catch (err) {
+      failed.push({ orderId: order.order_id, error: err.message });
+    }
+  }
+
+  log.info('cancel_all_complete', {
+    total: openOrders.length,
+    cancelled: cancelled.length,
+    failed: failed.length,
+  });
+
+  return { cancelled, failed };
 }
 
 /**

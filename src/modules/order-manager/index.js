@@ -124,6 +124,16 @@ export async function cancelOrder(orderId) {
 }
 
 /**
+ * Cancel all open orders. Used by circuit breaker escalation.
+ *
+ * @returns {Promise<Object>} Results { cancelled, failed }
+ */
+export async function cancelAll() {
+  ensureInitialized();
+  return logic.cancelAll(log);
+}
+
+/**
  * Handle a partial fill event for an order
  *
  * Updates filled_size, avg_fill_price, and status.

@@ -16,9 +16,9 @@ import * as orchestrator from '../src/modules/orchestrator/index.js';
  *
  * @returns {Object} Connection status for database, rtds, and polymarket
  */
-export function getConnectionStatus() {
+export async function getConnectionStatus() {
   try {
-    const state = orchestrator.getState();
+    const state = await orchestrator.getState();
     const modules = state.modules || {};
 
     return {
@@ -95,9 +95,9 @@ export function determineHealthStatus(connections, errorCount1m, lastTick) {
  *
  * @returns {{ healthy: boolean, checks: Object, statusCode: number }}
  */
-export function buildHealthResponse() {
+export async function buildHealthResponse() {
   try {
-    const state = orchestrator.getState();
+    const state = await orchestrator.getState();
     const modules = state.modules || {};
 
     const checks = {};
@@ -155,9 +155,9 @@ export function buildHealthResponse() {
  *
  * @returns {{ healthy: boolean, sources: Object, statusCode: number }}
  */
-export function buildDataCaptureHealthResponse() {
+export async function buildDataCaptureHealthResponse() {
   try {
-    const state = orchestrator.getState();
+    const state = await orchestrator.getState();
     const modules = state.modules || {};
 
     // Grace period: don't warn about missing data in first 60s after startup
@@ -237,13 +237,13 @@ export function buildDataCaptureHealthResponse() {
  *
  * @returns {Object} Status response matching expected schema
  */
-export function buildStatusResponse() {
+export async function buildStatusResponse() {
   try {
-    const state = orchestrator.getState();
+    const state = await orchestrator.getState();
     const modules = state.modules || {};
 
     // Get connection status (has its own try-catch)
-    const connections = getConnectionStatus();
+    const connections = await getConnectionStatus();
 
     // Get error count from orchestrator state (exposed via getState())
     const errorCount1m = state.errorCount1m ?? 0;

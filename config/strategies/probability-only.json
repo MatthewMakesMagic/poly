@@ -13,8 +13,7 @@
       "fallbackVol": 0.5
     },
     "edge": {
-      "min_edge_threshold": 0.25,
-      "max_edge_threshold": 0.50
+      "min_edge_threshold": 0.25
     }
   },
   "pipeline": {

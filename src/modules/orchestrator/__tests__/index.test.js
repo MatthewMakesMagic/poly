@@ -381,7 +381,7 @@ describe('Orchestrator Module', () => {
         'Failed to initialize module: persistence'
       );
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
       expect(state.state).toBe(OrchestratorState.ERROR);
     });
 
@@ -394,12 +394,12 @@ describe('Orchestrator Module', () => {
     });
 
     it('updates state to initialized on success', async () => {
-      const stateBefore = orchestrator.getState();
+      const stateBefore = await orchestrator.getState();
       expect(stateBefore.initialized).toBe(false);
 
       await orchestrator.init(mockConfig);
 
-      const stateAfter = orchestrator.getState();
+      const stateAfter = await orchestrator.getState();
       expect(stateAfter.initialized).toBe(true);
       expect(stateAfter.state).toBe(OrchestratorState.INITIALIZED);
     });
@@ -424,10 +424,10 @@ describe('Orchestrator Module', () => {
       await orchestrator.init(mockConfig);
     });
 
-    it('starts the execution loop', () => {
+    it('starts the execution loop', async () => {
       orchestrator.start();
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
       expect(state.running).toBe(true);
       expect(state.state).toBe(OrchestratorState.RUNNING);
     });
@@ -438,11 +438,11 @@ describe('Orchestrator Module', () => {
       expect(() => orchestrator.start()).toThrow('Orchestrator not initialized');
     });
 
-    it('is idempotent - multiple calls do not error', () => {
+    it('is idempotent - multiple calls do not error', async () => {
       orchestrator.start();
       orchestrator.start(); // Should not throw
 
-      expect(orchestrator.getState().running).toBe(true);
+      expect((await orchestrator.getState()).running).toBe(true);
     });
   });
 
@@ -452,20 +452,20 @@ describe('Orchestrator Module', () => {
       orchestrator.start();
     });
 
-    it('stops the execution loop', () => {
-      expect(orchestrator.getState().running).toBe(true);
+    it('stops the execution loop', async () => {
+      expect((await orchestrator.getState()).running).toBe(true);
 
       orchestrator.stop();
 
-      expect(orchestrator.getState().running).toBe(false);
+      expect((await orchestrator.getState()).running).toBe(false);
     });
 
-    it('changes state from running to initialized', () => {
-      expect(orchestrator.getState().state).toBe(OrchestratorState.RUNNING);
+    it('changes state from running to initialized', async () => {
+      expect((await orchestrator.getState()).state).toBe(OrchestratorState.RUNNING);
 
       orchestrator.stop();
 
-      expect(orchestrator.getState().state).toBe(OrchestratorState.INITIALIZED);
+      expect((await orchestrator.getState()).state).toBe(OrchestratorState.INITIALIZED);
     });
   });
 
@@ -475,10 +475,10 @@ describe('Orchestrator Module', () => {
       orchestrator.start();
     });
 
-    it('pauses the execution loop without stopping', () => {
+    it('pauses the execution loop without stopping', async () => {
       orchestrator.pause();
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
       expect(state.paused).toBe(true);
       expect(state.state).toBe(OrchestratorState.PAUSED);
     });
@@ -497,13 +497,13 @@ describe('Orchestrator Module', () => {
       orchestrator.pause();
     });
 
-    it('resumes a paused execution loop', () => {
-      expect(orchestrator.getState().paused).toBe(true);
+    it('resumes a paused execution loop', async () => {
+      expect((await orchestrator.getState()).paused).toBe(true);
 
       orchestrator.resume();
 
-      expect(orchestrator.getState().running).toBe(true);
-      expect(orchestrator.getState().paused).toBe(false);
+      expect((await orchestrator.getState()).running).toBe(true);
+      expect((await orchestrator.getState()).paused).toBe(false);
     });
 
     it('throws if not initialized', async () => {
@@ -514,8 +514,8 @@ describe('Orchestrator Module', () => {
   });
 
   describe('getState()', () => {
-    it('returns initialized=false before init', () => {
-      const state = orchestrator.getState();
+    it('returns initialized=false before init', async () => {
+      const state = await orchestrator.getState();
       expect(state.initialized).toBe(false);
       expect(state.state).toBe(OrchestratorState.STOPPED);
     });
@@ -523,7 +523,7 @@ describe('Orchestrator Module', () => {
     it('returns complete state after init', async () => {
       await orchestrator.init(mockConfig);
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
 
       expect(state.initialized).toBe(true);
       expect(state.state).toBe(OrchestratorState.INITIALIZED);
@@ -535,7 +535,7 @@ describe('Orchestrator Module', () => {
     it('aggregates module states', async () => {
       await orchestrator.init(mockConfig);
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
 
       expect(state.modules.persistence).toBeDefined();
       expect(state.modules.polymarket).toBeDefined();
@@ -551,7 +551,7 @@ describe('Orchestrator Module', () => {
       // Wait for at least one tick
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
 
       expect(state.loop).toBeDefined();
       expect(state.loop.tickCount).toBeGreaterThanOrEqual(1);
@@ -561,7 +561,7 @@ describe('Orchestrator Module', () => {
     it('includes error metrics', async () => {
       await orchestrator.init(mockConfig);
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
 
       expect(state.errorCount).toBe(0);
       expect(state.recoveryCount).toBe(0);
@@ -611,11 +611,11 @@ describe('Orchestrator Module', () => {
 
     it('stops execution loop before module shutdown', async () => {
       orchestrator.start();
-      expect(orchestrator.getState().running).toBe(true);
+      expect((await orchestrator.getState()).running).toBe(true);
 
       await orchestrator.shutdown();
 
-      expect(orchestrator.getState().running).toBe(false);
+      expect((await orchestrator.getState()).running).toBe(false);
     });
 
     it('handles module shutdown timeout gracefully', async () => {
@@ -635,22 +635,22 @@ describe('Orchestrator Module', () => {
       await orchestrator.shutdown();
 
       // State should be reset
-      expect(orchestrator.getState().initialized).toBe(false);
+      expect((await orchestrator.getState()).initialized).toBe(false);
     });
 
     it('is idempotent - can be called multiple times', async () => {
       await orchestrator.shutdown();
       await orchestrator.shutdown();
 
-      expect(orchestrator.getState().initialized).toBe(false);
+      expect((await orchestrator.getState()).initialized).toBe(false);
     });
 
     it('clears all module references', async () => {
-      expect(orchestrator.getState().modules.persistence).toBeDefined();
+      expect((await orchestrator.getState()).modules.persistence).toBeDefined();
 
       await orchestrator.shutdown();
 
-      expect(orchestrator.getState().modules).toEqual({});
+      expect((await orchestrator.getState()).modules).toEqual({});
     });
   });
 
@@ -716,7 +716,7 @@ describe('Orchestrator Module', () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
 
       // Should still be running (not crashed)
-      expect(orchestrator.getState().state).toBe(OrchestratorState.INITIALIZED);
+      expect((await orchestrator.getState()).state).toBe(OrchestratorState.INITIALIZED);
     });
   });
 
@@ -749,7 +749,7 @@ describe('Orchestrator Module', () => {
     it('exposes manifest in orchestrator state', async () => {
       await orchestrator.init(mockConfig);
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
       expect(state.manifest).toBeDefined();
       expect(state.manifest.strategies).toContain('simple-threshold');
     });
@@ -757,7 +757,7 @@ describe('Orchestrator Module', () => {
     it('exposes loadedStrategies from manifest', async () => {
       await orchestrator.init(mockConfig);
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
       expect(state.loadedStrategies).toEqual(['simple-threshold']);
     });
 
@@ -769,7 +769,7 @@ describe('Orchestrator Module', () => {
       // Should not throw - graceful degradation
       await orchestrator.init(mockConfig);
 
-      const state = orchestrator.getState();
+      const state = await orchestrator.getState();
       // Manifest will be null but system still works
       expect(state.state).toBe(OrchestratorState.INITIALIZED);
     });

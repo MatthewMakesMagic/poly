@@ -941,4 +941,116 @@ describe('Order Manager Logic', () => {
       );
     });
   });
+
+  describe('cancelAll()', () => {
+    it('cancels all open orders and returns results', async () => {
+      // Mock getOpenOrders to return 2 open orders
+      persistence.all.mockResolvedValueOnce([
+        { order_id: 'open-1', status: 'open', window_id: 'w-1' },
+        { order_id: 'open-2', status: 'open', window_id: 'w-2' },
+      ]);
+
+      // cancelOrder calls getOrder + updateOrderStatus(getOrder again) for each order
+      const orders = {
+        'open-1': { order_id: 'open-1', status: 'open', window_id: 'w-1' },
+        'open-2': { order_id: 'open-2', status: 'open', window_id: 'w-2' },
+      };
+      persistence.get.mockImplementation((sql, params) => {
+        if (sql.includes('SELECT * FROM orders') && orders[params[0]]) {
+          return Promise.resolve({ ...orders[params[0]] });
+        }
+        return Promise.resolve(undefined);
+      });
+
+      const result = await logic.cancelAll(mockLog);
+
+      expect(result.cancelled).toHaveLength(2);
+      expect(result.cancelled).toContain('open-1');
+      expect(result.cancelled).toContain('open-2');
+      expect(result.failed).toHaveLength(0);
+      expect(mockLog.info).toHaveBeenCalledWith('cancel_all_complete', {
+        total: 2,
+        cancelled: 2,
+        failed: 0,
+      });
+    });
+
+    it('returns empty arrays when no open orders', async () => {
+      persistence.all.mockResolvedValueOnce([]);
+
+      const result = await logic.cancelAll(mockLog);
+
+      expect(result.cancelled).toHaveLength(0);
+      expect(result.failed).toHaveLength(0);
+    });
+
+    it('tracks failed cancellations without throwing', async () => {
+      persistence.all.mockResolvedValueOnce([
+        { order_id: 'open-1', status: 'open' },
+      ]);
+
+      // Mock getOrder returning undefined to trigger cancel failure
+      persistence.get.mockResolvedValueOnce(undefined);
+
+      const result = await logic.cancelAll(mockLog);
+
+      expect(result.cancelled).toHaveLength(0);
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0].orderId).toBe('open-1');
+    });
+  });
+
+  describe('placeOrder() fill data', () => {
+    const validParams = {
+      tokenId: 'token-1',
+      side: 'buy',
+      size: 100,
+      price: 0.5,
+      orderType: 'FOK',
+      windowId: 'window-1',
+      marketId: 'market-1',
+    };
+
+    it('returns fill data from matched FOK order', async () => {
+      polymarketClient.buy.mockResolvedValueOnce({
+        orderID: 'fok-order-1',
+        status: 'matched',
+        success: true,
+        priceFilled: 0.48,
+        shares: 208.33,
+        cost: 100,
+      });
+
+      const result = await logic.placeOrder(validParams, mockLog);
+
+      expect(result.fillPrice).toBe(0.48);
+      expect(result.filledSize).toBe(208.33);
+      expect(result.fillCost).toBe(100);
+      expect(result.orderSubmittedToExchange).toBe(true);
+    });
+
+    it('returns null fill data when no fill info returned', async () => {
+      polymarketClient.buy.mockResolvedValueOnce({
+        orderID: 'gtc-order-1',
+        status: 'live',
+        success: true,
+      });
+
+      const result = await logic.placeOrder(validParams, mockLog);
+
+      expect(result.fillPrice).toBeNull();
+      expect(result.filledSize).toBeNull();
+      expect(result.fillCost).toBeNull();
+    });
+
+    it('sets orderSubmittedToExchange false in thrown error', async () => {
+      polymarketClient.buy.mockRejectedValueOnce(new Error('Network timeout'));
+
+      try {
+        await logic.placeOrder(validParams, mockLog);
+      } catch (err) {
+        expect(err.context.orderSubmittedToExchange).toBe(false);
+      }
+    });
+  });
 });

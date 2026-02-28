@@ -527,16 +527,18 @@ export class ExecutionLoop {
                   });
 
                   // Record position with position-manager
-                  // V3 Stage 5: Halt-on-uncertainty - if recording fails after successful order, trip CB
-                  if (this.modules['position-manager'] && orderResult.status !== 'rejected') {
+                  // Only record for confirmed fills — not rejected, cancelled, or unfilled IOC
+                  if (this.modules['position-manager'] && orderResult.status === 'filled') {
+                    const actualPrice = orderResult.fillPrice != null ? orderResult.fillPrice : maxPrice;
+                    const actualSize = orderResult.filledSize != null ? orderResult.filledSize : sizingResult.actual_size;
                     try {
                       const position = await this.modules['position-manager'].addPosition({
                         windowId: signal.window_id,
                         marketId: signal.market_id,
                         tokenId: signal.token_id,
                         side: signal.direction,
-                        size: sizingResult.actual_size,
-                        entryPrice: maxPrice,
+                        size: actualSize,
+                        entryPrice: actualPrice,
                         strategyId: strategyId,
                         orderId: orderResult.orderId,
                       });
@@ -546,8 +548,9 @@ export class ExecutionLoop {
                         window_id: signal.window_id,
                         strategy_id: strategyId,
                         side: signal.direction,
-                        size: sizingResult.actual_size,
-                        entry_price: position.entry_price,
+                        size: actualSize,
+                        entry_price: actualPrice,
+                        max_price: maxPrice,
                         trading_mode: tradingMode,
                       });
 
@@ -556,22 +559,34 @@ export class ExecutionLoop {
                         await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
                       }
                     } catch (trackingErr) {
-                      // CRITICAL: Order succeeded but position tracking failed
-                      // Trip CB - we have an untracked position on the exchange
+                      // Order succeeded but position tracking failed.
+                      // Distinguish code bugs from infrastructure failures:
+                      const isBug = trackingErr.code === 'POSITION_VALIDATION_FAILED'
+                        || trackingErr.code === 'POSITION_LIMIT_EXCEEDED'
+                        || trackingErr.code === 'DUPLICATE_POSITION';
+
                       this.log.error('position_tracking_failed_after_order', {
-                        level: 'CRITICAL',
+                        level: isBug ? 'ERROR' : 'CRITICAL',
                         window_id: signal.window_id,
                         order_id: orderResult.orderId,
                         error: trackingErr.message,
-                        message: 'Order placed but position recording failed - tripping circuit breaker',
+                        error_code: trackingErr.code,
+                        is_code_bug: isBug,
+                        message: isBug
+                          ? 'Position recording failed due to code/config error — trading continues'
+                          : 'Position recording failed due to infrastructure error — tripping circuit breaker',
                       });
-                      if (this.modules['circuit-breaker']) {
+
+                      // Only trip CB for infrastructure failures (DB down, connection lost)
+                      // Code bugs (validation, limits, duplicates) are logged but don't halt trading
+                      if (!isBug && this.modules['circuit-breaker']) {
                         await this.modules['circuit-breaker'].trip('POSITION_TRACKING_FAILED', {
                           window_id: signal.window_id,
                           order_id: orderResult.orderId,
                           error: trackingErr.message,
                         });
                       }
+
                       // CONFIRM (not release) — money already left the account
                       if (this.modules.safeguards && reserved) {
                         await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
@@ -581,7 +596,7 @@ export class ExecutionLoop {
                           order_id: orderResult.orderId,
                         });
                       }
-                      continue; // Skip to next signal - NEVER log-and-continue
+                      continue;
                     }
                   } else if (this.modules.safeguards && reserved) {
                     // Order rejected - release the reservation
@@ -620,7 +635,9 @@ export class ExecutionLoop {
                 } catch (orderErr) {
                   // CRITICAL: Only release if the order was NOT submitted to the exchange.
                   // If money may have left the account, CONFIRM to prevent duplicate entries.
-                  const submittedToExchange = orderErr.orderSubmittedToExchange || orderErr.context?.orderSubmittedToExchange;
+                  // Default to TRUE (assume submitted) unless explicitly marked false
+                  // This is fail-safe: if we don't know, assume money left the account
+                  const submittedToExchange = orderErr.context?.orderSubmittedToExchange !== false;
                   if (this.modules.safeguards && reserved) {
                     if (submittedToExchange) {
                       // Order went through on exchange but something else failed — NEVER release
@@ -683,7 +700,7 @@ export class ExecutionLoop {
           const orderManager = this.modules['order-manager'];
 
           // Get all open orders
-          const openOrders = orderManager.getOpenOrders();
+          const openOrders = await orderManager.getOpenOrders();
 
           if (openOrders.length > 0) {
             // Get probability calculation function from window-timing-model if available

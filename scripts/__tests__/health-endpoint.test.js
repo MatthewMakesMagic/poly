@@ -67,8 +67,8 @@ describe('Health Endpoint', () => {
   });
 
   describe('buildStatusResponse()', () => {
-    it('should return complete status response with all required fields', () => {
-      const response = buildStatusResponse();
+    it('should return complete status response with all required fields', async () => {
+      const response = await buildStatusResponse();
 
       expect(response).toHaveProperty('status');
       expect(response).toHaveProperty('uptime_seconds');
@@ -79,85 +79,85 @@ describe('Health Endpoint', () => {
       expect(response).toHaveProperty('error_count_1m');
     });
 
-    it('should return active_strategies from orchestrator loadedStrategies', () => {
+    it('should return active_strategies from orchestrator loadedStrategies', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         loadedStrategies: ['oracle-edge', 'momentum'],
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.active_strategies).toEqual(['oracle-edge', 'momentum']);
     });
 
-    it('should calculate uptime_seconds from startedAt', () => {
+    it('should calculate uptime_seconds from startedAt', async () => {
       const startedAt = new Date(Date.now() - 1234 * 1000).toISOString();
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         startedAt,
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       // Allow 1 second tolerance for test execution time
       expect(response.uptime_seconds).toBeGreaterThanOrEqual(1233);
       expect(response.uptime_seconds).toBeLessThanOrEqual(1235);
     });
 
-    it('should include connection status for all services', () => {
-      const response = buildStatusResponse();
+    it('should include connection status for all services', async () => {
+      const response = await buildStatusResponse();
 
       expect(response.connections).toHaveProperty('database');
       expect(response.connections).toHaveProperty('rtds');
       expect(response.connections).toHaveProperty('polymarket');
     });
 
-    it('should include last_tick from RTDS stats', () => {
-      const response = buildStatusResponse();
+    it('should include last_tick from RTDS stats', async () => {
+      const response = await buildStatusResponse();
 
       expect(response.last_tick).toBe('2026-02-01T12:34:56.789Z');
     });
 
-    it('should include active_windows from window-manager', () => {
-      const response = buildStatusResponse();
+    it('should include active_windows from window-manager', async () => {
+      const response = await buildStatusResponse();
 
       expect(response.active_windows).toBe(4);
     });
 
-    it('should include error_count_1m from orchestrator state', () => {
+    it('should include error_count_1m from orchestrator state', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         errorCount1m: 3,
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.error_count_1m).toBe(3);
     });
 
-    it('should return empty array for active_strategies when loadedStrategies is undefined', () => {
+    it('should return empty array for active_strategies when loadedStrategies is undefined', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         loadedStrategies: undefined,
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.active_strategies).toEqual([]);
     });
 
-    it('should return 0 uptime when startedAt is null', () => {
+    it('should return 0 uptime when startedAt is null', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         startedAt: null,
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.uptime_seconds).toBe(0);
     });
 
-    it('should return null for last_tick when RTDS has no ticks', () => {
+    it('should return null for last_tick when RTDS has no ticks', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         modules: {
@@ -166,20 +166,20 @@ describe('Health Endpoint', () => {
         },
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.last_tick).toBeNull();
     });
   });
 
   describe('getConnectionStatus()', () => {
-    it('should return connected for initialized database', () => {
-      const connections = getConnectionStatus();
+    it('should return connected for initialized database', async () => {
+      const connections = await getConnectionStatus();
 
       expect(connections.database).toBe('connected');
     });
 
-    it('should return disconnected for uninitialized database', () => {
+    it('should return disconnected for uninitialized database', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         modules: {
@@ -188,18 +188,18 @@ describe('Health Endpoint', () => {
         },
       });
 
-      const connections = getConnectionStatus();
+      const connections = await getConnectionStatus();
 
       expect(connections.database).toBe('disconnected');
     });
 
-    it('should return connected for connected RTDS', () => {
-      const connections = getConnectionStatus();
+    it('should return connected for connected RTDS', async () => {
+      const connections = await getConnectionStatus();
 
       expect(connections.rtds).toBe('connected');
     });
 
-    it('should return disconnected for disconnected RTDS', () => {
+    it('should return disconnected for disconnected RTDS', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         modules: {
@@ -208,18 +208,18 @@ describe('Health Endpoint', () => {
         },
       });
 
-      const connections = getConnectionStatus();
+      const connections = await getConnectionStatus();
 
       expect(connections.rtds).toBe('disconnected');
     });
 
-    it('should return authenticated for authenticated polymarket', () => {
-      const connections = getConnectionStatus();
+    it('should return authenticated for authenticated polymarket', async () => {
+      const connections = await getConnectionStatus();
 
       expect(connections.polymarket).toBe('authenticated');
     });
 
-    it('should return disconnected for unauthenticated polymarket', () => {
+    it('should return disconnected for unauthenticated polymarket', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         modules: {
@@ -228,18 +228,18 @@ describe('Health Endpoint', () => {
         },
       });
 
-      const connections = getConnectionStatus();
+      const connections = await getConnectionStatus();
 
       expect(connections.polymarket).toBe('disconnected');
     });
 
-    it('should return unknown for missing module state', () => {
+    it('should return unknown for missing module state', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         modules: {},
       });
 
-      const connections = getConnectionStatus();
+      const connections = await getConnectionStatus();
 
       expect(connections.database).toBe('unknown');
       expect(connections.rtds).toBe('unknown');
@@ -369,12 +369,12 @@ describe('Edge Cases and Error Handling', () => {
   });
 
   describe('buildStatusResponse() error resilience', () => {
-    it('should return unhealthy status when orchestrator.getState() throws', () => {
+    it('should return unhealthy status when orchestrator.getState() throws', async () => {
       mockGetState.mockImplementation(() => {
         throw new Error('Orchestrator not initialized');
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.status).toBe('unhealthy');
       expect(response.error).toBe('state_unavailable');
@@ -382,36 +382,36 @@ describe('Edge Cases and Error Handling', () => {
       expect(response.active_strategies).toEqual([]);
     });
 
-    it('should handle missing errorCount1m in state gracefully', () => {
+    it('should handle missing errorCount1m in state gracefully', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         errorCount1m: undefined,
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.error_count_1m).toBe(0);
     });
 
-    it('should return non-negative uptime even with future startedAt (clock skew)', () => {
+    it('should return non-negative uptime even with future startedAt (clock skew)', async () => {
       const futureDate = new Date(Date.now() + 60000).toISOString(); // 1 minute in future
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         startedAt: futureDate,
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.uptime_seconds).toBeGreaterThanOrEqual(0);
     });
 
-    it('should handle empty modules object', () => {
+    it('should handle empty modules object', async () => {
       mockGetState.mockReturnValue({
         ...mockOrchestratorState,
         modules: {},
       });
 
-      const response = buildStatusResponse();
+      const response = await buildStatusResponse();
 
       expect(response.connections.database).toBe('unknown');
       expect(response.connections.rtds).toBe('unknown');
@@ -422,12 +422,12 @@ describe('Edge Cases and Error Handling', () => {
   });
 
   describe('getConnectionStatus() error resilience', () => {
-    it('should return all unknown when orchestrator.getState() throws', () => {
+    it('should return all unknown when orchestrator.getState() throws', async () => {
       mockGetState.mockImplementation(() => {
         throw new Error('Orchestrator crashed');
       });
 
-      const connections = getConnectionStatus();
+      const connections = await getConnectionStatus();
 
       expect(connections.database).toBe('unknown');
       expect(connections.rtds).toBe('unknown');
@@ -504,7 +504,7 @@ describe('Response Serialization', () => {
     mockGetState.mockReturnValue({ ...mockOrchestratorState });
 
     // Import the health endpoint module functions directly
-    const response = buildStatusResponse();
+    const response = await buildStatusResponse();
 
     // Verify JSON structure
     expect(response).toMatchObject({
@@ -534,7 +534,7 @@ describe('Response Serialization', () => {
 
     // Call buildStatusResponse many times to detect any performance issues
     for (let i = 0; i < 100; i++) {
-      buildStatusResponse();
+      await buildStatusResponse();
     }
 
     const elapsed = Date.now() - start;
@@ -554,9 +554,9 @@ describe('HTTP Server Integration', () => {
     mockGetState.mockReturnValue({ ...mockOrchestratorState });
     // Create HTTP server for testing
     port = 3334 + Math.floor(Math.random() * 1000); // Random port to avoid conflicts
-    server = createServer((req, res) => {
+    server = createServer(async (req, res) => {
       if (req.method === 'GET' && req.url === '/api/live/status') {
-        const status = buildStatusResponse();
+        const status = await buildStatusResponse();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(status));
       } else {

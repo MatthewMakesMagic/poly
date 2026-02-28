@@ -122,14 +122,16 @@ export async function checkLimits(params, riskConfig) {
     };
   }
 
-  // Check 3: Positions per market limit
-  const marketPositions = await countPositionsByMarket(marketId);
-  if (marketPositions >= positionLimitPerMarket) {
-    return {
-      allowed: false,
-      reason: `Market ${marketId} already has ${marketPositions} positions, limit is ${positionLimitPerMarket}`,
-      limit: 'positionLimitPerMarket',
-    };
+  // Check 3: Positions per market limit (null/undefined = no limit)
+  if (positionLimitPerMarket != null && positionLimitPerMarket > 0) {
+    const marketPositions = await countPositionsByMarket(marketId);
+    if (marketPositions >= positionLimitPerMarket) {
+      return {
+        allowed: false,
+        reason: `Market ${marketId} already has ${marketPositions} positions, limit is ${positionLimitPerMarket}`,
+        limit: 'positionLimitPerMarket',
+      };
+    }
   }
 
   return { allowed: true };
@@ -151,7 +153,7 @@ export async function checkLimits(params, riskConfig) {
  * @returns {Promise<Object>} Created position with id
  */
 export async function addPosition(params, log, riskConfig = null) {
-  const { windowId, marketId, tokenId, side, size, entryPrice, strategyId } = params;
+  const { windowId, marketId, tokenId, side, size, entryPrice, strategyId, orderId } = params;
 
   // 1. Validate parameters
   validatePositionParams(params);
@@ -201,8 +203,8 @@ export async function addPosition(params, log, riskConfig = null) {
     const result = await persistence.runReturningId(
       `INSERT INTO positions (
         window_id, market_id, token_id, side, size, entry_price,
-        current_price, status, strategy_id, opened_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        current_price, status, strategy_id, opened_at, order_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING id`,
       [
         windowId,
@@ -215,6 +217,7 @@ export async function addPosition(params, log, riskConfig = null) {
         PositionStatus.OPEN,
         strategyId,
         openedAt,
+        orderId || null,
       ]
     );
 
@@ -255,7 +258,7 @@ export async function addPosition(params, log, riskConfig = null) {
     return positionRecord;
   } catch (err) {
     // Handle duplicate position error
-    if (err.message && err.message.includes('UNIQUE constraint failed')) {
+    if (err.message && (err.message.includes('UNIQUE constraint failed') || err.message.includes('duplicate key value'))) {
       writeAhead.markFailed(intentId, {
         code: PositionManagerErrorCodes.DUPLICATE_POSITION,
         message: 'Position already exists for this window/market/token combination',

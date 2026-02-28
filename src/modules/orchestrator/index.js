@@ -258,7 +258,7 @@ async function writeStateSnapshot(isFinalSnapshot = false) {
   const positionManagerModule = getModule('position-manager');
   let positions = [];
   if (positionManagerModule && typeof positionManagerModule.getState === 'function') {
-    const pmState = positionManagerModule.getState();
+    const pmState = await positionManagerModule.getState();
     positions = pmState.openPositions || [];
   }
 
@@ -666,10 +666,9 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
               // edge_down = (1-p_up) - (1-market_up) = market_up - p_up = -edge_up
               const edgeDown = -edgeUp;
               const minEdgeThreshold = strategyConfig?.edge?.min_edge_threshold ?? 0.10;
-              const maxEdgeThreshold = strategyConfig?.edge?.max_edge_threshold ?? 0.50;
 
               // Log edge calculation for both sides
-              log.info('edge_calculated', {
+              log.debug('edge_calculated', {
                 window_id: windowContext.window_id,
                 symbol: windowContext.symbol,
                 model_probability: modelProbability,
@@ -681,84 +680,62 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
 
               // Check for UP opportunity (model says UP more likely than market)
               if (edgeUp >= minEdgeThreshold) {
-                // Check for suspicious edge (too high = possible stale data)
-                if (edgeUp > maxEdgeThreshold) {
-                  log.warn('edge_suspicious', {
-                    window_id: windowContext.window_id,
-                    edge: edgeUp,
-                    direction: 'UP',
-                    max_threshold: maxEdgeThreshold,
-                    reason: 'Edge too high - possible stale data or market issue',
-                  });
-                } else {
-                  windowSignal = {
-                    window_id: windowContext.window_id,
-                    token_id: windowContext.token_id_up || windowContext.token_id,
-                    market_id: windowContext.market_id,
-                    direction: 'long',
-                    side: 'UP',
-                    confidence: modelProbability,
-                    market_price: marketPrice,
-                    edge: edgeUp,
-                    strategy_id: strategyDef.name,
-                    component: versionId,
-                    oracle_price: windowContext.oracle_price,
-                    reference_price: windowContext.reference_price,
-                    symbol: windowContext.symbol,
-                  };
+                windowSignal = {
+                  window_id: windowContext.window_id,
+                  token_id: windowContext.token_id_up || windowContext.token_id,
+                  market_id: windowContext.market_id,
+                  direction: 'long',
+                  side: 'UP',
+                  confidence: modelProbability,
+                  market_price: marketPrice,
+                  edge: edgeUp,
+                  strategy_id: strategyDef.name,
+                  component: versionId,
+                  oracle_price: windowContext.oracle_price,
+                  reference_price: windowContext.reference_price,
+                  symbol: windowContext.symbol,
+                };
 
-                  log.info('edge_signal_generated', {
-                    window_id: windowContext.window_id,
-                    symbol: windowContext.symbol,
-                    side: 'UP',
-                    model_probability: modelProbability,
-                    market_price: marketPrice,
-                    edge: edgeUp,
-                  });
-                }
+                log.info('edge_signal_generated', {
+                  window_id: windowContext.window_id,
+                  symbol: windowContext.symbol,
+                  side: 'UP',
+                  model_probability: modelProbability,
+                  market_price: marketPrice,
+                  edge: edgeUp,
+                });
               }
               // Check for DOWN opportunity (model says DOWN more likely than market implies)
               else if (edgeDown >= minEdgeThreshold && windowContext.token_id_down) {
-                // Check for suspicious edge
-                if (edgeDown > maxEdgeThreshold) {
-                  log.warn('edge_suspicious', {
-                    window_id: windowContext.window_id,
-                    edge: edgeDown,
-                    direction: 'DOWN',
-                    max_threshold: maxEdgeThreshold,
-                    reason: 'Edge too high - possible stale data or market issue',
-                  });
-                } else {
-                  // p_down = 1 - p_up (probability model thinks it goes down)
-                  const pDown = 1 - modelProbability;
-                  // Market price for DOWN token (implied from UP price)
-                  const marketPriceDown = 1 - marketPrice;
+                // p_down = 1 - p_up (probability model thinks it goes down)
+                const pDown = 1 - modelProbability;
+                // Market price for DOWN token (implied from UP price)
+                const marketPriceDown = 1 - marketPrice;
 
-                  windowSignal = {
-                    window_id: windowContext.window_id,
-                    token_id: windowContext.token_id_down,
-                    market_id: windowContext.market_id,
-                    direction: 'long',  // We're going long on the DOWN token
-                    side: 'DOWN',
-                    confidence: pDown,
-                    market_price: marketPriceDown,
-                    edge: edgeDown,
-                    strategy_id: strategyDef.name,
-                    component: versionId,
-                    oracle_price: windowContext.oracle_price,
-                    reference_price: windowContext.reference_price,
-                    symbol: windowContext.symbol,
-                  };
+                windowSignal = {
+                  window_id: windowContext.window_id,
+                  token_id: windowContext.token_id_down,
+                  market_id: windowContext.market_id,
+                  direction: 'long',  // We're going long on the DOWN token
+                  side: 'DOWN',
+                  confidence: pDown,
+                  market_price: marketPriceDown,
+                  edge: edgeDown,
+                  strategy_id: strategyDef.name,
+                  component: versionId,
+                  oracle_price: windowContext.oracle_price,
+                  reference_price: windowContext.reference_price,
+                  symbol: windowContext.symbol,
+                };
 
-                  log.info('edge_signal_generated', {
-                    window_id: windowContext.window_id,
-                    symbol: windowContext.symbol,
-                    side: 'DOWN',
-                    model_probability: pDown,
-                    market_price: marketPriceDown,
-                    edge: edgeDown,
-                  });
-                }
+                log.info('edge_signal_generated', {
+                  window_id: windowContext.window_id,
+                  symbol: windowContext.symbol,
+                  side: 'DOWN',
+                  model_probability: pDown,
+                  market_price: marketPriceDown,
+                  edge: edgeDown,
+                });
               }
             } else if (componentResult?.signal === 'entry') {
               // Fallback for components that don't return probability
@@ -889,14 +866,14 @@ export function resume() {
  *
  * @returns {Object} Complete state including all modules and loop metrics
  */
-export function getState() {
-  // Aggregate module states
+export async function getState() {
+  // Aggregate module states (some modules have async getState)
   const modules = {};
   const allModules = getAllModules();
   for (const [name, moduleInstance] of Object.entries(allModules)) {
     if (moduleInstance && typeof moduleInstance.getState === 'function') {
       try {
-        modules[name] = moduleInstance.getState();
+        modules[name] = await moduleInstance.getState();
       } catch {
         modules[name] = { error: 'Failed to get state' };
       }

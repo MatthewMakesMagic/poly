@@ -69,7 +69,7 @@ function createHealthServer() {
 
     if (req.method === 'GET' && req.url === '/api/live/status') {
       try {
-        const status = buildStatusResponse();
+        const status = await buildStatusResponse();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(status));
       } catch (err) {
@@ -79,7 +79,7 @@ function createHealthServer() {
       }
     } else if (req.method === 'GET' && req.url === '/api/paper-trader') {
       try {
-        const state = orchestrator.getState();
+        const state = await orchestrator.getState();
         const pt = state.modules?.['paper-trader'] || { error: 'module not found in state' };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(pt, null, 2));
@@ -165,7 +165,7 @@ function createHealthServer() {
     } else if (req.method === 'GET' && req.url === '/health/strict') {
       // V3 Stage 5: Strict health check - 200 only when ALL checks pass
       try {
-        const health = buildHealthResponse();
+        const health = await buildHealthResponse();
         res.writeHead(health.statusCode, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(health));
       } catch (err) {
