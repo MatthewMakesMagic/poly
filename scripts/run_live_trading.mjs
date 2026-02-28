@@ -32,8 +32,11 @@ import { createServer } from 'http';
 import config from '../config/index.js';
 import * as orchestrator from '../src/modules/orchestrator/index.js';
 import persistence from '../src/persistence/index.js';
-import { child } from '../src/modules/logger/index.js';
+import { init as initLogger, child } from '../src/modules/logger/index.js';
 import { buildStatusResponse, buildHealthResponse } from './health-endpoint.mjs';
+
+// Initialize logger BEFORE creating any child loggers
+await initLogger({ level: config.logging?.level || 'info', console: true });
 
 // Create logger for this script
 const log = child({ module: 'run-live-trading' });
