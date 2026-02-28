@@ -369,7 +369,8 @@ export class ExecutionLoop {
                 window_id: windowId,
                 market_id: window.market_id,
                 token_id: tokenId,
-                direction: marketState2.entrySide,
+                direction: 'long',  // Always long — we buy the UP or DOWN token
+                side: marketState2.entrySide.toUpperCase(),
                 strategy_id: 'vwap-contrarian',
                 confidence: marketState2.absVwapDeltaPct,
                 price: upMid,
@@ -382,7 +383,7 @@ export class ExecutionLoop {
               this.log.info('vwap_contrarian_signal', {
                 window_id: windowId,
                 crypto,
-                direction: marketState2.entrySide,
+                side: marketState2.entrySide.toUpperCase(),
                 vwap_delta_pct: marketState2.vwapDeltaPct?.toFixed(4),
                 clob_up_price: upMid,
                 vwap_price: marketState2.vwapPrice,
