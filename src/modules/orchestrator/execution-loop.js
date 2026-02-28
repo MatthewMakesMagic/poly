@@ -564,9 +564,14 @@ export class ExecutionLoop {
                           error: trackingErr.message,
                         });
                       }
-                      // Release safeguard reservation
+                      // CONFIRM (not release) — money already left the account
                       if (this.modules.safeguards && reserved) {
-                        await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                        await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                        this.log.warn('entry_confirmed_despite_tracking_failure', {
+                          window_id: signal.window_id,
+                          strategy_id: strategyId,
+                          order_id: orderResult.orderId,
+                        });
                       }
                       continue; // Skip to next signal - NEVER log-and-continue
                     }
@@ -605,21 +610,37 @@ export class ExecutionLoop {
                     });
                   }
                 } catch (orderErr) {
-                  // Story 8-9: Release entry on order failure
+                  // CRITICAL: Only release if the order was NOT submitted to the exchange.
+                  // If money may have left the account, CONFIRM to prevent duplicate entries.
+                  const submittedToExchange = orderErr.orderSubmittedToExchange || orderErr.context?.orderSubmittedToExchange;
                   if (this.modules.safeguards && reserved) {
-                    await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
-                    this.log.info('entry_released_order_failed', {
-                      window_id: signal.window_id,
-                      strategy_id: strategyId,
-                      error: orderErr.message,
-                      trading_mode: tradingMode,
-                    });
+                    if (submittedToExchange) {
+                      // Order went through on exchange but something else failed — NEVER release
+                      await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                      this.log.error('entry_confirmed_despite_error', {
+                        window_id: signal.window_id,
+                        strategy_id: strategyId,
+                        error: orderErr.message,
+                        message: 'Order submitted to exchange — confirming entry to prevent duplicates',
+                        trading_mode: tradingMode,
+                      });
+                    } else {
+                      // Order never reached exchange — safe to release
+                      await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                      this.log.info('entry_released_order_failed', {
+                        window_id: signal.window_id,
+                        strategy_id: strategyId,
+                        error: orderErr.message,
+                        trading_mode: tradingMode,
+                      });
+                    }
                   }
                   this.log.error('order_placement_failed', {
                     window_id: signal.window_id,
                     strategy_id: strategyId,
                     error: orderErr.message,
                     code: orderErr.code,
+                    submitted_to_exchange: !!submittedToExchange,
                   });
                 }
               }

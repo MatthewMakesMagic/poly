@@ -214,47 +214,57 @@ export async function placeOrder(params, log) {
     };
 
     // 11. Insert order into database
-    const insertResult = await persistence.run(
-      `INSERT INTO orders (
-        order_id, intent_id, position_id, window_id, market_id, token_id,
-        side, order_type, price, size, filled_size, avg_fill_price,
-        status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
-        original_edge, original_model_probability, symbol, strategy_id, side_token
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
-      [
-        orderRecord.order_id,
-        orderRecord.intent_id,
-        orderRecord.position_id,
-        orderRecord.window_id,
-        orderRecord.market_id,
-        orderRecord.token_id,
-        orderRecord.side,
-        orderRecord.order_type,
-        orderRecord.price,
-        orderRecord.size,
-        orderRecord.filled_size,
-        orderRecord.avg_fill_price,
-        orderRecord.status,
-        orderRecord.submitted_at,
-        orderRecord.latency_ms,
-        orderRecord.filled_at,
-        orderRecord.cancelled_at,
-        orderRecord.error_message,
-        orderRecord.original_edge,
-        orderRecord.original_model_probability,
-        orderRecord.symbol,
-        orderRecord.strategy_id,
-        orderRecord.side_token,
-      ]
-    );
-
-    // Verify database insert succeeded
-    if (!insertResult || insertResult.changes !== 1) {
-      throw new OrderManagerError(
-        OrderManagerErrorCodes.DATABASE_ERROR,
-        'Failed to insert order into database',
-        { orderId: result.orderID, insertResult }
+    // CRITICAL: API call already succeeded — DB failure must NOT cause re-entry
+    let dbWriteFailed = false;
+    try {
+      const insertResult = await persistence.run(
+        `INSERT INTO orders (
+          order_id, intent_id, position_id, window_id, market_id, token_id,
+          side, order_type, price, size, filled_size, avg_fill_price,
+          status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
+          original_edge, original_model_probability, symbol, strategy_id, side_token
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+        [
+          orderRecord.order_id,
+          orderRecord.intent_id,
+          orderRecord.position_id,
+          orderRecord.window_id,
+          orderRecord.market_id,
+          orderRecord.token_id,
+          orderRecord.side,
+          orderRecord.order_type,
+          orderRecord.price,
+          orderRecord.size,
+          orderRecord.filled_size,
+          orderRecord.avg_fill_price,
+          orderRecord.status,
+          orderRecord.submitted_at,
+          orderRecord.latency_ms,
+          orderRecord.filled_at,
+          orderRecord.cancelled_at,
+          orderRecord.error_message,
+          orderRecord.original_edge,
+          orderRecord.original_model_probability,
+          orderRecord.symbol,
+          orderRecord.strategy_id,
+          orderRecord.side_token,
+        ]
       );
+
+      if (!insertResult || insertResult.changes !== 1) {
+        dbWriteFailed = true;
+        log.error('order_db_insert_failed', {
+          orderId: result.orderId,
+          reason: 'insert returned no changes',
+        });
+      }
+    } catch (dbErr) {
+      dbWriteFailed = true;
+      log.error('order_db_insert_failed', {
+        orderId: result.orderId,
+        error: dbErr.message,
+        message: 'CRITICAL: Order succeeded on exchange but DB write failed — returning success to prevent re-entry',
+      });
     }
 
     // 12. Record stats for the new order placement
@@ -262,13 +272,13 @@ export async function placeOrder(params, log) {
 
     // 13. Mark intent completed
     writeAhead.markCompleted(intentId, {
-      orderId: result.orderID,
+      orderId: result.orderId,
       status,
       latencyMs,
     });
 
     log.info('order_placed', {
-      orderId: result.orderID,
+      orderId: result.orderId,
       status,
       latencyMs,
       side,
@@ -278,10 +288,12 @@ export async function placeOrder(params, log) {
 
     // 14. Return result with timestamps for trade-event module (Story 5.2, AC1, AC7)
     return {
-      orderId: result.orderID,
+      orderId: result.orderId,
       status,
       latencyMs,
       intentId,
+      orderSubmittedToExchange: true, // CRITICAL: caller must know money may have left the account
+      dbWriteFailed,
       timestamps: {
         orderSubmittedAt,
         orderAckedAt,
