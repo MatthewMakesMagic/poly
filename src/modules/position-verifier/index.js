@@ -130,22 +130,8 @@ export async function verify(localPositions = []) {
     }
   }
 
-  // Find positions on exchange that we don't track locally
-  const missing = [];
-  for (const [tokenId, exchangePos] of exchangeByToken) {
-    if (!localByToken.has(tokenId)) {
-      const size = parseFloat(exchangePos.size || exchangePos.amount || '0');
-      if (size > 0) {
-        missing.push({
-          token_id: tokenId,
-          exchange_size: size,
-          source: 'exchange_only',
-        });
-      }
-    }
-  }
-
-  // Find local positions not on exchange (orphans - less severe)
+  // Only check that OUR bot positions exist on the exchange.
+  // Extra exchange positions (manual trades) are expected and not our concern.
   const orphans = [];
   for (const [tokenId, localPos] of localByToken) {
     if (!exchangeByToken.has(tokenId)) {
@@ -157,20 +143,15 @@ export async function verify(localPositions = []) {
     }
   }
 
-  const verified = missing.length === 0;
+  // Verified = all our local positions exist on exchange
+  const verified = orphans.length === 0;
 
   if (!verified) {
-    log.error('position_verification_failed', {
-      missing_count: missing.length,
-      orphan_count: orphans.length,
-      local_count: localPositions.length,
-      exchange_count: exchangePositions.length,
-      missing,
-    });
-  } else if (orphans.length > 0) {
-    log.error('position_verification_orphans', {
+    log.warn('position_verification_orphans', {
       orphan_count: orphans.length,
       orphans,
+      local_count: localPositions.length,
+      exchange_count: exchangePositions.length,
       message: 'Local positions not found on exchange - possible already settled',
     });
   } else {
@@ -180,7 +161,7 @@ export async function verify(localPositions = []) {
     });
   }
 
-  return { verified, missing, orphans };
+  return { verified, orphans };
 }
 
 /**

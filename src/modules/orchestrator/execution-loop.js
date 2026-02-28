@@ -763,26 +763,12 @@ export class ExecutionLoop {
           if (openPositions.length > 0) {
             const verifyResult = await this.modules['position-verifier'].verify(openPositions);
 
-            if (!verifyResult.verified && verifyResult.missing?.length > 0) {
-              // Exchange has positions we don't track - blind to SL/TP
-              verificationPassed = false;
-              if (this.modules['circuit-breaker']) {
-                await this.modules['circuit-breaker'].trip('STOP_LOSS_BLIND', {
-                  missing: verifyResult.missing,
-                  local_count: openPositions.length,
-                });
-              }
-              this.log.error('position_verification_failed_tripped_cb', {
-                missing: verifyResult.missing,
-                local_count: openPositions.length,
-              });
-            }
-
             if (verifyResult.orphans?.length > 0) {
-              // Local positions not on exchange - log but don't halt
-              this.log.error('position_verification_orphans_detected', {
+              // Local positions not found on exchange — likely already settled
+              // Log but don't halt trading
+              this.log.warn('position_verification_orphans_detected', {
                 orphans: verifyResult.orphans,
-                message: 'Local positions not found on exchange',
+                message: 'Local positions not found on exchange - may have settled',
               });
             }
           }
