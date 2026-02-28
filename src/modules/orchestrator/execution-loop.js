@@ -531,13 +531,14 @@ export class ExecutionLoop {
                   if (this.modules['position-manager'] && orderResult.status !== 'rejected') {
                     try {
                       const position = await this.modules['position-manager'].addPosition({
-                        window_id: signal.window_id,
-                        market_id: signal.market_id,
-                        token_id: signal.token_id,
+                        windowId: signal.window_id,
+                        marketId: signal.market_id,
+                        tokenId: signal.token_id,
                         side: signal.direction,
                         size: sizingResult.actual_size,
-                        entry_price: signal.market_price || signal.expected_price,
-                        order_id: orderResult.orderId,
+                        entryPrice: maxPrice,
+                        strategyId: strategyId,
+                        orderId: orderResult.orderId,
                       });
 
                       this.log.info('position_opened', {
