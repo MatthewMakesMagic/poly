@@ -668,7 +668,7 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
               const minEdgeThreshold = strategyConfig?.edge?.min_edge_threshold ?? 0.10;
 
               // Log edge calculation for both sides
-              log.debug('edge_calculated', {
+              log.info('edge_calculated', {
                 window_id: windowContext.window_id,
                 symbol: windowContext.symbol,
                 model_probability: modelProbability,
