@@ -179,8 +179,8 @@ export async function placeOrder(params, log) {
     recordLatency(latencyMs);
 
     // 8. Determine order status from API response
-    const isFoK = orderType === 'FOK';
-    const status = mapPolymarketStatus(result.status, isFoK);
+    const isImmediateOrder = orderType === 'FOK' || orderType === 'IOC';
+    const status = mapPolymarketStatus(result.status, isImmediateOrder);
 
     // 9. Capture orderFilledAt if order was immediately filled
     const orderFilledAt = status === OrderStatus.FILLED ? orderAckedAt : null;

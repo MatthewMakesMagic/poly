@@ -11,7 +11,7 @@
     "duplicate_window_prevention": true
   },
   "edge": {
-    "min_edge_threshold": 0.10,
+    "min_edge_threshold": 0.25,
     "max_edge_threshold": 0.50
   },
   "window_timing": {

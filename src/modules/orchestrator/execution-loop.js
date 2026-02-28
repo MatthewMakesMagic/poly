@@ -492,12 +492,17 @@ export class ExecutionLoop {
                 }
 
                 try {
+                  // IOC at model fair value — accept any fill up to what the model
+                  // says the token is worth. For cheap entries ($0.05 market) where
+                  // model says fair = $0.55, we'll pay up to $0.55 for immediate fill.
+                  // Edge is preserved: paying $0.08 for a token worth $0.55 is still +EV.
+                  const maxPrice = signal.confidence || signal.market_price || signal.expected_price;
                   const orderResult = await this.modules['order-manager'].placeOrder({
                     tokenId: signal.token_id,
                     side: signal.direction === 'long' ? 'buy' : 'sell',
                     size: sizingResult.actual_size,
-                    price: signal.market_price || signal.expected_price,
-                    orderType: 'GTC',
+                    price: maxPrice,
+                    orderType: 'IOC',
                     windowId: signal.window_id,
                     marketId: signal.market_id,
                     // Signal context for stale order detection
@@ -507,6 +512,8 @@ export class ExecutionLoop {
                       symbol: signal.symbol,
                       strategyId: strategyId,
                       sideToken: signal.side || 'UP',
+                      originalMarketPrice: signal.market_price,
+                      maxPriceUsed: maxPrice,
                     },
                   });
 
