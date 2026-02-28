@@ -159,14 +159,6 @@ export function evaluate(position, currentPrice, options = {}) {
     }
   } else {
     incrementSafe();
-    if (log) {
-      log.debug('stop_loss_evaluated', {
-        position_id: position.id,
-        current_price: currentPrice,
-        threshold,
-        distance_to_threshold: side === 'long' ? currentPrice - threshold : threshold - currentPrice,
-      });
-    }
   }
 
   return result;

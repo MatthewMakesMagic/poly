@@ -635,6 +635,7 @@ async function scanAndTrack() {
 async function evaluateSignal(windowState, signalOffsetSec) {
   const { windowId, crypto, market } = windowState;
   stats.signalsEvaluated++;
+  console.log(`[paper-trader] evaluateSignal fired: window=${windowId} offset=${signalOffsetSec}s crypto=${crypto}`);
 
   // Position count guard — prevent double-entry on restart
   const existingTradeCount = await persistence.get(`
@@ -651,6 +652,7 @@ async function evaluateSignal(windowState, signalOffsetSec) {
   // 1. Get live book from CLOB WS
   const upBook = clobWs.getBook(market.upTokenId);
   if (!upBook) {
+    console.log(`[paper-trader] SKIP: no book for ${crypto} token=${market.upTokenId?.substring(0, 16)}`);
     log.warn('signal_eval_no_book', { window_id: windowId, crypto });
     return;
   }
@@ -662,6 +664,7 @@ async function evaluateSignal(windowState, signalOffsetSec) {
   } catch (err) {
     log.warn('vwap_composite_fetch_failed', { window_id: windowId, crypto, error: err.message });
   }
+  console.log(`[paper-trader] VWAP data: composite=${compositeVwap?.vwap?.toFixed(2) || 'NULL'} openVwap=${windowState.vwapAtOpen?.toFixed(2) || 'NULL'} book_mid=${upBook.mid?.toFixed(4)}`);
 
   let coingeckoPrice = null;
   try {
@@ -719,8 +722,12 @@ async function evaluateSignal(windowState, signalOffsetSec) {
 
     // Evaluate market state
     const marketState = strategy.evaluateMarketState(ctx);
-    if (!marketState) continue;
+    if (!marketState) {
+      console.log(`[paper-trader] strategy ${strategy.name}: marketState=null (no VWAP data or book)`);
+      continue;
+    }
 
+    console.log(`[paper-trader] strategy ${strategy.name}: vwapDir=${marketState.vwapDirection} clobDir=${marketState.clobDirection} disagree=${marketState.directionsDisagree} deltaPct=${marketState.absVwapDeltaPct?.toFixed(4)}%`);
     strategiesEvaluated++;
 
     // Get variations for this strategy
@@ -957,6 +964,8 @@ async function evaluateSignal(windowState, signalOffsetSec) {
       }
     }
   }
+
+  console.log(`[paper-trader] eval result: strategies_evaluated=${strategiesEvaluated} fired=${totalFired} window=${windowId}`);
 
   if (totalFired > 0 || strategiesEvaluated > 0) {
     log.info('signal_eval_complete', {
