@@ -173,14 +173,24 @@ export async function init(cfg) {
       currentTripReason = row.trip_reason || null;
 
       if (currentState === CBState.OPEN && row.tripped_at) {
-        tripTimestamp = new Date(row.tripped_at).getTime();
-        log.warn('circuit_breaker_restored_open', {
-          state: currentState,
-          trip_reason: currentTripReason,
+        // Auto-reset stale CB trips on fresh process start.
+        // The old trip was from a previous process — carrying it forward
+        // causes immediate shutdown on redeploy (escalation timer expired).
+        log.warn('circuit_breaker_stale_trip_auto_reset', {
+          previous_reason: currentTripReason,
           tripped_at: row.tripped_at,
-          escalation_stage: getEscalationStage(),
+          message: 'Auto-resetting stale CB trip from previous process',
         });
-        startEscalation();
+        await persistence.cbQuery(
+          `UPDATE circuit_breaker SET state = 'CLOSED', trip_reason = NULL, trip_context = NULL, tripped_at = NULL, updated_at = NOW() WHERE id = 1`
+        );
+        await persistence.cbQuery(
+          `INSERT INTO circuit_breaker_audit (action, reason, context) VALUES ('RESET', 'auto_reset_on_startup', $1)`,
+          [JSON.stringify({ previous_reason: currentTripReason, tripped_at: row.tripped_at })]
+        );
+        currentState = CBState.CLOSED;
+        currentTripReason = null;
+        tripTimestamp = null;
       }
     }
   } catch (err) {
