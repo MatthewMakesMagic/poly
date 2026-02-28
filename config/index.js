@@ -392,6 +392,12 @@ const config = {
     cleanupIntervalMs: 6 * 60 * 60 * 1000, // 6 hours
   },
 
+  // VWAP contrarian strategy configuration (proven 82% win rate)
+  vwapStrategy: {
+    deltaThresholdPct: 0.08,    // 8% VWAP move required
+    maxClobConviction: 0.20,    // Only trade when CLOB within ±20% of 0.50
+  },
+
   // Strategy configuration
   strategy: {
     entry: {

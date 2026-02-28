@@ -1,7 +1,7 @@
 {
   "name": "probability-model",
-  "description": "Black-Scholes N(d2) based entry using oracle price",
-  "version": 1,
+  "description": "Black-Scholes N(d2) fat-tail bets — final 90s only, 10% edge",
+  "version": 2,
   "components": {
     "priceSource": "src-rtds-client-v1",
     "probability": "prob-window-timing-model-v1"
@@ -13,7 +13,11 @@
       "fallbackVol": 0.5
     },
     "edge": {
-      "min_edge_threshold": 0.25
+      "min_edge_threshold": 0.10
+    },
+    "window_timing": {
+      "min_time_remaining_ms": 5000,
+      "max_time_remaining_ms": 90000
     }
   },
   "pipeline": {

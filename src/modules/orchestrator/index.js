@@ -580,7 +580,11 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
         continue;
       }
 
-      // No max time filter - we can enter windows at any point while they're active
+      // BS fat-tail: only evaluate in the final 90 seconds of the window
+      const maxTimeMs = strategyConfig?.window_timing?.max_time_remaining_ms ?? 90000;
+      if (timeRemainingMs > maxTimeMs) {
+        continue;
+      }
 
       // Story 7-14: Build per-window context with correct price types
       // - oracle_price: Crypto dollar price for Black-Scholes S (e.g., $95,000)
@@ -689,7 +693,7 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
                   confidence: modelProbability,
                   market_price: marketPrice,
                   edge: edgeUp,
-                  strategy_id: strategyDef.name,
+                  strategy_id: 'bs-fat-tail',
                   component: versionId,
                   oracle_price: windowContext.oracle_price,
                   reference_price: windowContext.reference_price,
@@ -721,7 +725,7 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
                   confidence: pDown,
                   market_price: marketPriceDown,
                   edge: edgeDown,
-                  strategy_id: strategyDef.name,
+                  strategy_id: 'bs-fat-tail',
                   component: versionId,
                   oracle_price: windowContext.oracle_price,
                   reference_price: windowContext.reference_price,
