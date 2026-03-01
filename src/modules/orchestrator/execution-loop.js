@@ -242,6 +242,19 @@ export class ExecutionLoop {
             this.composedStrategy = null;
             this.composedStrategyName = null;
           }
+
+          // 0d. Read trading_mode from runtime_controls (overrides static config)
+          const dbTradingMode = await this.modules['runtime-controls'].getControl('trading_mode');
+          if (dbTradingMode) {
+            const normalized = dbTradingMode.trim().toUpperCase();
+            if (['LIVE', 'PAPER', 'DRY_RUN'].includes(normalized) && normalized !== this.config.tradingMode) {
+              this.log.info('trading_mode_updated_from_runtime_controls', {
+                from: this.config.tradingMode,
+                to: normalized,
+              });
+              this.config.tradingMode = normalized;
+            }
+          }
         } catch (rcErr) {
           this.log.warn('runtime_controls_check_failed', {
             error: rcErr.message,

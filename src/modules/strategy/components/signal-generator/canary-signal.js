@@ -1,9 +1,12 @@
 /**
  * Canary Signal Generator Component
  *
- * Test strategy: at T-60s before window close, buys whichever side
- * CLOB favors (price > $0.50). This is a lifecycle validation strategy,
- * NOT an edge strategy. Expected ~50% win rate, small losses to spread.
+ * Test strategy: buys whichever side CLOB favors (price > $0.50).
+ * This is a lifecycle validation strategy, NOT an edge strategy.
+ * Expected ~50% win rate, small losses to spread.
+ *
+ * Designed to work with the composed strategy executor's flat windowContext:
+ *   { market_price, token_id_up, token_id_down, window_id, timeToExpiry, ... }
  *
  * @module modules/strategy/components/signal-generator/canary-signal
  */
@@ -15,7 +18,7 @@ export const metadata = {
   name: 'canary-signal',
   version: 1,
   type: 'signal-generator',
-  description: 'Always-trade canary: buys CLOB-favored side at T-60s for lifecycle testing',
+  description: 'Always-trade canary: buys CLOB-favored side for lifecycle testing',
   author: 'poly-system',
   createdAt: '2026-03-01',
 };
@@ -24,7 +27,7 @@ export const metadata = {
  * Default configuration
  */
 const DEFAULTS = {
-  entryWindowSeconds: 60,
+  minTimeRemainingMs: 30000, // 30s minimum remaining
   minPositionSize: 2,
   maxPositionSize: 2,
 };
@@ -32,27 +35,31 @@ const DEFAULTS = {
 /**
  * Evaluate whether to generate a canary signal.
  *
- * Logic:
- * 1. Wait until T-60s before window close
- * 2. Check CLOB prices for YES and NO tokens
- * 3. Buy whichever side has price > $0.50 (i.e., the favored side)
- * 4. No stop-loss, run to settlement
+ * Works with the flat windowContext passed by the composed strategy executor:
+ *   - context.market_price: YES token price (0-1)
+ *   - context.token_id_up: token ID for YES/UP side
+ *   - context.token_id_down: token ID for NO/DOWN side
+ *   - context.window_id: window identifier
+ *   - context.timeToExpiry: ms remaining in window
+ *   - context.oracle_price: crypto dollar price
+ *   - context.reference_price: strike price
+ *   - context.symbol: crypto symbol
+ *   - context.market_id: market identifier
  *
- * @param {Object} context - Execution context
- * @param {Object} context.window - Active window object
- * @param {number} context.window.closeTimestamp - Window close time (epoch seconds)
- * @param {Object} context.window.clobPrices - { yes: number, no: number }
- * @param {string} context.window.tokenIds - { yes: string, no: string }
- * @param {Object} context.prevResults - Results from previous pipeline stages
+ * Logic:
+ * 1. Check we have a valid window (window_id present)
+ * 2. Ensure > 30s remaining (duplicate_window_entry guard prevents re-entry)
+ * 3. Buy whichever side CLOB favors (market_price > 0.50 = YES, else NO)
+ *
+ * @param {Object} context - Flat windowContext from composed strategy executor
  * @param {Object} config - Strategy configuration
  * @returns {Object} Signal result
  */
 export function evaluate(context, config) {
   const mergedConfig = { ...DEFAULTS, ...config };
-  const { window } = context;
 
-  // No window available
-  if (!window) {
+  // No window context
+  if (!context || !context.window_id) {
     return {
       has_signal: false,
       direction: null,
@@ -60,91 +67,77 @@ export function evaluate(context, config) {
     };
   }
 
-  // Check timing: only signal within entry window
-  const nowSec = Date.now() / 1000;
-  const closeTime = window.closeTimestamp || window.close_timestamp || window.expiresAt;
-  if (!closeTime) {
+  // Check timing: need at least 30s remaining
+  const timeToExpiry = context.timeToExpiry || 0;
+  if (timeToExpiry < mergedConfig.minTimeRemainingMs) {
     return {
       has_signal: false,
       direction: null,
-      reason: 'no_close_timestamp',
+      reason: 'too_late',
+      timeToExpiry,
     };
   }
 
-  const secondsToClose = closeTime - nowSec;
-  if (secondsToClose > mergedConfig.entryWindowSeconds || secondsToClose < 5) {
+  // Get market price (YES token price, 0-1)
+  const marketPrice = context.market_price;
+  if (marketPrice == null) {
     return {
       has_signal: false,
       direction: null,
-      reason: secondsToClose > mergedConfig.entryWindowSeconds
-        ? 'too_early'
-        : 'too_late',
-      secondsToClose,
+      reason: 'no_market_price',
     };
   }
 
-  // Get CLOB prices
-  const yesPrice = window.clobPrices?.yes
-    ?? window.clob_prices?.yes
-    ?? window.yesPrice
-    ?? window.yes_price;
-  const noPrice = window.clobPrices?.no
-    ?? window.clob_prices?.no
-    ?? window.noPrice
-    ?? window.no_price;
-
-  if (yesPrice == null && noPrice == null) {
+  const marketPriceNum = Number(marketPrice);
+  if (isNaN(marketPriceNum) || marketPriceNum <= 0 || marketPriceNum >= 1) {
     return {
       has_signal: false,
       direction: null,
-      reason: 'no_clob_prices',
+      reason: 'invalid_market_price',
+      market_price: marketPrice,
     };
   }
 
-  // Determine favored side (price > 0.50)
-  const yesPriceNum = Number(yesPrice) || 0;
-  const noPriceNum = Number(noPrice) || 0;
-
+  // Determine favored side
   let direction;
   let tokenId;
   let price;
 
-  if (yesPriceNum >= noPriceNum && yesPriceNum > 0) {
+  if (marketPriceNum >= 0.50) {
+    // YES side favored
     direction = 'yes';
-    price = yesPriceNum;
-    tokenId = window.tokenIds?.yes
-      ?? window.token_ids?.yes
-      ?? window.yesTokenId
-      ?? window.yes_token_id;
-  } else if (noPriceNum > 0) {
-    direction = 'no';
-    price = noPriceNum;
-    tokenId = window.tokenIds?.no
-      ?? window.token_ids?.no
-      ?? window.noTokenId
-      ?? window.no_token_id;
+    price = marketPriceNum;
+    tokenId = context.token_id_up || context.token_id;
   } else {
+    // NO side favored
+    direction = 'no';
+    price = 1 - marketPriceNum; // NO token price
+    tokenId = context.token_id_down;
+  }
+
+  if (!tokenId) {
     return {
       has_signal: false,
       direction: null,
-      reason: 'prices_zero',
+      reason: 'no_token_id',
+      attempted_direction: direction,
     };
   }
 
   return {
     has_signal: true,
     direction,
-    side: direction === 'yes' ? 'buy' : 'buy',
     token_id: tokenId,
     price,
     size: mergedConfig.minPositionSize,
-    shouldEnter: true,
     confidence: price,
-    stopLoss: null,
     strategy: 'always-trade-canary',
     reason: `canary_${direction}_favored`,
-    secondsToClose,
-    window_id: window.id || window.windowId || window.condition_id,
+    window_id: context.window_id,
+    market_id: context.market_id,
+    oracle_price: context.oracle_price,
+    reference_price: context.reference_price,
+    symbol: context.symbol,
     generated_at: new Date().toISOString(),
   };
 }
@@ -158,9 +151,9 @@ export function evaluate(context, config) {
 export function validateConfig(config) {
   const errors = [];
 
-  if (config?.entryWindowSeconds !== undefined) {
-    if (typeof config.entryWindowSeconds !== 'number' || config.entryWindowSeconds <= 0) {
-      errors.push('entryWindowSeconds must be a positive number');
+  if (config?.minTimeRemainingMs !== undefined) {
+    if (typeof config.minTimeRemainingMs !== 'number' || config.minTimeRemainingMs <= 0) {
+      errors.push('minTimeRemainingMs must be a positive number');
     }
   }
 

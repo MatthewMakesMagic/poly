@@ -1,17 +1,21 @@
 {
   "name": "always-trade-canary",
-  "description": "Phase 1.1 canary: buys CLOB-favored side at T-60s to verify full trade lifecycle. Not an edge strategy — expected ~50% win rate.",
+  "description": "Phase 1.1 canary: buys CLOB-favored side to verify full trade lifecycle. Not an edge strategy — expected ~50% win rate.",
   "version": 1,
   "components": {
     "signalGenerator": "sig-canary-signal-v1"
   },
   "config": {
-    "entryWindowSeconds": 60,
+    "minTimeRemainingMs": 30000,
     "minPositionSize": 2,
     "maxPositionSize": 2,
     "stopLoss": null,
     "takeProfit": null,
-    "instruments": "all"
+    "instruments": "all",
+    "window_timing": {
+      "min_time_remaining_ms": 30000,
+      "max_time_remaining_ms": 900000
+    }
   },
   "pipeline": {
     "order": ["signalGenerator"],

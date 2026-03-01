@@ -592,6 +592,10 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
     }
   }
 
+  // Detect if strategy has probability components (need reference_price + spot_price)
+  const allVersionIds = Object.values(components).flat().filter(Boolean);
+  const hasProbabilityComponents = allVersionIds.some(id => getComponentType(id) === 'probability');
+
   return function executeComposedStrategy(marketContext) {
     const results = {
       strategyName: strategyDef.name,
@@ -621,8 +625,10 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
         continue;
       }
 
-      // BS fat-tail: only evaluate in the final 90 seconds of the window
-      const maxTimeMs = strategyConfig?.window_timing?.max_time_remaining_ms ?? 90000;
+      // Max time filter: only evaluate within configured window
+      // Default 90s for probability strategies, 900s (full window) for signal-generators
+      const defaultMaxTimeMs = hasProbabilityComponents ? 90000 : 900000;
+      const maxTimeMs = strategyConfig?.window_timing?.max_time_remaining_ms ?? defaultMaxTimeMs;
       if (timeRemainingMs > maxTimeMs) {
         continue;
       }
@@ -640,7 +646,8 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
       const windowSpotPrice = windowSpotPriceData?.price || fallbackSpotPrice;
 
       // Story 7-20: Skip windows if we don't have the correct crypto price
-      if (!windowSpotPrice) {
+      // Only required for probability components that need oracle_price
+      if (!windowSpotPrice && hasProbabilityComponents) {
         log.debug('window_skipped_no_spot_price', {
           window_id: window.window_id || window.id,
           crypto: windowCrypto,
@@ -650,7 +657,8 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
       }
 
       // Story 7-15: Skip windows without reference price (can't calculate probability)
-      if (!referencePrice) {
+      // Only required for probability components
+      if (!referencePrice && hasProbabilityComponents) {
         log.debug('window_skipped_no_reference_price', {
           window_id: window.window_id,
           question: window.question,
@@ -782,6 +790,33 @@ function createComposedStrategyExecutor(strategyDef, catalog) {
                   edge: edgeDown,
                 });
               }
+            } else if (componentResult?.has_signal && componentResult?.token_id) {
+              // Signal-generator components (e.g., canary) return has_signal + token_id
+              windowSignal = {
+                window_id: windowContext.window_id,
+                token_id: componentResult.token_id,
+                market_id: componentResult.market_id || windowContext.market_id,
+                direction: 'long', // buying either YES or NO token
+                side: componentResult.direction === 'yes' ? 'UP' : 'DOWN',
+                confidence: componentResult.confidence || 0.5,
+                market_price: componentResult.price || windowContext.market_price,
+                edge: 0, // signal-generators don't calculate edge
+                strategy_id: componentResult.strategy || strategyDef.name,
+                component: versionId,
+                oracle_price: componentResult.oracle_price || windowContext.oracle_price,
+                reference_price: componentResult.reference_price || windowContext.reference_price,
+                symbol: componentResult.symbol || windowContext.symbol,
+              };
+
+              log.info('signal_generator_signal', {
+                window_id: windowContext.window_id,
+                symbol: windowContext.symbol,
+                side: windowSignal.side,
+                direction: componentResult.direction,
+                price: componentResult.price,
+                reason: componentResult.reason,
+                component: versionId,
+              });
             } else if (componentResult?.signal === 'entry') {
               // Fallback for components that don't return probability
               log.warn('legacy_signal_without_edge', {
