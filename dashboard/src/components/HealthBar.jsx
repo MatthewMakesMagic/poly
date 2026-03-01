@@ -11,16 +11,14 @@ function formatUptime(seconds) {
 }
 
 function FeedDot({ label, status }) {
-  let color = 'bg-gray-500';
-  if (status === 'healthy') color = 'bg-accent-green';
-  else if (status === 'stale') color = 'bg-accent-yellow';
-  else if (status === 'dead') color = 'bg-accent-red';
-  else if (status === 'connected') color = 'bg-accent-green';
-  else if (status === 'disconnected') color = 'bg-accent-red';
+  let dotClass = 'bg-white/20';
+  if (status === 'healthy' || status === 'connected') dotClass = 'bg-accent-green shadow-[0_0_6px_rgba(52,211,153,0.6)]';
+  else if (status === 'stale') dotClass = 'bg-accent-yellow shadow-[0_0_6px_rgba(251,191,36,0.6)]';
+  else if (status === 'dead' || status === 'disconnected') dotClass = 'bg-accent-red shadow-[0_0_6px_rgba(248,113,113,0.6)]';
 
   return (
-    <div className="flex items-center gap-1 text-xs text-gray-400" title={`${label}: ${status}`}>
-      <span className={`inline-block w-2 h-2 rounded-full ${color}`} />
+    <div className="flex items-center gap-1.5 text-[10px] text-white/50" title={`${label}: ${status}`}>
+      <span className={`inline-block w-1.5 h-1.5 rounded-full ${dotClass}`} />
       {label}
     </div>
   );
@@ -49,7 +47,9 @@ function summarizeFeeds(feeds) {
 
 export default function HealthBar({ state, connected }) {
   const wsColor = connected ? 'text-accent-green' : 'text-accent-red';
-  const wsLabel = connected ? 'WS' : 'WS DISCONNECTED';
+  const wsDot = connected
+    ? 'bg-accent-green shadow-[0_0_8px_rgba(52,211,153,0.6)] animate-pulse-slow'
+    : 'bg-accent-red shadow-[0_0_8px_rgba(248,113,113,0.6)]';
 
   const cbState = state?.circuitBreakerState || 'UNKNOWN';
   const cbColor =
@@ -59,7 +59,7 @@ export default function HealthBar({ state, connected }) {
         ? 'text-accent-yellow'
         : cbState === 'OPEN'
           ? 'text-accent-red'
-          : 'text-gray-500';
+          : 'text-white/30';
 
   // Per-feed health from feed-monitor module
   const feedMonitor = state?.feedMonitor;
@@ -77,11 +77,15 @@ export default function HealthBar({ state, connected }) {
   };
 
   return (
-    <header className="bg-bg-secondary border-b border-gray-700 px-4 py-1.5 flex items-center justify-between text-xs">
+    <header className="bg-black/30 backdrop-blur-md border-b border-white/5 px-5 py-2 flex items-center justify-between text-[10px]">
       <div className="flex items-center gap-4">
-        <span className="text-gray-200 font-semibold">POLY</span>
-        <span className={wsColor}>{wsLabel}</span>
-        <span className={cbColor}>CB: {cbState}</span>
+        <span className="text-sm font-bold tracking-widest text-white/90">POLY</span>
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block w-2 h-2 rounded-full ${wsDot}`} />
+          <span className={`font-medium ${wsColor}`}>{connected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+        </div>
+        <div className="w-px h-3 bg-white/10" />
+        <span className={`font-semibold ${cbColor}`}>CB: {cbState}</span>
       </div>
 
       <div className="flex items-center gap-3">
@@ -94,17 +98,17 @@ export default function HealthBar({ state, connected }) {
         ))}
         {activeGapCount > 0 && (
           <>
-            <span className="text-gray-500">|</span>
-            <span className="text-accent-red">Gaps: {activeGapCount}</span>
+            <div className="w-px h-3 bg-white/10" />
+            <span className="text-accent-red font-semibold">Gaps: {activeGapCount}</span>
           </>
         )}
-        <span className="text-gray-500">|</span>
-        <span className="text-gray-400">
+        <div className="w-px h-3 bg-white/10" />
+        <span className="text-white/35">
           Errors/1m: {state?.errorCount1m ?? '-'}
         </span>
-        <span className="text-gray-500">|</span>
-        <span className="text-gray-400">
-          Uptime: {formatUptime(state?.uptime)}
+        <div className="w-px h-3 bg-white/10" />
+        <span className="text-white/35">
+          Up: {formatUptime(state?.uptime)}
         </span>
       </div>
     </header>

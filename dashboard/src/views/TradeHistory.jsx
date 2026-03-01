@@ -69,27 +69,30 @@ export default function TradeHistory() {
     window.open('/api/trades/export', '_blank');
   };
 
+  const inputClass = "bg-white/5 text-white/70 text-xs px-3 py-2 rounded-lg border border-white/10 focus:outline-none focus:border-accent-violet/50 focus:ring-1 focus:ring-accent-violet/20 transition-all duration-300";
+  const selectClass = `${inputClass} appearance-none`;
+
   return (
     <div className="space-y-4">
       {/* Filters bar */}
-      <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
+      <div className="glass p-5">
         <div className="flex flex-wrap items-end gap-4">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Strategy</label>
+            <label className="block label-xs mb-1.5">Strategy</label>
             <input
               type="text"
               value={strategy}
               onChange={(e) => setStrategy(e.target.value)}
               placeholder="All"
-              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 w-32 focus:outline-none focus:border-accent-blue"
+              className={`${inputClass} w-32`}
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Instrument</label>
+            <label className="block label-xs mb-1.5">Instrument</label>
             <select
               value={instrument}
               onChange={(e) => setInstrument(e.target.value)}
-              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 w-28 focus:outline-none focus:border-accent-blue"
+              className={`${selectClass} w-28`}
             >
               <option value="">All</option>
               <option value="btc">BTC</option>
@@ -99,11 +102,11 @@ export default function TradeHistory() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Outcome</label>
+            <label className="block label-xs mb-1.5">Outcome</label>
             <select
               value={outcome}
               onChange={(e) => setOutcome(e.target.value)}
-              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 w-28 focus:outline-none focus:border-accent-blue"
+              className={`${selectClass} w-28`}
             >
               <option value="">All</option>
               <option value="win">Win</option>
@@ -111,11 +114,11 @@ export default function TradeHistory() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Mode</label>
+            <label className="block label-xs mb-1.5">Mode</label>
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value)}
-              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 w-28 focus:outline-none focus:border-accent-blue"
+              className={`${selectClass} w-28`}
             >
               <option value="">All</option>
               <option value="LIVE">LIVE</option>
@@ -124,26 +127,26 @@ export default function TradeHistory() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">From</label>
+            <label className="block label-xs mb-1.5">From</label>
             <input
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-accent-blue"
+              className={inputClass}
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">To</label>
+            <label className="block label-xs mb-1.5">To</label>
             <input
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-accent-blue"
+              className={inputClass}
             />
           </div>
           <button
             onClick={handleExport}
-            className="px-3 py-1.5 bg-bg-tertiary text-gray-300 text-sm rounded border border-gray-600 hover:bg-gray-600 transition-colors"
+            className="px-4 py-2 bg-white/5 text-white/50 text-xs font-medium rounded-lg border border-white/10 hover:bg-white/10 hover:text-white/70 transition-all duration-300"
           >
             Export CSV
           </button>
@@ -151,12 +154,10 @@ export default function TradeHistory() {
       </div>
 
       {/* Trade table */}
-      <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-            Trade History
-          </h2>
-          <span className="text-xs text-gray-500">
+      <div className="glass p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="section-title">Trade History</h2>
+          <span className="text-[10px] text-white/25">
             {total} total {loading && '(loading...)'}
           </span>
         </div>
@@ -164,64 +165,65 @@ export default function TradeHistory() {
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="text-xs text-gray-500 uppercase">
-                <th className="pb-2 px-2">ID</th>
-                <th className="pb-2 px-2">Time</th>
-                <th className="pb-2 px-2">Window</th>
-                <th className="pb-2 px-2">Mode</th>
-                <th className="pb-2 px-2">Side</th>
-                <th className="pb-2 px-2">Entry</th>
-                <th className="pb-2 px-2">Exit</th>
-                <th className="pb-2 px-2">Size</th>
-                <th className="pb-2 px-2">P&L</th>
-                <th className="pb-2 px-2">Strategy</th>
-                <th className="pb-2 px-2">Status</th>
-                <th className="pb-2 px-2">Close Reason</th>
+              <tr className="label-xs">
+                <th className="pb-3 px-3 font-medium">ID</th>
+                <th className="pb-3 px-3 font-medium">Time</th>
+                <th className="pb-3 px-3 font-medium">Window</th>
+                <th className="pb-3 px-3 font-medium">Mode</th>
+                <th className="pb-3 px-3 font-medium">Side</th>
+                <th className="pb-3 px-3 font-medium">Entry</th>
+                <th className="pb-3 px-3 font-medium">Exit</th>
+                <th className="pb-3 px-3 font-medium">Size</th>
+                <th className="pb-3 px-3 font-medium">P&L</th>
+                <th className="pb-3 px-3 font-medium">Strategy</th>
+                <th className="pb-3 px-3 font-medium">Status</th>
+                <th className="pb-3 px-3 font-medium">Close Reason</th>
               </tr>
             </thead>
             <tbody>
               {trades.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="py-8 text-center text-sm text-gray-500">
+                  <td colSpan={12} className="py-12 text-center text-xs text-white/20">
                     {loading ? 'Loading...' : 'No trades found'}
                   </td>
                 </tr>
               ) : (
                 trades.map((t, i) => {
                   const pnl = Number(t.pnl || 0);
-                  const pnlColor = pnl > 0 ? 'text-accent-green' : pnl < 0 ? 'text-accent-red' : 'text-gray-400';
+                  const pnlColor = pnl > 0 ? 'text-accent-green' : pnl < 0 ? 'text-accent-red' : 'text-white/40';
                   const entryPrice = Number(t.entry_price || 0);
                   const exitPrice = Number(t.close_price || t.current_price || 0);
 
+                  const modeColor =
+                    t.mode === 'LIVE' ? 'text-accent-red' :
+                    t.mode === 'PAPER' ? 'text-accent-blue' :
+                    t.mode === 'DRY_RUN' ? 'text-accent-yellow' : 'text-white/30';
+
                   const statusColor =
                     t.status === 'open' ? 'text-accent-blue' :
-                    t.status === 'closed' ? 'text-gray-400' :
-                    t.status === 'liquidated' ? 'text-accent-red' : 'text-gray-500';
+                    t.status === 'closed' ? 'text-white/40' :
+                    t.status === 'liquidated' ? 'text-accent-red' : 'text-white/30';
 
                   return (
-                    <tr key={t.id || i} className="border-t border-gray-700/50 hover:bg-bg-tertiary/30">
-                      <td className="py-2 px-2 text-xs text-gray-500">{t.id}</td>
-                      <td className="py-2 px-2 text-xs text-gray-400">{formatDate(t.closed_at || t.opened_at)}</td>
-                      <td className="py-2 px-2 text-xs text-gray-300">{t.window_id || '--'}</td>
-                      <td className={`py-2 px-2 text-xs font-semibold ${
-                        t.mode === 'LIVE' ? 'text-accent-red' :
-                        t.mode === 'PAPER' ? 'text-accent-blue' :
-                        t.mode === 'DRY_RUN' ? 'text-accent-yellow' : 'text-gray-500'
-                      }`}>{t.mode || '--'}</td>
-                      <td className="py-2 px-2 text-xs text-gray-300">{(t.side || '').toUpperCase()}</td>
-                      <td className="py-2 px-2 text-xs text-gray-400">${entryPrice.toFixed(4)}</td>
-                      <td className="py-2 px-2 text-xs text-gray-300">
+                    <tr key={t.id || i} className="border-t border-white/5 hover:bg-white/[0.03] transition-colors duration-200">
+                      <td className="py-2.5 px-3 text-[10px] text-white/30">{t.id}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/40">{formatDate(t.closed_at || t.opened_at)}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/60">{t.window_id || '--'}</td>
+                      <td className={`py-2.5 px-3 text-[10px] font-bold ${modeColor}`}>{t.mode || '--'}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/60">{(t.side || '').toUpperCase()}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/40">${entryPrice.toFixed(4)}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/60">
                         {t.close_price != null ? `$${exitPrice.toFixed(4)}` : '--'}
                       </td>
-                      <td className="py-2 px-2 text-xs text-gray-400">
+                      <td className="py-2.5 px-3 text-[10px] text-white/40">
                         {t.size != null ? Number(t.size).toFixed(2) : '--'}
                       </td>
-                      <td className={`py-2 px-2 text-xs font-semibold ${pnlColor}`}>
+                      <td className={`py-2.5 px-3 text-[10px] font-bold ${pnlColor}`}>
                         {pnl !== 0 ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(4)}` : '--'}
                       </td>
-                      <td className="py-2 px-2 text-xs text-gray-500">{t.strategy_id || '--'}</td>
-                      <td className={`py-2 px-2 text-xs ${statusColor}`}>{t.status || '--'}</td>
-                      <td className="py-2 px-2 text-xs text-gray-500">{t.close_reason || '--'}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/30">{t.strategy_id || '--'}</td>
+                      <td className={`py-2.5 px-3 text-[10px] ${statusColor}`}>{t.status || '--'}</td>
+                      <td className="py-2.5 px-3 text-[10px] text-white/30">{t.close_reason || '--'}</td>
                     </tr>
                   );
                 })
@@ -232,21 +234,21 @@ export default function TradeHistory() {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-700">
+          <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
             <button
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="px-4 py-1.5 text-[10px] text-white/40 hover:text-white/70 hover:bg-white/5 rounded-lg disabled:opacity-20 disabled:cursor-not-allowed transition-all duration-300"
             >
               Previous
             </button>
-            <span className="text-xs text-gray-500">
+            <span className="text-[10px] text-white/25">
               Page {page + 1} of {totalPages}
             </span>
             <button
               onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
               disabled={page >= totalPages - 1}
-              className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="px-4 py-1.5 text-[10px] text-white/40 hover:text-white/70 hover:bg-white/5 rounded-lg disabled:opacity-20 disabled:cursor-not-allowed transition-all duration-300"
             >
               Next
             </button>
@@ -271,16 +273,16 @@ function SlippageSummary({ trades }) {
   const losses = closedTrades.filter(t => Number(t.pnl || 0) < 0).length;
   const winRate = closedTrades.length > 0 ? ((wins / closedTrades.length) * 100).toFixed(1) : '0';
 
-  const pnlColor = totalPnl > 0 ? 'text-accent-green' : totalPnl < 0 ? 'text-accent-red' : 'text-gray-400';
+  const pnlColor = totalPnl > 0 ? 'text-accent-green' : totalPnl < 0 ? 'text-accent-red' : 'text-white/40';
 
   return (
-    <div className="mt-4 pt-3 border-t border-gray-700 flex items-center gap-6 text-xs">
-      <span className="text-gray-500">Page Summary:</span>
-      <span className="text-gray-400">{closedTrades.length} closed</span>
-      <span className="text-accent-green">{wins}W</span>
-      <span className="text-accent-red">{losses}L</span>
-      <span className="text-gray-400">WR: {winRate}%</span>
-      <span className={`font-semibold ${pnlColor}`}>
+    <div className="mt-4 pt-4 border-t border-white/5 flex items-center gap-6 text-[10px]">
+      <span className="text-white/25">Page Summary:</span>
+      <span className="text-white/40">{closedTrades.length} closed</span>
+      <span className="text-accent-green/70">{wins}W</span>
+      <span className="text-accent-red/70">{losses}L</span>
+      <span className="text-white/40">WR: {winRate}%</span>
+      <span className={`font-bold ${pnlColor}`}>
         Net: {totalPnl > 0 ? '+' : ''}${totalPnl.toFixed(4)}
       </span>
     </div>

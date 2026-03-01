@@ -212,7 +212,7 @@ async function assertSignalOrderMapping() {
   try {
     // Check for signals in last 30 min without a corresponding order
     const orphanSignals = await persistence.all(`
-      SELECT te.id, te.window_id, te.signal_type
+      SELECT te.id, te.window_id, te.strategy_id
       FROM trade_events te
       WHERE te.event_type = 'signal'
         AND te.created_at > NOW() - INTERVAL '30 minutes'

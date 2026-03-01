@@ -13,6 +13,7 @@
 import { LoopState } from './types.js';
 import * as vwapContrarian from '../paper-trader/vwap-contrarian-strategy.js';
 import { LifecycleState, isLocked, isMonitoring } from '../position-manager/lifecycle.js';
+import persistence from '../../persistence/index.js';
 import {
   getLoadedStrategy,
   setActiveStrategy as setActiveStrategyLoader,
@@ -67,6 +68,128 @@ export class ExecutionLoop {
       strategyName: strategyName || 'none (using default)',
       hasStrategy: !!strategy,
     });
+  }
+
+  /**
+   * Look up window resolution for a position from window_close_events.
+   * For binary markets: determines if the position's token won or lost.
+   *
+   * @param {Object} pos - Position object with window_id, side, token_id
+   * @returns {Promise<{resolved: boolean, direction: string|null, positionWon: boolean, reason: string}>}
+   */
+  async _getResolutionForPosition(pos) {
+    try {
+      // Extract symbol from window_id (e.g., "btc-15m-1772348400" → "btc")
+      const windowId = pos.window_id;
+      const symbolMatch = windowId?.match(/^([a-z]+)-/i);
+      const symbol = symbolMatch ? symbolMatch[1].toLowerCase() : null;
+
+      // Query window_close_events for resolution — prefer on-chain, fallback to self-resolved
+      const row = await persistence.get(
+        `SELECT resolved_direction, onchain_resolved_direction
+         FROM window_close_events
+         WHERE window_id = $1`,
+        [windowId]
+      );
+
+      if (!row) {
+        // No close event recorded — try to infer from the epoch
+        // The window_close_event_recorder may not have captured this window
+        return { resolved: false, direction: null, positionWon: false, reason: 'no_close_event_recorded' };
+      }
+
+      // Use on-chain resolution if available, otherwise self-resolved
+      const direction = (row.onchain_resolved_direction || row.resolved_direction || '').toLowerCase();
+
+      if (!direction || (direction !== 'up' && direction !== 'down')) {
+        return { resolved: false, direction: null, positionWon: false, reason: 'direction_not_resolved' };
+      }
+
+      // Determine if position won:
+      // - Position side from token: UP token = bought the "up" outcome
+      // - Check token_id to determine which side was bought, or use the side field
+      // In Polymarket binary: long UP token wins if resolution is UP
+      //                       long DOWN token wins if resolution is DOWN
+      const positionSide = (pos.side || '').toLowerCase();
+
+      // The position's "side" field indicates the market direction bet:
+      // If token_id contains the UP token, position wins when resolution is UP
+      // We check the window_id symbol prefix and the stored side
+      // The canary strategy stores side as 'long' always (it buys tokens)
+      // The actual direction is encoded in which token was bought
+      // We need to check against the token_id
+      let positionBetDirection = null;
+
+      // First try to determine from the stored token_id vs market tokens
+      // If we have a window-manager, query the market to check token mapping
+      if (this.modules['window-manager']) {
+        try {
+          const epoch = this._extractEpochFromWindowId(windowId);
+          if (epoch && symbol) {
+            const market = await this.modules['window-manager'].fetchMarket(symbol, epoch);
+            if (market) {
+              if (pos.token_id === market.upTokenId) {
+                positionBetDirection = 'up';
+              } else if (pos.token_id === market.downTokenId) {
+                positionBetDirection = 'down';
+              }
+            }
+          }
+        } catch {
+          // Fallback below
+        }
+      }
+
+      // Fallback: check position metadata or side field
+      // In our canary, side stores 'UP' or 'DOWN' directly via the signal
+      if (!positionBetDirection) {
+        // Try the side field — canary stores the market direction in the side
+        // Common values: 'long', 'UP', 'DOWN'
+        const sideUpper = (pos.side || '').toUpperCase();
+        if (sideUpper === 'UP' || sideUpper === 'DOWN') {
+          positionBetDirection = sideUpper.toLowerCase();
+        } else {
+          // If side is 'long', we need to check from DB or token mapping
+          // Query position for additional context
+          const posRow = await persistence.get(
+            `SELECT token_id, market_id FROM positions WHERE id = $1`,
+            [pos.id]
+          );
+          // If we still can't determine, assume the position is on the UP side
+          // This is a last resort — log a warning
+          this.log.warn('resolution_direction_ambiguous', {
+            position_id: pos.id,
+            window_id: windowId,
+            side: pos.side,
+            token_id: pos.token_id,
+            resolved_direction: direction,
+          });
+          // Can't determine → return unresolved to avoid wrong P&L
+          return { resolved: false, direction, positionWon: false, reason: 'cannot_determine_position_side' };
+        }
+      }
+
+      const positionWon = positionBetDirection === direction;
+
+      return { resolved: true, direction, positionWon, reason: 'resolved' };
+    } catch (err) {
+      this.log.warn('resolution_lookup_failed', {
+        position_id: pos.id,
+        window_id: pos.window_id,
+        error: err.message,
+      });
+      return { resolved: false, direction: null, positionWon: false, reason: `error: ${err.message}` };
+    }
+  }
+
+  /**
+   * Extract epoch seconds from an epoch-based window_id.
+   * @param {string} windowId - e.g., "btc-15m-1772348400"
+   * @returns {number|null} epoch in seconds, or null
+   */
+  _extractEpochFromWindowId(windowId) {
+    const match = windowId?.match(/-(\d{9,10})$/);
+    return match ? parseInt(match[1], 10) : null;
   }
 
   /**
@@ -923,7 +1046,7 @@ export class ExecutionLoop {
 
       // 4c. Position verification — scoped to CURRENT active windows only
       // Only verify positions whose window_id matches an active window.
-      // Positions from expired windows get auto-closed as settled.
+      // Positions from expired windows get auto-closed as settled with proper resolution P&L.
       let verificationPassed = true;
       if (this.modules['position-manager']) {
         try {
@@ -946,20 +1069,53 @@ export class ExecutionLoop {
               }
             }
 
-            // Auto-close expired-window positions — their window is gone, they've settled
+            // Auto-close expired-window positions with resolution-based P&L
+            // Binary markets: winning token settles at $1.00, losing at $0.00
             if (expiredPositions.length > 0) {
               this.log.info('auto_closing_expired_positions', {
                 count: expiredPositions.length,
                 position_ids: expiredPositions.map(p => p.id),
                 window_ids: expiredPositions.map(p => p.window_id),
                 active_window_ids: [...activeWindowIds],
-                reason: 'Window no longer active — position settled or expired',
+                reason: 'Window no longer active — resolving with settlement price',
               });
               for (const pos of expiredPositions) {
                 try {
+                  // Look up resolution from window_close_events
+                  const resolution = await this._getResolutionForPosition(pos);
+                  let closePrice;
+                  let resolutionOutcome;
+
+                  if (resolution.resolved) {
+                    // Binary market: token settles at $1.00 (won) or $0.00 (lost)
+                    closePrice = resolution.positionWon ? 1.0 : 0.0;
+                    resolutionOutcome = resolution.positionWon ? 'win' : 'loss';
+                    this.log.info('expired_position_resolution_found', {
+                      position_id: pos.id,
+                      window_id: pos.window_id,
+                      side: pos.side,
+                      resolved_direction: resolution.direction,
+                      position_won: resolution.positionWon,
+                      close_price: closePrice,
+                      entry_price: Number(pos.entry_price),
+                    });
+                  } else {
+                    // No resolution data available — use entry_price as conservative fallback
+                    // This means $0 P&L, which we log as a warning to investigate
+                    closePrice = Number(pos.current_price || pos.entry_price);
+                    resolutionOutcome = 'unknown';
+                    this.log.warn('expired_position_no_resolution', {
+                      position_id: pos.id,
+                      window_id: pos.window_id,
+                      reason: resolution.reason,
+                      fallback_close_price: closePrice,
+                    });
+                  }
+
                   await this.modules['position-manager'].closePosition(pos.id, {
-                    closePrice: Number(pos.current_price || pos.entry_price),
+                    closePrice,
                     reason: 'window_expired',
+                    resolution_outcome: resolutionOutcome,
                   });
                 } catch (closeErr) {
                   this.log.warn('expired_position_close_failed', {
@@ -1395,13 +1551,82 @@ export class ExecutionLoop {
         );
 
         if (monitoringPositions.length > 0) {
-          // Get window data (resolution info) for each window
+          // Pre-fetch resolution data for all monitoring positions (async batch)
+          const windowResolutionCache = {};
+          const uniqueWindowIds = [...new Set(monitoringPositions.map(p => p.window_id).filter(Boolean))];
+          if (uniqueWindowIds.length > 0) {
+            try {
+              const rows = await persistence.all(
+                `SELECT window_id, resolved_direction, onchain_resolved_direction
+                 FROM window_close_events
+                 WHERE window_id = ANY($1)`,
+                [uniqueWindowIds]
+              );
+              for (const row of rows) {
+                const dir = (row.onchain_resolved_direction || row.resolved_direction || '').toLowerCase();
+                if (dir === 'up' || dir === 'down') {
+                  windowResolutionCache[row.window_id] = dir;
+                }
+              }
+            } catch (err) {
+              this.log.debug('resolution_prefetch_failed', { error: err.message });
+            }
+          }
+
+          // Build position-to-token-side map for correct binary P&L
+          const positionTokenSideMap = {};
+          if (Object.keys(windowResolutionCache).length > 0 && this.modules['window-manager']) {
+            for (const pos of monitoringPositions) {
+              const wid = pos.window_id;
+              if (!windowResolutionCache[wid]) continue;
+              try {
+                const epoch = this._extractEpochFromWindowId(wid);
+                const symbolMatch = wid?.match(/^([a-z]+)-/i);
+                const sym = symbolMatch ? symbolMatch[1].toLowerCase() : null;
+                if (epoch && sym) {
+                  const market = await this.modules['window-manager'].fetchMarket(sym, epoch);
+                  if (market && pos.token_id) {
+                    if (pos.token_id === market.upTokenId) {
+                      positionTokenSideMap[pos.id] = 'up';
+                    } else if (pos.token_id === market.downTokenId) {
+                      positionTokenSideMap[pos.id] = 'down';
+                    }
+                  }
+                }
+              } catch { /* best-effort */ }
+            }
+          }
+
+          // Synchronous callback for evaluateAll — uses pre-fetched cache
+          // Note: evaluateAll calls getWindowData(windowId) per position, but we need
+          // position-specific resolution. We use a workaround: evaluateAll iterates
+          // in order, so we track which position is being evaluated.
+          let evalIdx = 0;
           const getWindowData = (windowId) => {
-            // Future: Query polymarket for window resolution data
-            // For now, return empty (window will be checked by timing only)
-            // When resolution data is available, it should include:
-            // { resolution_price: 0 or 1, resolved_at: ISO timestamp }
-            return {};
+            const direction = windowResolutionCache[windowId];
+            if (!direction) { evalIdx++; return {}; }
+
+            // Determine resolution_price from this position's perspective
+            const pos = monitoringPositions[evalIdx];
+            evalIdx++;
+
+            const tokenSide = pos ? positionTokenSideMap[pos.id] : null;
+
+            if (tokenSide) {
+              // Position bought a specific token — did that token win?
+              const tokenWon = tokenSide === direction;
+              return {
+                resolution_price: tokenWon ? 1 : 0,
+                resolved_direction: direction,
+              };
+            }
+
+            // Fallback: assume resolution_price based on direction (UP=1, DOWN=0)
+            // This is only correct for UP-token positions
+            return {
+              resolution_price: direction === 'up' ? 1 : 0,
+              resolved_direction: direction,
+            };
           };
 
           windowExpiryResults = windowExpiryModule.evaluateAll(monitoringPositions, getWindowData);

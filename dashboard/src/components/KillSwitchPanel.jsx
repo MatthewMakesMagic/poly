@@ -25,12 +25,14 @@ export default function KillSwitchPanel({ state }) {
   const isStopped = state?.systemState === 'STOPPED' || state?.systemState === 'INITIALIZED';
 
   return (
-    <div className="bg-bg-secondary rounded-lg border border-gray-700 px-4 py-3 flex items-center gap-3">
+    <div className="glass p-5 flex items-center gap-3">
+      <div className="section-title mr-3">Controls</div>
+
       {isPaused ? (
         <button
           onClick={() => handleAction('resume')}
           disabled={loading === 'resume'}
-          className="px-4 py-1.5 bg-green-700 hover:bg-green-600 text-white text-sm rounded font-semibold transition-colors disabled:opacity-50"
+          className="px-5 py-2 bg-accent-green/20 hover:bg-accent-green/30 text-accent-green text-xs font-bold rounded-lg border border-accent-green/30 transition-all duration-300 disabled:opacity-50 hover:shadow-[0_0_20px_rgba(52,211,153,0.2)]"
         >
           {loading === 'resume' ? '...' : 'RESUME'}
         </button>
@@ -38,7 +40,7 @@ export default function KillSwitchPanel({ state }) {
         <button
           onClick={() => handleAction('pause')}
           disabled={loading === 'pause' || isStopped}
-          className="px-4 py-1.5 bg-yellow-700 hover:bg-yellow-600 text-white text-sm rounded font-semibold transition-colors disabled:opacity-50"
+          className="px-5 py-2 bg-accent-yellow/20 hover:bg-accent-yellow/30 text-accent-yellow text-xs font-bold rounded-lg border border-accent-yellow/30 transition-all duration-300 disabled:opacity-50 hover:shadow-[0_0_20px_rgba(251,191,36,0.2)]"
         >
           {loading === 'pause' ? '...' : 'PAUSE'}
         </button>
@@ -46,17 +48,17 @@ export default function KillSwitchPanel({ state }) {
 
       {confirmStop ? (
         <div className="flex items-center gap-2">
-          <span className="text-accent-red text-xs">Confirm?</span>
+          <span className="text-accent-red text-xs font-semibold animate-pulse">Confirm stop?</span>
           <button
             onClick={() => handleAction('stop')}
             disabled={loading === 'stop'}
-            className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-sm rounded font-semibold transition-colors"
+            className="px-4 py-2 bg-accent-red/30 hover:bg-accent-red/40 text-accent-red text-xs font-bold rounded-lg border border-accent-red/40 transition-all duration-300 shadow-[0_0_20px_rgba(248,113,113,0.2)]"
           >
             YES STOP
           </button>
           <button
             onClick={() => setConfirmStop(false)}
-            className="px-3 py-1.5 bg-gray-600 hover:bg-gray-500 text-white text-sm rounded transition-colors"
+            className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white/50 text-xs rounded-lg border border-white/10 transition-all duration-300"
           >
             Cancel
           </button>
@@ -65,7 +67,7 @@ export default function KillSwitchPanel({ state }) {
         <button
           onClick={() => setConfirmStop(true)}
           disabled={isStopped}
-          className="px-4 py-1.5 bg-red-900 hover:bg-red-800 text-accent-red text-sm rounded font-semibold border border-red-700 transition-colors disabled:opacity-50"
+          className="px-5 py-2 bg-accent-red/10 hover:bg-accent-red/20 text-accent-red text-xs font-bold rounded-lg border border-accent-red/20 transition-all duration-300 disabled:opacity-50 hover:shadow-[0_0_20px_rgba(248,113,113,0.2)]"
         >
           EMERGENCY STOP
         </button>

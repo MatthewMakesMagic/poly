@@ -59,7 +59,7 @@ export default function RiskDashboard({ state, connected }) {
       {/* Top row: Drawdown chart + Strategy P&L */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <DrawdownChart state={state} trades={trades} />
-        <StrategyPnL trades={trades} />
+        <StrategyPnL trades={trades} state={state} />
       </div>
 
       {/* Bottom row: Assertions + Runtime controls */}
@@ -71,7 +71,7 @@ export default function RiskDashboard({ state, connected }) {
   );
 }
 
-function StrategyPnL({ trades }) {
+function StrategyPnL({ trades, state }) {
   // Group trades by strategy
   const byStrategy = {};
   for (const t of trades) {
@@ -87,31 +87,50 @@ function StrategyPnL({ trades }) {
   }
 
   const strategies = Object.entries(byStrategy);
+  const activeStrategy = state?.activeStrategy;
 
   return (
-    <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
-      <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">
-        Per-Strategy P&L
-      </h2>
+    <div className="glass p-5">
+      <h2 className="section-title mb-4">Per-Strategy Performance</h2>
 
       {strategies.length === 0 ? (
-        <p className="text-xs text-gray-500">No trade data</p>
+        <div className="py-8 text-center">
+          <p className="text-xs text-white/20">No trade data available</p>
+        </div>
       ) : (
         <div className="space-y-2">
           {strategies.map(([name, data]) => {
-            const pnlColor = data.pnl > 0 ? 'text-accent-green' : data.pnl < 0 ? 'text-accent-red' : 'text-gray-400';
+            const pnlColor = data.pnl > 0 ? 'text-accent-green' : data.pnl < 0 ? 'text-accent-red' : 'text-white/40';
             const pnlSign = data.pnl > 0 ? '+' : '';
+            const winRate = data.count > 0 ? ((data.wins / data.count) * 100).toFixed(0) : '0';
+            const isActive = name === activeStrategy;
+
             return (
-              <div key={name} className="flex items-center justify-between py-2 px-2 rounded bg-bg-tertiary/30">
-                <div>
-                  <span className="text-sm text-gray-200 font-semibold">{name}</span>
-                  <span className="text-xs text-gray-500 ml-2">
-                    {data.count} trades ({data.wins}W / {data.losses}L)
+              <div key={name} className={`rounded-lg p-3 transition-all duration-300 ${
+                isActive
+                  ? 'bg-accent-violet/[0.08] border border-accent-violet/15'
+                  : 'bg-white/[0.02] border border-white/5 hover:bg-white/[0.04]'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    {isActive && (
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent-violet shadow-[0_0_6px_rgba(167,139,250,0.6)] animate-pulse-slow" />
+                    )}
+                    <span className="text-xs font-semibold text-white/80">{name}</span>
+                  </div>
+                  <span className={`text-sm font-bold ${pnlColor}`}>
+                    {pnlSign}${data.pnl.toFixed(2)}
                   </span>
                 </div>
-                <span className={`text-sm font-bold ${pnlColor}`}>
-                  {pnlSign}${data.pnl.toFixed(2)}
-                </span>
+                <div className="flex items-center gap-4 text-[10px] text-white/30">
+                  <span>{data.count} trades</span>
+                  <span className="text-accent-green/70">{data.wins}W</span>
+                  <span className="text-accent-red/70">{data.losses}L</span>
+                  <span>WR: {winRate}%</span>
+                  {data.count > 0 && (
+                    <span>Avg: ${(data.pnl / data.count).toFixed(2)}</span>
+                  )}
+                </div>
               </div>
             );
           })}

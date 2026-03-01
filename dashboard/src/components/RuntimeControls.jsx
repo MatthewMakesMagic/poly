@@ -83,37 +83,37 @@ export default function RuntimeControls({ controls, onRefresh }) {
     }
   };
 
+  const inputClass = "bg-white/5 text-xs text-white/80 border border-white/10 rounded-lg px-3 py-1.5 focus:outline-none focus:border-accent-violet/50 focus:ring-1 focus:ring-accent-violet/20 transition-all duration-300";
+
   return (
-    <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-          Runtime Controls
-        </h2>
+    <div className="glass p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="section-title">Runtime Controls</h2>
         <button
           onClick={onRefresh}
-          className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          className="text-[10px] text-white/25 hover:text-white/50 transition-colors duration-300 px-2 py-1 rounded-md hover:bg-white/5"
         >
           refresh
         </button>
       </div>
 
       {controls.length === 0 ? (
-        <p className="text-xs text-gray-500">
-          No runtime controls available. The runtime_controls table may not exist yet.
+        <p className="text-xs text-white/20">
+          No runtime controls available.
         </p>
       ) : (
         <div className="space-y-1">
           {controls.map((ctrl) => {
             const config = CONTROL_CONFIG[ctrl.key] || {};
             const isEditing = editing === ctrl.key;
-            const valueColor = config.colors?.[ctrl.value] || 'text-gray-400';
+            const valueColor = config.colors?.[ctrl.value] || 'text-white/60';
 
             return (
               <div
                 key={ctrl.key}
-                className="flex items-center justify-between py-2 px-3 rounded bg-bg-tertiary/30"
+                className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all duration-300"
               >
-                <span className="text-xs text-gray-300 font-semibold">
+                <span className="text-[10px] text-white/50 font-medium">
                   {config.label || ctrl.key}
                 </span>
 
@@ -123,7 +123,7 @@ export default function RuntimeControls({ controls, onRefresh }) {
                       <select
                         value={editValue}
                         onChange={(e) => setEditValue(e.target.value)}
-                        className="bg-bg-primary text-xs text-gray-200 border border-gray-600 rounded px-2 py-1 focus:outline-none focus:border-accent-blue"
+                        className={`${inputClass} w-36`}
                       >
                         {config.options.map((opt) => (
                           <option key={opt} value={opt}>{opt}</option>
@@ -136,7 +136,7 @@ export default function RuntimeControls({ controls, onRefresh }) {
                         min={config.min}
                         max={config.max}
                         onChange={(e) => setEditValue(e.target.value)}
-                        className="bg-bg-primary text-xs text-gray-200 border border-gray-600 rounded px-2 py-1 w-20 focus:outline-none focus:border-accent-blue"
+                        className={`${inputClass} w-20`}
                       />
                     ) : (
                       <input
@@ -144,19 +144,19 @@ export default function RuntimeControls({ controls, onRefresh }) {
                         value={editValue}
                         placeholder={config.placeholder}
                         onChange={(e) => setEditValue(e.target.value)}
-                        className="bg-bg-primary text-xs text-gray-200 border border-gray-600 rounded px-2 py-1 w-32 focus:outline-none focus:border-accent-blue"
+                        className={`${inputClass} w-32`}
                       />
                     )}
                     <button
                       onClick={() => saveEdit(ctrl.key)}
                       disabled={saving || editValue === ctrl.value}
-                      className="text-xs px-2 py-1 rounded bg-accent-blue text-white hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      className="text-[10px] px-3 py-1.5 rounded-lg bg-accent-violet/20 text-accent-violet font-semibold hover:bg-accent-violet/30 border border-accent-violet/20 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-300"
                     >
                       {saving ? '...' : 'Save'}
                     </button>
                     <button
                       onClick={cancelEdit}
-                      className="text-xs px-2 py-1 rounded text-gray-400 hover:text-gray-200 transition-colors"
+                      className="text-[10px] px-2 py-1.5 rounded-lg text-white/30 hover:text-white/50 hover:bg-white/5 transition-all duration-300"
                     >
                       Cancel
                     </button>
@@ -168,7 +168,7 @@ export default function RuntimeControls({ controls, onRefresh }) {
                     </span>
                     <button
                       onClick={() => startEdit(ctrl.key, ctrl.value)}
-                      className="text-xs text-gray-600 hover:text-accent-blue transition-colors"
+                      className="text-[10px] px-2 py-1 rounded-md text-white/15 hover:text-accent-violet hover:bg-accent-violet/10 transition-all duration-300"
                     >
                       edit
                     </button>

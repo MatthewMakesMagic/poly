@@ -122,9 +122,14 @@ async function getOpenPositionsSafe() {
   if (now - _positionsCache.fetchedAt < 2000) return _positionsCache.rows;
   try {
     const rows = await persistence.all(`
-      SELECT id, window_id, market_id, token_id, side,
-             entry_price, current_price, size_dollars, shares,
-             unrealized_pnl, stop_loss_price, take_profit_price,
+      SELECT id, window_id, market_id, token_id, side, size,
+             entry_price, current_price,
+             (size * entry_price) as size_dollars,
+             size as shares,
+             CASE WHEN side = 'long'
+               THEN (COALESCE(current_price, entry_price) - entry_price) * size
+               ELSE (entry_price - COALESCE(current_price, entry_price)) * size
+             END as unrealized_pnl,
              strategy_id, opened_at, status, lifecycle_state, mode
       FROM positions
       WHERE status = 'open'
@@ -247,10 +252,15 @@ export async function handleDashboardRequest(req, res) {
   if (req.method === 'GET' && url === '/api/positions') {
     try {
       const rows = await persistence.all(`
-        SELECT id, window_id, market_id, token_id, side,
-               entry_price, current_price, size_dollars, shares,
-               unrealized_pnl, stop_loss_price, take_profit_price,
-               strategy_id, opened_at, status
+        SELECT id, window_id, market_id, token_id, side, size,
+               entry_price, current_price,
+               (size * entry_price) as size_dollars,
+               size as shares,
+               CASE WHEN side = 'long'
+                 THEN (COALESCE(current_price, entry_price) - entry_price) * size
+                 ELSE (entry_price - COALESCE(current_price, entry_price)) * size
+               END as unrealized_pnl,
+               strategy_id, opened_at, status, lifecycle_state, mode
         FROM positions
         WHERE status = 'open'
         ORDER BY opened_at DESC
@@ -601,6 +611,159 @@ export async function handleDashboardRequest(req, res) {
     try {
       const result = await persistence.run(`DELETE FROM window_entries`);
       json(res, 200, { success: true, deleted: result.changes });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/strategy-performance - Per-strategy performance metrics
+  if (req.method === 'GET' && url === '/api/strategy-performance') {
+    try {
+      const rows = await persistence.all(`
+        SELECT
+          strategy_id,
+          mode,
+          COUNT(*) as total_trades,
+          COUNT(*) FILTER (WHERE pnl > 0) as wins,
+          COUNT(*) FILTER (WHERE pnl < 0) as losses,
+          COUNT(*) FILTER (WHERE pnl = 0 OR pnl IS NULL) as flat,
+          COALESCE(SUM(pnl), 0) as total_pnl,
+          COALESCE(AVG(pnl), 0) as avg_pnl,
+          COALESCE(MAX(pnl), 0) as best_trade,
+          COALESCE(MIN(pnl), 0) as worst_trade,
+          MIN(opened_at) as first_trade,
+          MAX(COALESCE(closed_at, opened_at)) as last_trade,
+          COUNT(*) FILTER (WHERE status = 'open') as open_positions
+        FROM positions
+        GROUP BY strategy_id, mode
+        ORDER BY strategy_id, mode
+      `);
+
+      const strategies = {};
+      for (const row of rows) {
+        const key = row.strategy_id || 'unknown';
+        if (!strategies[key]) strategies[key] = { strategy_id: key, modes: {} };
+        const total = parseInt(row.total_trades) || 0;
+        const wins = parseInt(row.wins) || 0;
+        strategies[key].modes[row.mode || 'PAPER'] = {
+          total_trades: total,
+          wins,
+          losses: parseInt(row.losses) || 0,
+          flat: parseInt(row.flat) || 0,
+          win_rate: total > 0 ? (wins / total * 100).toFixed(1) + '%' : 'N/A',
+          total_pnl: parseFloat(row.total_pnl) || 0,
+          avg_pnl: parseFloat(row.avg_pnl) || 0,
+          best_trade: parseFloat(row.best_trade) || 0,
+          worst_trade: parseFloat(row.worst_trade) || 0,
+          first_trade: row.first_trade,
+          last_trade: row.last_trade,
+          open_positions: parseInt(row.open_positions) || 0,
+        };
+      }
+
+      json(res, 200, { strategies: Object.values(strategies) });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // POST /api/controls/backfill-pnl - Backfill P&L for closed trades with $0.00 pnl
+  if (req.method === 'POST' && url === '/api/controls/backfill-pnl') {
+    try {
+      // Find closed positions with pnl = 0 that should have resolution data
+      const zeroTrades = await persistence.all(`
+        SELECT p.id, p.window_id, p.token_id, p.side, p.size, p.entry_price, p.close_price, p.pnl
+        FROM positions p
+        WHERE p.status = 'closed'
+          AND (p.pnl = 0 OR p.pnl IS NULL)
+          AND p.close_price IS NOT NULL
+        ORDER BY p.closed_at DESC
+        LIMIT 100
+      `);
+
+      const results = { updated: 0, skipped: 0, errors: 0, details: [] };
+
+      for (const trade of zeroTrades) {
+        try {
+          // Look up resolution from window_close_events
+          const wce = await persistence.get(
+            `SELECT resolved_direction, onchain_resolved_direction
+             FROM window_close_events WHERE window_id = $1`,
+            [trade.window_id]
+          );
+
+          if (!wce) {
+            results.skipped++;
+            results.details.push({ id: trade.id, reason: 'no_close_event' });
+            continue;
+          }
+
+          const direction = (wce.onchain_resolved_direction || wce.resolved_direction || '').toLowerCase();
+          if (direction !== 'up' && direction !== 'down') {
+            results.skipped++;
+            results.details.push({ id: trade.id, reason: 'no_direction' });
+            continue;
+          }
+
+          // For binary markets: token settles at $1.00 (won) or $0.00 (lost)
+          // We need to determine which token was bought
+          // Use the first token from the market to determine UP vs DOWN
+          const symbolMatch = trade.window_id?.match(/^([a-z]+)-/i);
+          const symbol = symbolMatch ? symbolMatch[1].toLowerCase() : null;
+          const epochMatch = trade.window_id?.match(/-(\d{9,10})$/);
+          const epoch = epochMatch ? parseInt(epochMatch[1], 10) : null;
+
+          let tokenSide = null;
+          if (epoch && symbol) {
+            // Try to look up from window_manager market data
+            const market = await persistence.get(
+              `SELECT token_id_up, token_id_down FROM window_backtest_states
+               WHERE symbol = $1 AND window_epoch = $2 LIMIT 1`,
+              [symbol.toUpperCase(), epoch]
+            );
+            if (market) {
+              if (trade.token_id === market.token_id_up) tokenSide = 'up';
+              else if (trade.token_id === market.token_id_down) tokenSide = 'down';
+            }
+          }
+
+          if (!tokenSide) {
+            results.skipped++;
+            results.details.push({ id: trade.id, reason: 'cannot_determine_token_side' });
+            continue;
+          }
+
+          const tokenWon = tokenSide === direction;
+          const correctClosePrice = tokenWon ? 1.0 : 0.0;
+          const entryPrice = Number(trade.entry_price);
+          const size = Number(trade.size);
+          const pnl = (correctClosePrice - entryPrice) * size;
+
+          await persistence.run(
+            `UPDATE positions SET close_price = $1, pnl = $2 WHERE id = $3`,
+            [correctClosePrice, pnl, trade.id]
+          );
+
+          results.updated++;
+          results.details.push({
+            id: trade.id,
+            window_id: trade.window_id,
+            token_side: tokenSide,
+            direction,
+            won: tokenWon,
+            old_pnl: Number(trade.pnl),
+            new_pnl: pnl,
+            close_price: correctClosePrice,
+          });
+        } catch (err) {
+          results.errors++;
+          results.details.push({ id: trade.id, error: err.message });
+        }
+      }
+
+      json(res, 200, { success: true, ...results });
     } catch (err) {
       json(res, 500, { error: err.message });
     }

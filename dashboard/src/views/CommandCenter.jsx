@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React from 'react';
 import StatusBar from '../components/StatusBar.jsx';
 import KillSwitchPanel from '../components/KillSwitchPanel.jsx';
 import StrategiesPanel from '../components/StrategiesPanel.jsx';

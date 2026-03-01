@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart } from 'recharts';
 
 export default function DrawdownChart({ state, trades }) {
   // Build cumulative P&L data from trades (chronological)
@@ -33,49 +33,68 @@ export default function DrawdownChart({ state, trades }) {
   }, [trades]);
 
   return (
-    <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
-      <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">
-        Session P&L / Drawdown
-      </h2>
+    <div className="glass p-5">
+      <h2 className="section-title mb-4">Session P&L / Drawdown</h2>
 
       {chartData.length < 2 ? (
-        <div className="h-48 flex items-center justify-center">
-          <p className="text-xs text-gray-500">
-            Need at least 2 closed trades to show chart
+        <div className="h-52 flex items-center justify-center">
+          <p className="text-xs text-white/20">
+            Need at least 2 closed trades to render chart
           </p>
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="time" stroke="#64748b" tick={{ fontSize: 10 }} />
-            <YAxis stroke="#64748b" tick={{ fontSize: 10 }} />
+        <ResponsiveContainer width="100%" height={220}>
+          <ComposedChart data={chartData}>
+            <defs>
+              <linearGradient id="pnlGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#34d399" stopOpacity={0.3} />
+                <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="drawdownGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#f87171" stopOpacity={0} />
+                <stop offset="100%" stopColor="#f87171" stopOpacity={0.2} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+            <XAxis
+              dataKey="time"
+              stroke="rgba(255,255,255,0.15)"
+              tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.3)' }}
+              axisLine={{ stroke: 'rgba(255,255,255,0.08)' }}
+            />
+            <YAxis
+              stroke="rgba(255,255,255,0.15)"
+              tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.3)' }}
+              axisLine={{ stroke: 'rgba(255,255,255,0.08)' }}
+            />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#1e293b',
-                border: '1px solid #475569',
-                borderRadius: '4px',
-                fontSize: '12px',
+                backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                backdropFilter: 'blur(12px)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '8px',
+                fontSize: '11px',
+                color: 'rgba(255,255,255,0.8)',
               }}
             />
-            <Line
+            <Area
               type="monotone"
               dataKey="pnl"
-              stroke="#22c55e"
+              stroke="#34d399"
               strokeWidth={2}
-              dot={false}
+              fill="url(#pnlGradient)"
               name="Cumulative P&L"
             />
             <Line
               type="monotone"
               dataKey="drawdown"
-              stroke="#ef4444"
+              stroke="#f87171"
               strokeWidth={1}
               dot={false}
               name="Drawdown"
               strokeDasharray="4 2"
             />
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
       )}
     </div>

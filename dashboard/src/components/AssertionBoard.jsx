@@ -38,69 +38,74 @@ export default function AssertionBoard({ assertions }) {
   }
 
   const passCount = results.filter(r => r.passed === true).length;
-  const failCount = results.filter(r => r.passed === false).length;
+
+  const cbColor =
+    cbState === 'CLOSED' ? 'text-accent-green' :
+    cbState === 'OPEN' ? 'text-accent-red' : 'text-accent-yellow';
 
   return (
-    <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-          Assertion Board
-        </h2>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs ${
-            cbState === 'CLOSED' ? 'text-accent-green' :
-            cbState === 'OPEN' ? 'text-accent-red' : 'text-accent-yellow'
-          }`}>
+    <div className="glass p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="section-title">Assertion Board</h2>
+        <div className="flex items-center gap-3">
+          <span className={`text-[10px] font-bold ${cbColor}`}>
             CB: {cbState}
           </span>
           {results.length > 0 && (
-            <span className="text-xs text-gray-500">
-              {passCount}/{results.length}
+            <span className="text-[10px] text-white/25">
+              {passCount}/{results.length} pass
             </span>
           )}
           {lastCheck && (
-            <span className="text-xs text-gray-500">
+            <span className="text-[10px] text-white/20">
               {new Date(lastCheck).toLocaleTimeString('en-US', { hour12: false })}
             </span>
           )}
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-1.5">
         {KNOWN_ASSERTIONS.map((name) => {
           const result = resultMap[name];
           const passed = result?.passed ?? result?.pass;
           const hasResult = result != null;
           const message = result?.message || '';
 
-          let bgColor = 'bg-gray-800/50';
-          let textColor = 'text-gray-500';
+          let bgClass = 'bg-white/[0.02] border border-white/5';
+          let textColor = 'text-white/25';
           let indicator = '--';
+          let dotColor = 'bg-white/15';
 
           if (hasResult) {
             if (passed === null) {
-              bgColor = 'bg-gray-800/50';
-              textColor = 'text-gray-500';
+              bgClass = 'bg-white/[0.02] border border-white/5';
+              textColor = 'text-white/30';
               indicator = 'WAIT';
+              dotColor = 'bg-white/20';
             } else if (passed) {
-              bgColor = 'bg-green-900/30';
+              bgClass = 'bg-accent-green/[0.06] border border-accent-green/10';
               textColor = 'text-accent-green';
               indicator = 'PASS';
+              dotColor = 'bg-accent-green shadow-[0_0_4px_rgba(52,211,153,0.5)]';
             } else {
-              bgColor = 'bg-red-900/30';
+              bgClass = 'bg-accent-red/[0.06] border border-accent-red/10';
               textColor = 'text-accent-red';
               indicator = 'FAIL';
+              dotColor = 'bg-accent-red shadow-[0_0_4px_rgba(248,113,113,0.5)]';
             }
           }
 
           return (
             <div
               key={name}
-              className={`${bgColor} rounded px-3 py-2 flex items-center justify-between`}
+              className={`${bgClass} rounded-lg px-3 py-2.5 flex items-center justify-between transition-all duration-300`}
               title={message}
             >
-              <span className="text-xs text-gray-300">{ASSERTION_LABELS[name] || name}</span>
-              <span className={`text-xs font-semibold ${textColor}`}>{indicator}</span>
+              <div className="flex items-center gap-2">
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                <span className="text-[10px] text-white/50">{ASSERTION_LABELS[name] || name}</span>
+              </div>
+              <span className={`text-[10px] font-bold ${textColor}`}>{indicator}</span>
             </div>
           );
         })}

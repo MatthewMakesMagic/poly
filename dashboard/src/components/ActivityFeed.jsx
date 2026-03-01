@@ -11,10 +11,20 @@ function eventColor(eventType) {
     case 'signal': return 'text-accent-blue';
     case 'order': return 'text-accent-yellow';
     case 'fill': return 'text-accent-green';
-    case 'assertion': return 'text-gray-400';
-    case 'window': return 'text-gray-500';
+    case 'assertion': return 'text-white/40';
+    case 'window': return 'text-accent-violet';
     case 'error': return 'text-accent-red';
-    default: return 'text-gray-400';
+    default: return 'text-white/40';
+  }
+}
+
+function eventBgColor(eventType) {
+  switch (eventType) {
+    case 'signal': return 'bg-accent-blue/10';
+    case 'order': return 'bg-accent-yellow/10';
+    case 'fill': return 'bg-accent-green/10';
+    case 'error': return 'bg-accent-red/10';
+    default: return 'bg-white/[0.02]';
   }
 }
 
@@ -63,24 +73,24 @@ function formatEventData(event) {
 
 export default function ActivityFeed({ events }) {
   return (
-    <div className="bg-bg-secondary rounded-lg border border-gray-700 p-4">
-      <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">
-        Activity Feed
-      </h2>
+    <div className="glass p-5">
+      <h2 className="section-title mb-4">Activity Feed</h2>
 
       {events.length === 0 ? (
-        <p className="text-xs text-gray-500">No events yet. Waiting for activity...</p>
+        <div className="py-6 text-center">
+          <p className="text-xs text-white/20">Waiting for activity...</p>
+        </div>
       ) : (
-        <div className="space-y-0.5 max-h-64 overflow-y-auto">
+        <div className="space-y-0.5 max-h-72 overflow-y-auto pr-1">
           {events.map((event, i) => (
-            <div key={i} className="flex items-start gap-2 py-1 px-1 text-xs hover:bg-bg-tertiary/30 rounded">
-              <span className="text-gray-500 shrink-0 w-16">
+            <div key={i} className={`flex items-start gap-2 py-1.5 px-2 text-[11px] rounded-md transition-colors duration-200 ${eventBgColor(event._event)} hover:bg-white/[0.04]`}>
+              <span className="text-white/25 shrink-0 w-14 font-light">
                 {formatTime(event._ts)}
               </span>
-              <span className={`shrink-0 w-14 font-semibold ${eventColor(event._event)}`}>
+              <span className={`shrink-0 w-12 font-bold ${eventColor(event._event)}`}>
                 {eventLabel(event._event)}
               </span>
-              <span className="text-gray-300 truncate">
+              <span className="text-white/60 truncate">
                 {formatEventData(event)}
               </span>
             </div>

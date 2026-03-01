@@ -49,7 +49,39 @@ export function parseWindowId(windowId, options = {}) {
     };
   }
 
-  // Expected format: {asset}-{duration}-{date}-{time}
+  // Format 1: Epoch-based (production) — {asset}-{duration}-{epoch}
+  // Example: btc-15m-1772348400
+  const epochPattern = /^([a-z]+)-(\d+m)-(\d{9,10})$/i;
+  const epochMatch = windowId.match(epochPattern);
+
+  if (epochMatch) {
+    const [, asset, duration, epochStr] = epochMatch;
+    const epochSec = parseInt(epochStr, 10);
+    const startTime = new Date(epochSec * 1000);
+
+    if (isNaN(startTime.getTime())) {
+      return {
+        is_valid: false,
+        error: 'Invalid epoch in window_id',
+        start_time: null,
+        end_time: null,
+        duration_ms: windowDurationMs,
+      };
+    }
+
+    const endTime = new Date(startTime.getTime() + windowDurationMs);
+
+    return {
+      is_valid: true,
+      asset,
+      duration,
+      start_time: startTime.toISOString(),
+      end_time: endTime.toISOString(),
+      duration_ms: windowDurationMs,
+    };
+  }
+
+  // Format 2: Date-based (legacy/test) — {asset}-{duration}-{date}-{time}
   // Example: btc-15m-2026-01-31-10:00
   const pattern = /^([a-z]+)-(\d+m)-(\d{4}-\d{2}-\d{2})-(\d{2}:\d{2})$/i;
   const match = windowId.match(pattern);
@@ -57,7 +89,7 @@ export function parseWindowId(windowId, options = {}) {
   if (!match) {
     return {
       is_valid: false,
-      error: 'Invalid window_id format. Expected: {asset}-{duration}-{date}-{time}',
+      error: 'Invalid window_id format. Expected: {asset}-{duration}-{epoch} or {asset}-{duration}-{date}-{time}',
       start_time: null,
       end_time: null,
       duration_ms: windowDurationMs,
