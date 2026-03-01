@@ -8,10 +8,10 @@
  * gap_end and duration_seconds are NULL while the gap is still open.
  */
 
-import persistence from '../index.js';
+import { exec } from '../database.js';
 
 export async function up() {
-  await persistence.run(`
+  await exec(`
     CREATE TABLE IF NOT EXISTS feed_gaps (
       id SERIAL PRIMARY KEY,
       feed_name TEXT NOT NULL,
@@ -20,18 +20,12 @@ export async function up() {
       gap_end TIMESTAMPTZ,
       duration_seconds DOUBLE PRECISION,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+    );
 
-  // Index for querying open gaps (gap_end IS NULL)
-  await persistence.run(`
     CREATE INDEX IF NOT EXISTS idx_feed_gaps_open
-    ON feed_gaps (feed_name, symbol) WHERE gap_end IS NULL
-  `);
+    ON feed_gaps (feed_name, symbol) WHERE gap_end IS NULL;
 
-  // Index for querying gaps by time range
-  await persistence.run(`
     CREATE INDEX IF NOT EXISTS idx_feed_gaps_time
-    ON feed_gaps (gap_start DESC)
+    ON feed_gaps (gap_start DESC);
   `);
 }
