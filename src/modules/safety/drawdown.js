@@ -130,16 +130,21 @@ export async function recordRealizedPnl(pnl, log) {
 
   const record = await getOrCreateTodayRecord(log);
 
+  // PostgreSQL returns DECIMAL as strings — coerce to numbers
+  const curRealizedPnl = Number(record.realized_pnl);
+  const startBal = Number(record.starting_balance);
+  const curMaxDrawdown = Number(record.max_drawdown_pct);
+
   // Calculate new values
-  const newRealizedPnl = record.realized_pnl + pnl;
-  const newCurrentBalance = record.starting_balance + newRealizedPnl;
+  const newRealizedPnl = curRealizedPnl + pnl;
+  const newCurrentBalance = startBal + newRealizedPnl;
 
   // Calculate drawdown: (starting - current) / starting
   // Positive drawdown means loss, negative means profit
-  const newDrawdownPct = (record.starting_balance - newCurrentBalance) / record.starting_balance;
+  const newDrawdownPct = startBal > 0 ? (startBal - newCurrentBalance) / startBal : 0;
 
   // Max drawdown tracks the worst (highest positive) drawdown
-  const newMaxDrawdown = Math.max(record.max_drawdown_pct, newDrawdownPct);
+  const newMaxDrawdown = Math.max(curMaxDrawdown, newDrawdownPct);
 
   // Update trade statistics
   const newTradesCount = record.trades_count + 1;
@@ -266,22 +271,28 @@ export function getDrawdownStatus() {
     };
   }
 
+  // PostgreSQL returns DECIMAL as strings — coerce to numbers
+  const startBal = Number(record.starting_balance);
+  const curBal = Number(record.current_balance);
+  const realizedPnl = Number(record.realized_pnl);
+  const unrealizedPnl = Number(record.unrealized_pnl);
+
   // Calculate effective balance (includes unrealized P&L)
-  const effectiveBalance = record.current_balance + record.unrealized_pnl;
+  const effectiveBalance = curBal + unrealizedPnl;
 
   // Calculate total drawdown including unrealized
-  const totalDrawdownPct = (record.starting_balance - effectiveBalance) / record.starting_balance;
+  const totalDrawdownPct = startBal > 0 ? (startBal - effectiveBalance) / startBal : 0;
 
   return {
     initialized: true,
     date: record.date,
-    starting_balance: record.starting_balance,
-    current_balance: record.current_balance,
+    starting_balance: startBal,
+    current_balance: curBal,
     effective_balance: effectiveBalance,
-    realized_pnl: record.realized_pnl,
-    unrealized_pnl: record.unrealized_pnl,
-    drawdown_pct: record.drawdown_pct,
-    max_drawdown_pct: record.max_drawdown_pct,
+    realized_pnl: realizedPnl,
+    unrealized_pnl: unrealizedPnl,
+    drawdown_pct: Number(record.drawdown_pct),
+    max_drawdown_pct: Number(record.max_drawdown_pct),
     total_drawdown_pct: totalDrawdownPct,
     trades_count: record.trades_count,
     wins: record.wins,
