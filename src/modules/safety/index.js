@@ -71,7 +71,7 @@ export async function init(config) {
   setConfig(config);
 
   // Initialize today's record (creates if doesn't exist)
-  getOrCreateTodayRecord(log);
+  await getOrCreateTodayRecord(log);
 
   // Load persisted auto-stop state from database (if exists and current day)
   const persistedState = await loadAutoStopState(log);
@@ -108,9 +108,9 @@ export function setOrderManager(orderManager) {
  * @returns {Object} Updated daily performance record
  * @throws {SafetyError} If module not initialized or invalid amount
  */
-export function recordRealizedPnl(pnl) {
+export async function recordRealizedPnl(pnl) {
   ensureInitialized();
-  return recordPnl(pnl, log);
+  return await recordPnl(pnl, log);
 }
 
 /**
@@ -123,9 +123,9 @@ export function recordRealizedPnl(pnl) {
  * @returns {Object} Updated daily performance record
  * @throws {SafetyError} If module not initialized or invalid amount
  */
-export function updateUnrealizedPnl(unrealizedPnl) {
+export async function updateUnrealizedPnl(unrealizedPnl) {
   ensureInitialized();
-  return updateUnrealized(unrealizedPnl, log);
+  return await updateUnrealized(unrealizedPnl, log);
 }
 
 /**
@@ -150,12 +150,12 @@ export function updateUnrealizedPnl(unrealizedPnl) {
  *   - losses: number
  *   - updated_at: string (ISO timestamp)
  */
-export function getDrawdownStatus() {
+export async function getDrawdownStatus() {
   ensureInitialized();
 
   // Refresh cache if date changed (midnight rollover)
   if (isCacheStale()) {
-    getOrCreateTodayRecord(log);
+    await getOrCreateTodayRecord(log);
     // Also clear auto-stop on new day
     clearAutoStopState();
   }
@@ -175,17 +175,17 @@ export function getDrawdownStatus() {
  *   - limit: number (configured limit percentage)
  *   - autoStopped: boolean (true if auto-stop is active)
  */
-export function checkDrawdownLimit() {
+export async function checkDrawdownLimit() {
   ensureInitialized();
 
   // Refresh cache if date changed (midnight rollover)
   if (isCacheStale()) {
-    getOrCreateTodayRecord(log);
+    await getOrCreateTodayRecord(log);
     // Also clear auto-stop on new day
     clearAutoStopState();
   }
 
-  return checkLimit(log, orderManagerRef);
+  return await checkLimit(log, orderManagerRef);
 }
 
 /**
@@ -219,7 +219,7 @@ export async function resetAutoStop(options = {}) {
  *
  * @returns {Object} Current state including initialization status, drawdown info, and auto-stop status
  */
-export function getState() {
+export async function getState() {
   const stateSnapshot = getStateSnapshot();
   const drawdown = initialized ? getStatus() : null;
 

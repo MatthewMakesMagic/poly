@@ -518,7 +518,7 @@ export async function closePosition(positionId, params, log) {
 
     // 5. Notify safety module about realized P&L (fire-and-forget)
     try {
-      safety.recordRealizedPnl(pnl);
+      await safety.recordRealizedPnl(pnl);
     } catch (err) {
       // Don't block position close - log and continue
       log.warn('safety_pnl_record_failed', { error: err.message, pnl, positionId });

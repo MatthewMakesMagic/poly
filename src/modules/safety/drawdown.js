@@ -43,7 +43,7 @@ export function getTodayDate() {
  * @param {Object} [log] - Optional logger instance
  * @returns {Object} Daily performance record
  */
-export function getOrCreateTodayRecord(log) {
+export async function getOrCreateTodayRecord(log) {
   const today = getTodayDate();
   const startingCapital = getStartingCapital();
 
@@ -53,8 +53,8 @@ export function getOrCreateTodayRecord(log) {
   }
 
   // Query database for existing record
-  let record = persistence.get(
-    'SELECT * FROM daily_performance WHERE date = ?',
+  let record = await persistence.get(
+    'SELECT * FROM daily_performance WHERE date = $1',
     [today]
   );
 
@@ -63,16 +63,16 @@ export function getOrCreateTodayRecord(log) {
     const now = new Date().toISOString();
 
     try {
-      persistence.run(
+      await persistence.run(
         `INSERT INTO daily_performance
           (date, starting_balance, current_balance, realized_pnl, unrealized_pnl,
            drawdown_pct, max_drawdown_pct, trades_count, wins, losses, updated_at)
-        VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, 0, ?)`,
+        VALUES ($1, $2, $3, 0, 0, 0, 0, 0, 0, 0, $4)`,
         [today, startingCapital, startingCapital, now]
       );
 
-      record = persistence.get(
-        'SELECT * FROM daily_performance WHERE date = ?',
+      record = await persistence.get(
+        'SELECT * FROM daily_performance WHERE date = $1',
         [today]
       );
 
@@ -85,8 +85,8 @@ export function getOrCreateTodayRecord(log) {
     } catch (err) {
       // Handle race condition where another process created the record
       if (err.message && err.message.includes('UNIQUE constraint')) {
-        record = persistence.get(
-          'SELECT * FROM daily_performance WHERE date = ?',
+        record = await persistence.get(
+          'SELECT * FROM daily_performance WHERE date = $1',
           [today]
         );
       } else {
@@ -119,7 +119,7 @@ export function getOrCreateTodayRecord(log) {
  * @param {Object} [log] - Optional logger instance
  * @returns {Object} Updated daily performance record
  */
-export function recordRealizedPnl(pnl, log) {
+export async function recordRealizedPnl(pnl, log) {
   if (typeof pnl !== 'number' || !Number.isFinite(pnl)) {
     throw new SafetyError(
       SafetyErrorCodes.INVALID_AMOUNT,
@@ -128,7 +128,7 @@ export function recordRealizedPnl(pnl, log) {
     );
   }
 
-  const record = getOrCreateTodayRecord(log);
+  const record = await getOrCreateTodayRecord(log);
 
   // Calculate new values
   const newRealizedPnl = record.realized_pnl + pnl;
@@ -149,17 +149,17 @@ export function recordRealizedPnl(pnl, log) {
   const now = new Date().toISOString();
 
   // Persist to database
-  persistence.run(
+  await persistence.run(
     `UPDATE daily_performance
-     SET realized_pnl = ?,
-         current_balance = ?,
-         drawdown_pct = ?,
-         max_drawdown_pct = ?,
-         trades_count = ?,
-         wins = ?,
-         losses = ?,
-         updated_at = ?
-     WHERE id = ?`,
+     SET realized_pnl = $1,
+         current_balance = $2,
+         drawdown_pct = $3,
+         max_drawdown_pct = $4,
+         trades_count = $5,
+         wins = $6,
+         losses = $7,
+         updated_at = $8
+     WHERE id = $9`,
     [
       newRealizedPnl,
       newCurrentBalance,
@@ -209,7 +209,7 @@ export function recordRealizedPnl(pnl, log) {
  * @param {Object} [log] - Optional logger instance
  * @returns {Object} Updated daily performance record
  */
-export function updateUnrealizedPnl(unrealizedPnl, log) {
+export async function updateUnrealizedPnl(unrealizedPnl, log) {
   if (typeof unrealizedPnl !== 'number' || !Number.isFinite(unrealizedPnl)) {
     throw new SafetyError(
       SafetyErrorCodes.INVALID_AMOUNT,
@@ -218,15 +218,15 @@ export function updateUnrealizedPnl(unrealizedPnl, log) {
     );
   }
 
-  const record = getOrCreateTodayRecord(log);
+  const record = await getOrCreateTodayRecord(log);
   const now = new Date().toISOString();
 
   // Persist to database
-  persistence.run(
+  await persistence.run(
     `UPDATE daily_performance
-     SET unrealized_pnl = ?,
-         updated_at = ?
-     WHERE id = ?`,
+     SET unrealized_pnl = $1,
+         updated_at = $2
+     WHERE id = $3`,
     [unrealizedPnl, now, record.id]
   );
 
@@ -318,7 +318,7 @@ export function isCacheStale() {
  *   - limit: number (configured limit percentage)
  *   - autoStopped: boolean (true if auto-stop is active)
  */
-export function checkDrawdownLimit(log, orderManager = null) {
+export async function checkDrawdownLimit(log, orderManager = null) {
   const status = getDrawdownStatus();
   const limit = getDrawdownLimit();
   const warningThreshold = getDrawdownWarningThreshold();

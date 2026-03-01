@@ -122,14 +122,14 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       return baseRecord;
     };
 
-    it('should return breached=false when under limit', () => {
+    it('should return breached=false when under limit', async () => {
       setupCachedRecord({
         realized_pnl: -20,
         current_balance: 980,
         drawdown_pct: 0.02,
       });
 
-      const result = checkDrawdownLimit();
+      const result = await checkDrawdownLimit();
 
       expect(result.breached).toBe(false);
       expect(result.current).toBeCloseTo(0.02);
@@ -137,10 +137,10 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       expect(result.autoStopped).toBe(false);
     });
 
-    it('should return correct structure (AC6)', () => {
+    it('should return correct structure (AC6)', async () => {
       setupCachedRecord();
 
-      const result = checkDrawdownLimit();
+      const result = await checkDrawdownLimit();
 
       expect(result).toHaveProperty('breached');
       expect(result).toHaveProperty('current');
@@ -152,7 +152,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       expect(typeof result.autoStopped).toBe('boolean');
     });
 
-    it('should log warning when approaching limit (AC2)', () => {
+    it('should log warning when approaching limit (AC2)', async () => {
       setupCachedRecord({
         realized_pnl: -35,
         current_balance: 965,
@@ -166,7 +166,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
         debug: vi.fn(),
       };
 
-      const result = checkDrawdownLimit(mockLog);
+      const result = await checkDrawdownLimit(mockLog);
 
       expect(mockLog.warn).toHaveBeenCalledWith('drawdown_warning', expect.objectContaining({
         event: 'drawdown_approaching_limit',
@@ -175,7 +175,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       expect(result.autoStopped).toBe(false);
     });
 
-    it('should not repeat warnings at same level (AC2)', () => {
+    it('should not repeat warnings at same level (AC2)', async () => {
       setupCachedRecord({
         realized_pnl: -35,
         current_balance: 965,
@@ -190,15 +190,15 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       };
 
       // First check - should warn
-      checkDrawdownLimit(mockLog);
+      await checkDrawdownLimit(mockLog);
       expect(mockLog.warn).toHaveBeenCalledTimes(1);
 
       // Second check at same level - should not warn again
-      checkDrawdownLimit(mockLog);
+      await checkDrawdownLimit(mockLog);
       expect(mockLog.warn).toHaveBeenCalledTimes(1);
     });
 
-    it('should trigger auto-stop when limit breached (AC3)', () => {
+    it('should trigger auto-stop when limit breached (AC3)', async () => {
       setupCachedRecord({
         realized_pnl: -50,
         current_balance: 950,
@@ -212,7 +212,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
         debug: vi.fn(),
       };
 
-      const result = checkDrawdownLimit(mockLog);
+      const result = await checkDrawdownLimit(mockLog);
 
       expect(result.breached).toBe(true);
       expect(result.autoStopped).toBe(true);
@@ -222,7 +222,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       }));
     });
 
-    it('should include unrealized losses in breach check', () => {
+    it('should include unrealized losses in breach check', async () => {
       // 2% realized + 3% unrealized = 5% total
       setupCachedRecord({
         realized_pnl: -20,
@@ -231,16 +231,16 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
         drawdown_pct: 0.02,
       });
 
-      const result = checkDrawdownLimit();
+      const result = await checkDrawdownLimit();
 
       expect(result.breached).toBe(true);
       expect(result.current).toBeCloseTo(0.05);
       expect(result.autoStopped).toBe(true);
     });
 
-    it('should handle uninitialized state', () => {
+    it('should handle uninitialized state', async () => {
       // Don't set up cached record
-      const result = checkDrawdownLimit();
+      const result = await checkDrawdownLimit();
 
       expect(result.breached).toBe(false);
       expect(result.current).toBe(0);
@@ -530,7 +530,7 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
   });
 
   describe('Auto-Stop Only Triggers Once (Edge Cases)', () => {
-    it('should not trigger auto-stop twice', () => {
+    it('should not trigger auto-stop twice', async () => {
       const setupCachedRecord = () => {
         setCachedRecord({
           id: 1,
@@ -558,11 +558,11 @@ describe('Drawdown Limit Enforcement (Story 4.4)', () => {
       };
 
       // First check - triggers auto-stop
-      checkDrawdownLimit(mockLog);
+      await checkDrawdownLimit(mockLog);
       expect(mockLog.error).toHaveBeenCalledTimes(1);
 
       // Second check - already auto-stopped, should not trigger again
-      checkDrawdownLimit(mockLog);
+      await checkDrawdownLimit(mockLog);
       expect(mockLog.error).toHaveBeenCalledTimes(1); // Still 1
     });
   });

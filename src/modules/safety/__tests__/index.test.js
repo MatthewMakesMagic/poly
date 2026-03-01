@@ -62,7 +62,7 @@ describe('Safety Module', () => {
   describe('init()', () => {
     it('should initialize successfully with valid config', async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -79,13 +79,13 @@ describe('Safety Module', () => {
 
       await safety.init(mockConfig);
 
-      const state = safety.getState();
+      const state = await safety.getState();
       expect(state.initialized).toBe(true);
     });
 
     it('should throw if already initialized', async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -136,7 +136,7 @@ describe('Safety Module', () => {
   describe('recordRealizedPnl()', () => {
     beforeEach(async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -156,21 +156,21 @@ describe('Safety Module', () => {
     it('should throw if not initialized', async () => {
       await safety.shutdown();
 
-      expect(() => safety.recordRealizedPnl(-50)).toThrow('not initialized');
+      await expect(safety.recordRealizedPnl(-50)).rejects.toThrow('not initialized');
     });
 
-    it('should record realized P&L and update drawdown', () => {
-      const result = safety.recordRealizedPnl(-50);
+    it('should record realized P&L and update drawdown', async () => {
+      const result = await safety.recordRealizedPnl(-50);
 
       expect(result.realized_pnl).toBe(-50);
       expect(result.current_balance).toBe(950);
       expect(result.drawdown_pct).toBeCloseTo(0.05);
     });
 
-    it('should track wins and losses', () => {
-      safety.recordRealizedPnl(100); // Win
-      safety.recordRealizedPnl(-50); // Loss
-      const result = safety.recordRealizedPnl(-25); // Loss
+    it('should track wins and losses', async () => {
+      await safety.recordRealizedPnl(100); // Win
+      await safety.recordRealizedPnl(-50); // Loss
+      const result = await safety.recordRealizedPnl(-25); // Loss
 
       expect(result.wins).toBe(1);
       expect(result.losses).toBe(2);
@@ -181,7 +181,7 @@ describe('Safety Module', () => {
   describe('updateUnrealizedPnl()', () => {
     beforeEach(async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -201,11 +201,11 @@ describe('Safety Module', () => {
     it('should throw if not initialized', async () => {
       await safety.shutdown();
 
-      expect(() => safety.updateUnrealizedPnl(-30)).toThrow('not initialized');
+      await expect(safety.updateUnrealizedPnl(-30)).rejects.toThrow('not initialized');
     });
 
-    it('should update unrealized P&L', () => {
-      const result = safety.updateUnrealizedPnl(-30);
+    it('should update unrealized P&L', async () => {
+      const result = await safety.updateUnrealizedPnl(-30);
 
       expect(result.unrealized_pnl).toBe(-30);
     });
@@ -214,7 +214,7 @@ describe('Safety Module', () => {
   describe('getDrawdownStatus()', () => {
     beforeEach(async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -234,11 +234,11 @@ describe('Safety Module', () => {
     it('should throw if not initialized', async () => {
       await safety.shutdown();
 
-      expect(() => safety.getDrawdownStatus()).toThrow('not initialized');
+      await expect(safety.getDrawdownStatus()).rejects.toThrow('not initialized');
     });
 
-    it('should return complete drawdown information', () => {
-      const status = safety.getDrawdownStatus();
+    it('should return complete drawdown information', async () => {
+      const status = await safety.getDrawdownStatus();
 
       expect(status.initialized).toBe(true);
       expect(status.starting_balance).toBe(1000);
@@ -254,8 +254,8 @@ describe('Safety Module', () => {
   });
 
   describe('getState()', () => {
-    it('should return uninitialized state before init', () => {
-      const state = safety.getState();
+    it('should return uninitialized state before init', async () => {
+      const state = await safety.getState();
 
       expect(state.initialized).toBe(false);
       expect(state.drawdown).toBeNull();
@@ -263,7 +263,7 @@ describe('Safety Module', () => {
 
     it('should return full state after init', async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -279,7 +279,7 @@ describe('Safety Module', () => {
       });
       await safety.init(mockConfig);
 
-      const state = safety.getState();
+      const state = await safety.getState();
 
       expect(state.initialized).toBe(true);
       expect(state.drawdown).toBeDefined();
@@ -290,7 +290,7 @@ describe('Safety Module', () => {
   describe('shutdown()', () => {
     it('should shutdown gracefully', async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -308,13 +308,13 @@ describe('Safety Module', () => {
 
       await safety.shutdown();
 
-      const state = safety.getState();
+      const state = await safety.getState();
       expect(state.initialized).toBe(false);
     });
 
     it('should be idempotent', async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -333,7 +333,7 @@ describe('Safety Module', () => {
       await safety.shutdown();
       await safety.shutdown(); // Should not throw
 
-      const state = safety.getState();
+      const state = await safety.getState();
       expect(state.initialized).toBe(false);
     });
   });
@@ -341,7 +341,7 @@ describe('Safety Module', () => {
   describe('Integration Scenarios', () => {
     beforeEach(async () => {
       const today = new Date().toISOString().split('T')[0];
-      persistence.get.mockReturnValue({
+      persistence.get.mockResolvedValue({
         id: 1,
         date: today,
         starting_balance: 1000,
@@ -358,24 +358,24 @@ describe('Safety Module', () => {
       await safety.init(mockConfig);
     });
 
-    it('should track a trading day with mixed results', () => {
+    it('should track a trading day with mixed results', async () => {
       // Morning: slight loss
-      safety.recordRealizedPnl(-20);
-      expect(safety.getDrawdownStatus().drawdown_pct).toBeCloseTo(0.02);
+      await safety.recordRealizedPnl(-20);
+      expect((await safety.getDrawdownStatus()).drawdown_pct).toBeCloseTo(0.02);
 
       // Add unrealized loss from open positions
-      safety.updateUnrealizedPnl(-30);
-      expect(safety.getDrawdownStatus().total_drawdown_pct).toBeCloseTo(0.05);
+      await safety.updateUnrealizedPnl(-30);
+      expect((await safety.getDrawdownStatus()).total_drawdown_pct).toBeCloseTo(0.05);
 
       // Afternoon: profit
-      safety.recordRealizedPnl(50);
-      expect(safety.getDrawdownStatus().realized_pnl).toBe(30);
+      await safety.recordRealizedPnl(50);
+      expect((await safety.getDrawdownStatus()).realized_pnl).toBe(30);
 
       // End of day: close positions at small profit
-      safety.updateUnrealizedPnl(0);
-      safety.recordRealizedPnl(10);
+      await safety.updateUnrealizedPnl(0);
+      await safety.recordRealizedPnl(10);
 
-      const finalStatus = safety.getDrawdownStatus();
+      const finalStatus = await safety.getDrawdownStatus();
       expect(finalStatus.realized_pnl).toBe(40);
       expect(finalStatus.trades_count).toBe(3);
       expect(finalStatus.wins).toBe(2);
@@ -384,7 +384,7 @@ describe('Safety Module', () => {
       expect(finalStatus.max_drawdown_pct).toBeCloseTo(0.02);
     });
 
-    it('should calculate drawdown example from Dev Notes', () => {
+    it('should calculate drawdown example from Dev Notes', async () => {
       // Example from story:
       // Starting balance: $1000
       // Realized P&L: -$20 (lost on closed trades)
@@ -394,10 +394,10 @@ describe('Safety Module', () => {
       // Realized drawdown: (1000 - 980) / 1000 = 2%
       // Total drawdown: (1000 - 950) / 1000 = 5%
 
-      safety.recordRealizedPnl(-20);
-      safety.updateUnrealizedPnl(-30);
+      await safety.recordRealizedPnl(-20);
+      await safety.updateUnrealizedPnl(-30);
 
-      const status = safety.getDrawdownStatus();
+      const status = await safety.getDrawdownStatus();
       expect(status.current_balance).toBe(980);
       expect(status.effective_balance).toBe(950);
       expect(status.drawdown_pct).toBeCloseTo(0.02);       // 2% realized

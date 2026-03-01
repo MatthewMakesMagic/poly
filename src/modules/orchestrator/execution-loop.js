@@ -386,7 +386,7 @@ export class ExecutionLoop {
         }
       }
       if (this.modules.safety && typeof this.modules.safety.checkDrawdownLimit === 'function') {
-        drawdownCheck = this.modules.safety.checkDrawdownLimit();
+        drawdownCheck = await this.modules.safety.checkDrawdownLimit();
 
         if (drawdownCheck.autoStopped) {
           entriesSkipped = true;

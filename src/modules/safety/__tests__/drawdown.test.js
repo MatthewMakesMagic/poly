@@ -57,11 +57,11 @@ describe('Drawdown Tracking', () => {
   });
 
   describe('getOrCreateTodayRecord()', () => {
-    it('should create new record for new day', () => {
+    it('should create new record for new day', async () => {
       const today = getTodayDate();
-      persistence.get.mockReturnValue(null);
+      persistence.get.mockResolvedValue(null);
 
-      const record = getOrCreateTodayRecord();
+      const record = await getOrCreateTodayRecord();
 
       expect(persistence.run).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO daily_performance'),
@@ -69,7 +69,7 @@ describe('Drawdown Tracking', () => {
       );
     });
 
-    it('should reuse existing record for same day', () => {
+    it('should reuse existing record for same day', async () => {
       const today = getTodayDate();
       const existingRecord = {
         id: 1,
@@ -86,9 +86,9 @@ describe('Drawdown Tracking', () => {
         updated_at: new Date().toISOString(),
       };
 
-      persistence.get.mockReturnValue(existingRecord);
+      persistence.get.mockResolvedValue(existingRecord);
 
-      const record = getOrCreateTodayRecord();
+      const record = await getOrCreateTodayRecord();
 
       // Should not insert new record
       expect(persistence.run).not.toHaveBeenCalled();
@@ -96,7 +96,7 @@ describe('Drawdown Tracking', () => {
       expect(record.realized_pnl).toBe(-20);
     });
 
-    it('should use cached record on second call', () => {
+    it('should use cached record on second call', async () => {
       const today = getTodayDate();
       const dbRecord = {
         id: 1,
@@ -113,19 +113,19 @@ describe('Drawdown Tracking', () => {
         updated_at: new Date().toISOString(),
       };
 
-      persistence.get.mockReturnValue(dbRecord);
+      persistence.get.mockResolvedValue(dbRecord);
 
       // First call - loads from DB
-      const record1 = getOrCreateTodayRecord();
+      const record1 = await getOrCreateTodayRecord();
       expect(persistence.get).toHaveBeenCalledTimes(1);
 
       // Second call - uses cache
-      const record2 = getOrCreateTodayRecord();
+      const record2 = await getOrCreateTodayRecord();
       expect(persistence.get).toHaveBeenCalledTimes(1); // Not called again
       expect(record2.id).toBe(record1.id);
     });
 
-    it('should use starting capital from config', () => {
+    it('should use starting capital from config', async () => {
       setConfig({
         safety: {
           startingCapital: 5000,
@@ -133,8 +133,8 @@ describe('Drawdown Tracking', () => {
       });
 
       persistence.get
-        .mockReturnValueOnce(null)
-        .mockReturnValueOnce({
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
           id: 1,
           date: getTodayDate(),
           starting_balance: 5000,
@@ -149,7 +149,7 @@ describe('Drawdown Tracking', () => {
           updated_at: new Date().toISOString(),
         });
 
-      getOrCreateTodayRecord();
+      await getOrCreateTodayRecord();
 
       expect(persistence.run).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO daily_performance'),
@@ -180,10 +180,10 @@ describe('Drawdown Tracking', () => {
       return baseRecord;
     };
 
-    it('should update realized P&L correctly for loss', () => {
+    it('should update realized P&L correctly for loss', async () => {
       setupCachedRecord();
 
-      const result = recordRealizedPnl(-50);
+      const result = await recordRealizedPnl(-50);
 
       expect(result.realized_pnl).toBe(-50);
       expect(result.current_balance).toBe(950);
@@ -193,10 +193,10 @@ describe('Drawdown Tracking', () => {
       expect(result.wins).toBe(0);
     });
 
-    it('should update realized P&L correctly for profit', () => {
+    it('should update realized P&L correctly for profit', async () => {
       setupCachedRecord();
 
-      const result = recordRealizedPnl(100);
+      const result = await recordRealizedPnl(100);
 
       expect(result.realized_pnl).toBe(100);
       expect(result.current_balance).toBe(1100);
@@ -206,12 +206,12 @@ describe('Drawdown Tracking', () => {
       expect(result.losses).toBe(0);
     });
 
-    it('should accumulate P&L across multiple trades', () => {
+    it('should accumulate P&L across multiple trades', async () => {
       setupCachedRecord();
 
-      recordRealizedPnl(-20); // First trade: loss
-      recordRealizedPnl(50);  // Second trade: profit
-      const result = recordRealizedPnl(-10); // Third trade: loss
+      await recordRealizedPnl(-20); // First trade: loss
+      await recordRealizedPnl(50);  // Second trade: profit
+      const result = await recordRealizedPnl(-10); // Third trade: loss
 
       expect(result.realized_pnl).toBe(20); // -20 + 50 - 10 = 20
       expect(result.current_balance).toBe(1020);
@@ -220,28 +220,28 @@ describe('Drawdown Tracking', () => {
       expect(result.losses).toBe(2);
     });
 
-    it('should track max drawdown correctly', () => {
+    it('should track max drawdown correctly', async () => {
       setupCachedRecord();
 
       // First trade: 5% loss
-      recordRealizedPnl(-50);
+      await recordRealizedPnl(-50);
       expect(getCachedRecord().max_drawdown_pct).toBeCloseTo(0.05);
 
       // Second trade: recover some, but max stays at 5%
-      recordRealizedPnl(30);
+      await recordRealizedPnl(30);
       expect(getCachedRecord().drawdown_pct).toBeCloseTo(0.02);
       expect(getCachedRecord().max_drawdown_pct).toBeCloseTo(0.05);
 
       // Third trade: new max drawdown of 7%
-      recordRealizedPnl(-50);
+      await recordRealizedPnl(-50);
       expect(getCachedRecord().drawdown_pct).toBeCloseTo(0.07);
       expect(getCachedRecord().max_drawdown_pct).toBeCloseTo(0.07);
     });
 
-    it('should persist to database', () => {
+    it('should persist to database', async () => {
       setupCachedRecord();
 
-      recordRealizedPnl(-25);
+      await recordRealizedPnl(-25);
 
       expect(persistence.run).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE daily_performance'),
@@ -249,18 +249,18 @@ describe('Drawdown Tracking', () => {
       );
     });
 
-    it('should throw for invalid P&L amount', () => {
+    it('should throw for invalid P&L amount', async () => {
       setupCachedRecord();
 
-      expect(() => recordRealizedPnl('invalid')).toThrow('Invalid P&L amount');
-      expect(() => recordRealizedPnl(NaN)).toThrow('Invalid P&L amount');
-      expect(() => recordRealizedPnl(Infinity)).toThrow('Invalid P&L amount');
+      await expect(recordRealizedPnl('invalid')).rejects.toThrow('Invalid P&L amount');
+      await expect(recordRealizedPnl(NaN)).rejects.toThrow('Invalid P&L amount');
+      await expect(recordRealizedPnl(Infinity)).rejects.toThrow('Invalid P&L amount');
     });
 
-    it('should count zero P&L trades as neither win nor loss', () => {
+    it('should count zero P&L trades as neither win nor loss', async () => {
       setupCachedRecord();
 
-      const result = recordRealizedPnl(0);
+      const result = await recordRealizedPnl(0);
 
       expect(result.trades_count).toBe(1);
       expect(result.wins).toBe(0);
@@ -269,7 +269,7 @@ describe('Drawdown Tracking', () => {
   });
 
   describe('updateUnrealizedPnl()', () => {
-    it('should update unrealized P&L', () => {
+    it('should update unrealized P&L', async () => {
       const today = getTodayDate();
       setCachedRecord({
         id: 1,
@@ -286,7 +286,7 @@ describe('Drawdown Tracking', () => {
         updated_at: new Date().toISOString(),
       }, today);
 
-      const result = updateUnrealizedPnl(-30);
+      const result = await updateUnrealizedPnl(-30);
 
       expect(result.unrealized_pnl).toBe(-30);
       expect(persistence.run).toHaveBeenCalledWith(
@@ -295,7 +295,7 @@ describe('Drawdown Tracking', () => {
       );
     });
 
-    it('should throw for invalid amount', () => {
+    it('should throw for invalid amount', async () => {
       const today = getTodayDate();
       setCachedRecord({
         id: 1,
@@ -312,7 +312,7 @@ describe('Drawdown Tracking', () => {
         updated_at: new Date().toISOString(),
       }, today);
 
-      expect(() => updateUnrealizedPnl('invalid')).toThrow('Invalid unrealized P&L amount');
+      await expect(updateUnrealizedPnl('invalid')).rejects.toThrow('Invalid unrealized P&L amount');
     });
   });
 

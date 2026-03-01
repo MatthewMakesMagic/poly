@@ -625,11 +625,12 @@ export async function handleDashboardRequest(req, res) {
           strategy_id,
           mode,
           COUNT(*) as total_trades,
+          COUNT(*) FILTER (WHERE status = 'closed') as closed_trades,
           COUNT(*) FILTER (WHERE pnl > 0) as wins,
           COUNT(*) FILTER (WHERE pnl < 0) as losses,
-          COUNT(*) FILTER (WHERE pnl = 0 OR pnl IS NULL) as flat,
+          COUNT(*) FILTER (WHERE pnl = 0 AND status = 'closed') as flat,
           COALESCE(SUM(pnl), 0) as total_pnl,
-          COALESCE(AVG(pnl), 0) as avg_pnl,
+          COALESCE(AVG(pnl) FILTER (WHERE status = 'closed'), 0) as avg_pnl,
           COALESCE(MAX(pnl), 0) as best_trade,
           COALESCE(MIN(pnl), 0) as worst_trade,
           MIN(opened_at) as first_trade,
@@ -645,13 +646,15 @@ export async function handleDashboardRequest(req, res) {
         const key = row.strategy_id || 'unknown';
         if (!strategies[key]) strategies[key] = { strategy_id: key, modes: {} };
         const total = parseInt(row.total_trades) || 0;
+        const closed = parseInt(row.closed_trades) || 0;
         const wins = parseInt(row.wins) || 0;
         strategies[key].modes[row.mode || 'PAPER'] = {
           total_trades: total,
+          closed_trades: closed,
           wins,
           losses: parseInt(row.losses) || 0,
           flat: parseInt(row.flat) || 0,
-          win_rate: total > 0 ? (wins / total * 100).toFixed(1) + '%' : 'N/A',
+          win_rate: closed > 0 ? (wins / closed * 100).toFixed(1) + '%' : 'N/A',
           total_pnl: parseFloat(row.total_pnl) || 0,
           avg_pnl: parseFloat(row.avg_pnl) || 0,
           best_trade: parseFloat(row.best_trade) || 0,
