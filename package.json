@@ -22,7 +22,7 @@
     "db:manage-partitions": "node scripts/manage-partitions.mjs",
     "data:replay-batches": "node scripts/replay-failed-batches.mjs",
     "dashboard:dev": "cd dashboard && npx vite",
-    "dashboard:build": "cd dashboard && npx vite build",
+    "dashboard:build": "cd dashboard && npm install && npx vite build",
     "build": "npm run dashboard:build",
     "start": "npm run dashboard:build && node scripts/run_live_trading.mjs"
   },
