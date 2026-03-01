@@ -13,6 +13,11 @@
 import { LoopState } from './types.js';
 import * as vwapContrarian from '../paper-trader/vwap-contrarian-strategy.js';
 import { LifecycleState, isLocked, isMonitoring } from '../position-manager/lifecycle.js';
+import {
+  getLoadedStrategy,
+  setActiveStrategy as setActiveStrategyLoader,
+  getActiveStrategyName,
+} from '../strategy/loader.js';
 
 /**
  * ExecutionLoop class - manages the main trading loop
@@ -27,7 +32,7 @@ export class ExecutionLoop {
    * @param {Function} [params.composedStrategy] - Active composed strategy function (Story 7-12)
    * @param {string} [params.composedStrategyName] - Active composed strategy name
    */
-  constructor({ config, modules, log, onError, composedStrategy, composedStrategyName }) {
+  constructor({ config, modules, log, onError, composedStrategy, composedStrategyName, onStrategySwitch }) {
     this.config = config;
     this.modules = modules;
     this.log = log;
@@ -35,6 +40,8 @@ export class ExecutionLoop {
     // Story 7-12: Composed strategy support
     this.composedStrategy = composedStrategy || null;
     this.composedStrategyName = composedStrategyName || null;
+    // Callback to switch active strategy at runtime (returns new composed executor)
+    this.onStrategySwitch = onStrategySwitch || null;
 
     // State
     this.state = LoopState.STOPPED;
@@ -206,6 +213,34 @@ export class ExecutionLoop {
             }
             // 'pause': skip new entries but still run exits and monitoring
             entriesSkipped = true;
+          }
+
+          // 0c. Check active_strategy from runtime_controls (every tick, 1s cache)
+          const dbStrategy = await this.modules['runtime-controls'].getControl('active_strategy');
+          if (dbStrategy && dbStrategy !== 'none' && dbStrategy !== this.composedStrategyName) {
+            this.log.info('runtime_strategy_switch_detected', {
+              from: this.composedStrategyName,
+              to: dbStrategy,
+            });
+            if (this.onStrategySwitch) {
+              try {
+                const newExecutor = this.onStrategySwitch(dbStrategy);
+                if (newExecutor) {
+                  this.composedStrategy = newExecutor;
+                  this.composedStrategyName = dbStrategy;
+                  this.log.info('runtime_strategy_switched', { strategy: dbStrategy });
+                }
+              } catch (switchErr) {
+                this.log.warn('runtime_strategy_switch_failed', {
+                  strategy: dbStrategy,
+                  error: switchErr.message,
+                });
+              }
+            }
+          } else if (dbStrategy === 'none' && this.composedStrategy) {
+            this.log.info('runtime_strategy_cleared');
+            this.composedStrategy = null;
+            this.composedStrategyName = null;
           }
         } catch (rcErr) {
           this.log.warn('runtime_controls_check_failed', {

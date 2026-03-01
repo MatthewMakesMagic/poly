@@ -269,6 +269,10 @@ export async function handleDashboardRequest(req, res) {
         conditions.push(`status = $${paramIdx++}`);
         values.push(params.status);
       }
+      if (params.mode) {
+        conditions.push(`mode = $${paramIdx++}`);
+        values.push(params.mode);
+      }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const limit = Math.min(parseInt(params.limit) || 50, 500);
@@ -284,7 +288,7 @@ export async function handleDashboardRequest(req, res) {
         `SELECT id, window_id, market_id, token_id, side, size,
                 entry_price, current_price, close_price, status,
                 strategy_id, opened_at, closed_at, pnl, order_id,
-                exchange_verified_at
+                exchange_verified_at, mode
          FROM positions
          ${where}
          ORDER BY COALESCE(closed_at, opened_at) DESC
@@ -435,7 +439,7 @@ export async function handleDashboardRequest(req, res) {
       const rows = await persistence.all(`
         SELECT id, window_id, market_id, token_id, side, size,
                entry_price, current_price, close_price, status,
-               strategy_id, opened_at, closed_at, pnl, order_id
+               strategy_id, opened_at, closed_at, pnl, order_id, mode
         FROM positions
         ORDER BY COALESCE(closed_at, opened_at) DESC
         LIMIT 10000
@@ -444,7 +448,7 @@ export async function handleDashboardRequest(req, res) {
       const headers = [
         'id', 'window_id', 'market_id', 'token_id', 'side', 'size',
         'entry_price', 'close_price', 'status', 'strategy_id',
-        'opened_at', 'closed_at', 'pnl', 'order_id',
+        'opened_at', 'closed_at', 'pnl', 'order_id', 'mode',
       ];
       const csvLines = [headers.join(',')];
       for (const row of rows) {

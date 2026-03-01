@@ -25,6 +25,7 @@ export default function TradeHistory() {
   const [strategy, setStrategy] = useState('');
   const [instrument, setInstrument] = useState('');
   const [outcome, setOutcome] = useState('');
+  const [mode, setMode] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
@@ -37,6 +38,7 @@ export default function TradeHistory() {
       if (strategy) params.set('strategy', strategy);
       if (instrument) params.set('instrument', instrument);
       if (outcome) params.set('outcome', outcome);
+      if (mode) params.set('mode', mode);
       if (dateFrom) params.set('from', dateFrom);
       if (dateTo) params.set('to', dateTo);
 
@@ -50,7 +52,7 @@ export default function TradeHistory() {
     } finally {
       setLoading(false);
     }
-  }, [page, strategy, instrument, outcome, dateFrom, dateTo]);
+  }, [page, strategy, instrument, outcome, mode, dateFrom, dateTo]);
 
   useEffect(() => {
     fetchTrades();
@@ -59,7 +61,7 @@ export default function TradeHistory() {
   // Reset page when filters change
   useEffect(() => {
     setPage(0);
-  }, [strategy, instrument, outcome, dateFrom, dateTo]);
+  }, [strategy, instrument, outcome, mode, dateFrom, dateTo]);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
@@ -109,6 +111,19 @@ export default function TradeHistory() {
             </select>
           </div>
           <div>
+            <label className="block text-xs text-gray-500 mb-1">Mode</label>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+              className="bg-bg-tertiary text-gray-200 text-sm px-2 py-1.5 rounded border border-gray-600 w-28 focus:outline-none focus:border-accent-blue"
+            >
+              <option value="">All</option>
+              <option value="LIVE">LIVE</option>
+              <option value="PAPER">PAPER</option>
+              <option value="DRY_RUN">DRY_RUN</option>
+            </select>
+          </div>
+          <div>
             <label className="block text-xs text-gray-500 mb-1">From</label>
             <input
               type="date"
@@ -153,6 +168,7 @@ export default function TradeHistory() {
                 <th className="pb-2 px-2">ID</th>
                 <th className="pb-2 px-2">Time</th>
                 <th className="pb-2 px-2">Window</th>
+                <th className="pb-2 px-2">Mode</th>
                 <th className="pb-2 px-2">Side</th>
                 <th className="pb-2 px-2">Entry</th>
                 <th className="pb-2 px-2">Exit</th>
@@ -166,7 +182,7 @@ export default function TradeHistory() {
             <tbody>
               {trades.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-8 text-center text-sm text-gray-500">
+                  <td colSpan={12} className="py-8 text-center text-sm text-gray-500">
                     {loading ? 'Loading...' : 'No trades found'}
                   </td>
                 </tr>
@@ -187,6 +203,11 @@ export default function TradeHistory() {
                       <td className="py-2 px-2 text-xs text-gray-500">{t.id}</td>
                       <td className="py-2 px-2 text-xs text-gray-400">{formatDate(t.closed_at || t.opened_at)}</td>
                       <td className="py-2 px-2 text-xs text-gray-300">{t.window_id || '--'}</td>
+                      <td className={`py-2 px-2 text-xs font-semibold ${
+                        t.mode === 'LIVE' ? 'text-accent-red' :
+                        t.mode === 'PAPER' ? 'text-accent-blue' :
+                        t.mode === 'DRY_RUN' ? 'text-accent-yellow' : 'text-gray-500'
+                      }`}>{t.mode || '--'}</td>
                       <td className="py-2 px-2 text-xs text-gray-300">{(t.side || '').toUpperCase()}</td>
                       <td className="py-2 px-2 text-xs text-gray-400">${entryPrice.toFixed(4)}</td>
                       <td className="py-2 px-2 text-xs text-gray-300">

@@ -857,6 +857,20 @@ export function start() {
       // Story 7-12: Pass active composed strategy for multi-strategy support
       composedStrategy: activeComposedStrategy,
       composedStrategyName: getActiveStrategyName(),
+      // Runtime strategy switching via dashboard controls
+      onStrategySwitch: (strategyName) => {
+        const strategyDef = getLoadedStrategy(strategyName);
+        if (!strategyDef) {
+          log.warn('runtime_strategy_not_found', { strategy: strategyName, available: listLoadedStrategies().map(s => s.name) });
+          return null;
+        }
+        const catalog = getCatalog();
+        setActiveStrategyLoader(strategyName);
+        const executor = createComposedStrategyExecutor(strategyDef, catalog);
+        activeComposedStrategy = executor;
+        log.info('runtime_strategy_activated', { strategy: strategyName });
+        return executor;
+      },
     });
   }
 
