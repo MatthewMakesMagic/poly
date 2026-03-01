@@ -9,7 +9,12 @@
     "minTimeRemainingMs": 30000,
     "minPositionSize": 2,
     "maxPositionSize": 2,
-    "stopLoss": null,
+    "stopLoss": {
+      "enabled": true,
+      "absoluteFloor": 0.10,
+      "absoluteCeiling": 0.90,
+      "defaultStopLossPct": 0.50
+    },
     "takeProfit": null,
     "instruments": "all",
     "window_timing": {

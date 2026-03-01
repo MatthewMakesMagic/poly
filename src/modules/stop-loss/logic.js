@@ -2,6 +2,14 @@
  * Stop-Loss Logic
  *
  * Core stop-loss evaluation functions.
+ *
+ * Supports two modes for binary markets:
+ * 1. Entry-relative percentage: exit if price drops X% from entry (original mode)
+ * 2. Absolute price floor: exit if CLOB probability drops below a fixed level
+ *    (e.g., $0.15 = market thinks <15% chance of winning)
+ *
+ * Both can be active simultaneously — whichever produces the tighter
+ * (more protective) threshold wins.
  */
 
 import { TriggerReason, createStopLossResult, StopLossError, StopLossErrorCodes } from './types.js';
@@ -68,22 +76,33 @@ export function calculateStopLossThreshold(position, stopLossPct) {
 /**
  * Evaluate stop-loss condition for a single position
  *
+ * Checks two conditions (both optional, configured via options):
+ * 1. Entry-relative: price moved X% against the position
+ * 2. Absolute floor/ceiling: CLOB probability crossed a fixed level
+ *
+ * For binary markets, the absolute floor is the primary mechanism:
+ * if the market thinks <15% chance of winning, holding is -EV regardless
+ * of entry price.
+ *
  * @param {Object} position - Position to evaluate
  * @param {number} position.id - Position ID
  * @param {string} position.window_id - Window identifier
  * @param {string} position.side - 'long' or 'short'
  * @param {number} position.size - Position size
  * @param {number} position.entry_price - Entry price
- * @param {number} [position.stop_loss_pct] - Per-position stop-loss override
- * @param {number} currentPrice - Current market price
+ * @param {number} [position.stop_loss_pct] - Per-position stop-loss pct override
+ * @param {number} [position.absolute_floor] - Per-position absolute floor override
+ * @param {number} currentPrice - Current market price (CLOB probability, 0-1)
  * @param {Object} options - Evaluation options
  * @param {number} [options.stopLossPct=0.05] - Default stop-loss percentage
+ * @param {number} [options.absoluteFloor] - Absolute price floor for long positions (e.g., 0.15)
+ * @param {number} [options.absoluteCeiling] - Absolute price ceiling for short positions (e.g., 0.85)
  * @param {Object} [options.log] - Logger instance
  * @returns {Object} StopLossResult
  * @throws {StopLossError} If price is invalid
  */
 export function evaluate(position, currentPrice, options = {}) {
-  const { stopLossPct = 0.05, log } = options;
+  const { stopLossPct = 0.05, absoluteFloor, absoluteCeiling, log } = options;
 
   // Validate current price
   if (typeof currentPrice !== 'number' || currentPrice <= 0) {
@@ -94,25 +113,44 @@ export function evaluate(position, currentPrice, options = {}) {
     );
   }
 
-  // Use per-position override if available
+  // Use per-position overrides if available
   const effectiveStopLossPct = position.stop_loss_pct ?? stopLossPct;
+  const effectiveFloor = position.absolute_floor ?? absoluteFloor;
+  const effectiveCeiling = position.absolute_ceiling ?? absoluteCeiling;
 
-  // Calculate threshold
-  const { threshold, entry_price, side } = calculateStopLossThreshold(position, effectiveStopLossPct);
+  // Calculate entry-relative threshold
+  const { threshold: pctThreshold, entry_price, side } = calculateStopLossThreshold(position, effectiveStopLossPct);
 
   // Track evaluation count
   incrementEvaluations();
 
-  // Check if triggered
+  // Check if triggered — evaluate both modes, use whichever fires
   let triggered = false;
   let reason = TriggerReason.NOT_TRIGGERED;
+  let effectiveThreshold = pctThreshold;
 
-  if (side === 'long' && currentPrice <= threshold) {
-    triggered = true;
-    reason = TriggerReason.PRICE_BELOW_THRESHOLD;
-  } else if (side === 'short' && currentPrice >= threshold) {
-    triggered = true;
-    reason = TriggerReason.PRICE_ABOVE_THRESHOLD;
+  if (side === 'long') {
+    // Check absolute floor first (binary market primary check)
+    if (effectiveFloor != null && currentPrice <= effectiveFloor) {
+      triggered = true;
+      reason = TriggerReason.PRICE_BELOW_FLOOR;
+      effectiveThreshold = effectiveFloor;
+    } else if (currentPrice <= pctThreshold) {
+      triggered = true;
+      reason = TriggerReason.PRICE_BELOW_THRESHOLD;
+      effectiveThreshold = pctThreshold;
+    }
+  } else if (side === 'short') {
+    // Check absolute ceiling first (binary market primary check)
+    if (effectiveCeiling != null && currentPrice >= effectiveCeiling) {
+      triggered = true;
+      reason = TriggerReason.PRICE_ABOVE_CEILING;
+      effectiveThreshold = effectiveCeiling;
+    } else if (currentPrice >= pctThreshold) {
+      triggered = true;
+      reason = TriggerReason.PRICE_ABOVE_THRESHOLD;
+      effectiveThreshold = pctThreshold;
+    }
   }
 
   // Calculate loss amount
@@ -131,7 +169,7 @@ export function evaluate(position, currentPrice, options = {}) {
     side,
     entry_price,
     current_price: currentPrice,
-    stop_loss_threshold: threshold,
+    stop_loss_threshold: effectiveThreshold,
     stop_loss_pct: effectiveStopLossPct,
     reason,
     action: triggered ? 'close' : null,
@@ -150,15 +188,27 @@ export function evaluate(position, currentPrice, options = {}) {
         side,
         entry_price,
         current_price: currentPrice,
-        stop_loss_threshold: threshold,
+        stop_loss_threshold: effectiveThreshold,
         loss_amount,
         loss_pct,
-        expected: { stop_loss_pct: effectiveStopLossPct },
+        reason,
+        expected: { stop_loss_pct: effectiveStopLossPct, absolute_floor: effectiveFloor, absolute_ceiling: effectiveCeiling },
         actual: { current_price: currentPrice, threshold_breached: true },
       });
     }
   } else {
     incrementSafe();
+    if (log) {
+      log.debug('stop_loss_evaluated', {
+        position_id: position.id,
+        current_price: currentPrice,
+        stop_loss_threshold: effectiveThreshold,
+        stop_loss_pct: effectiveStopLossPct,
+        headroom: side === 'long'
+          ? currentPrice - effectiveThreshold
+          : effectiveThreshold - currentPrice,
+      });
+    }
   }
 
   return result;
@@ -175,7 +225,7 @@ export function evaluate(position, currentPrice, options = {}) {
  * @returns {Object} { triggered: StopLossResult[], summary: { evaluated, triggered, safe } }
  */
 export function evaluateAll(positions, getCurrentPrice, options = {}) {
-  const { stopLossPct = 0.05, log } = options;
+  const { stopLossPct = 0.05, absoluteFloor, absoluteCeiling, log } = options;
   const triggered = [];
   let evaluatedCount = 0;
   let safeCount = 0;
@@ -193,6 +243,8 @@ export function evaluateAll(positions, getCurrentPrice, options = {}) {
 
       const result = evaluate(position, currentPrice, {
         stopLossPct,
+        absoluteFloor,
+        absoluteCeiling,
         log,
       });
 

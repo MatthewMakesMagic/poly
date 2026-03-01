@@ -18,6 +18,9 @@
     "window_timing": {
       "min_time_remaining_ms": 5000,
       "max_time_remaining_ms": 90000
+    },
+    "stopLoss": {
+      "enabled": false
     }
   },
   "pipeline": {

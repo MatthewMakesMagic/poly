@@ -15,7 +15,13 @@
       "lagSignal": 0.3
     },
     "aggregation": "weighted_average",
-    "minCombinedScore": 0.6
+    "minCombinedScore": 0.6,
+    "stopLoss": {
+      "enabled": true,
+      "absoluteFloor": 0.15,
+      "absoluteCeiling": 0.85,
+      "defaultStopLossPct": 0.30
+    }
   },
   "pipeline": {
     "order": ["priceSource", "probability", "analysis", "signalGenerator"],

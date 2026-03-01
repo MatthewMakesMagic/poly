@@ -416,7 +416,15 @@ const config = {
     },
     stopLoss: {
       enabled: true,
-      defaultStopLossPct: 0.50,
+      // Binary market stop-loss: two complementary mechanisms
+      // 1. Absolute floor: exit when CLOB probability drops below this level.
+      //    At $0.15 the market thinks <15% chance of winning — holding is -EV.
+      absoluteFloor: 0.15,
+      // Mirror for short positions: exit when CLOB > 85% (opponent winning)
+      absoluteCeiling: 0.85,
+      // 2. Entry-relative: exit if price drops 30% from entry (secondary guard).
+      //    Example: enter at $0.65, stop at $0.455.
+      defaultStopLossPct: 0.30,
     },
     takeProfit: {
       enabled: true,

@@ -11,7 +11,13 @@
     "stalenessThresholdMs": 15000,
     "minDivergencePct": 0.1,
     "maxTimeToExpiryMs": 30000,
-    "confidenceThreshold": 0.65
+    "confidenceThreshold": 0.65,
+    "stopLoss": {
+      "enabled": true,
+      "absoluteFloor": 0.15,
+      "absoluteCeiling": 0.85,
+      "defaultStopLossPct": 0.30
+    }
   },
   "pipeline": {
     "order": ["priceSource", "analysis", "signalGenerator"],

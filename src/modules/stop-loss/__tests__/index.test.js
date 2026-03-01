@@ -63,7 +63,9 @@ describe('StopLoss Module', () => {
       const state = stopLoss.getState();
       expect(state.initialized).toBe(true);
       expect(state.config.enabled).toBe(true);
-      expect(state.config.default_stop_loss_pct).toBe(0.05);
+      expect(state.config.default_stop_loss_pct).toBe(0.30);
+      expect(state.config.absolute_floor).toBe(0.15);
+      expect(state.config.absolute_ceiling).toBe(0.85);
     });
 
     it('is idempotent - multiple calls do not error', async () => {

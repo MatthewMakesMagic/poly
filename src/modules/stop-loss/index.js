@@ -24,9 +24,13 @@ let stopLossConfig = null;
 let initialized = false;
 
 // Default stop-loss config if not specified
+// Binary market defaults: absolute floor is the primary mechanism
+// CLOB price = implied probability; below $0.15 means <15% chance of winning
 const DEFAULT_STOP_LOSS_CONFIG = {
   enabled: true,
-  defaultStopLossPct: 0.05,  // 5% default stop-loss
+  defaultStopLossPct: 0.30,    // 30% entry-relative (secondary guard)
+  absoluteFloor: 0.15,         // Exit long if CLOB < $0.15 (market says <15% win probability)
+  absoluteCeiling: 0.85,       // Exit short if CLOB > $0.85 (market says >85% opponent wins)
 };
 
 /**
@@ -36,7 +40,9 @@ const DEFAULT_STOP_LOSS_CONFIG = {
  * @param {Object} [cfg.strategy] - Strategy configuration
  * @param {Object} [cfg.strategy.stopLoss] - Stop-loss configuration
  * @param {boolean} [cfg.strategy.stopLoss.enabled=true] - Enable/disable stop-loss evaluation
- * @param {number} [cfg.strategy.stopLoss.defaultStopLossPct=0.05] - Default stop-loss percentage (0-1)
+ * @param {number} [cfg.strategy.stopLoss.defaultStopLossPct=0.30] - Default stop-loss percentage (0-1)
+ * @param {number} [cfg.strategy.stopLoss.absoluteFloor] - Absolute CLOB price floor for longs (e.g., 0.15)
+ * @param {number} [cfg.strategy.stopLoss.absoluteCeiling] - Absolute CLOB price ceiling for shorts (e.g., 0.85)
  * @returns {Promise<void>}
  * @throws {StopLossError} If configuration is invalid
  */
@@ -56,6 +62,8 @@ export async function init(cfg) {
   stopLossConfig = {
     enabled: strategyStopLossConfig.enabled ?? DEFAULT_STOP_LOSS_CONFIG.enabled,
     defaultStopLossPct: strategyStopLossConfig.defaultStopLossPct ?? DEFAULT_STOP_LOSS_CONFIG.defaultStopLossPct,
+    absoluteFloor: strategyStopLossConfig.absoluteFloor ?? DEFAULT_STOP_LOSS_CONFIG.absoluteFloor,
+    absoluteCeiling: strategyStopLossConfig.absoluteCeiling ?? DEFAULT_STOP_LOSS_CONFIG.absoluteCeiling,
   };
 
   // Validate config values
@@ -66,6 +74,8 @@ export async function init(cfg) {
     stop_loss: {
       enabled: stopLossConfig.enabled,
       default_stop_loss_pct: stopLossConfig.defaultStopLossPct,
+      absolute_floor: stopLossConfig.absoluteFloor,
+      absolute_ceiling: stopLossConfig.absoluteCeiling,
     },
   });
 }
@@ -92,6 +102,28 @@ function validateConfig(cfg) {
       'defaultStopLossPct must be a number between 0 and 1',
       { defaultStopLossPct: cfg.defaultStopLossPct }
     );
+  }
+
+  // Validate absolute floor (optional, must be 0-1 if set)
+  if (cfg.absoluteFloor != null) {
+    if (typeof cfg.absoluteFloor !== 'number' || cfg.absoluteFloor < 0 || cfg.absoluteFloor > 1) {
+      throw new StopLossError(
+        StopLossErrorCodes.CONFIG_INVALID,
+        'absoluteFloor must be a number between 0 and 1',
+        { absoluteFloor: cfg.absoluteFloor }
+      );
+    }
+  }
+
+  // Validate absolute ceiling (optional, must be 0-1 if set)
+  if (cfg.absoluteCeiling != null) {
+    if (typeof cfg.absoluteCeiling !== 'number' || cfg.absoluteCeiling < 0 || cfg.absoluteCeiling > 1) {
+      throw new StopLossError(
+        StopLossErrorCodes.CONFIG_INVALID,
+        'absoluteCeiling must be a number between 0 and 1',
+        { absoluteCeiling: cfg.absoluteCeiling }
+      );
+    }
   }
 }
 
@@ -125,6 +157,8 @@ export function evaluate(position, currentPrice, options = {}) {
 
   return evaluateLogic(position, currentPrice, {
     stopLossPct: stopLossConfig.defaultStopLossPct,
+    absoluteFloor: stopLossConfig.absoluteFloor,
+    absoluteCeiling: stopLossConfig.absoluteCeiling,
     log,
     ...options,
   });
@@ -157,6 +191,8 @@ export function evaluateAll(positions, getCurrentPrice, options = {}) {
 
   return evaluateAllLogic(positions, getCurrentPrice, {
     stopLossPct: stopLossConfig.defaultStopLossPct,
+    absoluteFloor: stopLossConfig.absoluteFloor,
+    absoluteCeiling: stopLossConfig.absoluteCeiling,
     log,
     ...options,
   });
@@ -173,6 +209,8 @@ export function getState() {
     config: stopLossConfig ? {
       enabled: stopLossConfig.enabled,
       default_stop_loss_pct: stopLossConfig.defaultStopLossPct,
+      absolute_floor: stopLossConfig.absoluteFloor,
+      absolute_ceiling: stopLossConfig.absoluteCeiling,
     } : null,
     ...getStats(),
   };

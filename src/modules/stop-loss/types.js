@@ -37,8 +37,10 @@ export class StopLossError extends PolyError {
  * Trigger reasons for stop-loss
  */
 export const TriggerReason = {
-  PRICE_BELOW_THRESHOLD: 'price_below_threshold',  // Long position
-  PRICE_ABOVE_THRESHOLD: 'price_above_threshold',  // Short position
+  PRICE_BELOW_THRESHOLD: 'price_below_threshold',  // Long position (entry-relative)
+  PRICE_ABOVE_THRESHOLD: 'price_above_threshold',  // Short position (entry-relative)
+  PRICE_BELOW_FLOOR: 'price_below_floor',           // Long position (absolute floor)
+  PRICE_ABOVE_CEILING: 'price_above_ceiling',       // Short position (absolute ceiling)
   NOT_TRIGGERED: 'not_triggered',
 };
 

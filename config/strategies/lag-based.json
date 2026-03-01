@@ -11,7 +11,13 @@
     "minCorrelation": 0.5,
     "significanceThreshold": 0.05,
     "entryThreshold": 0.70,
-    "exitThreshold": 0.30
+    "exitThreshold": 0.30,
+    "stopLoss": {
+      "enabled": true,
+      "absoluteFloor": 0.15,
+      "absoluteCeiling": 0.85,
+      "defaultStopLossPct": 0.30
+    }
   },
   "pipeline": {
     "order": ["priceSource", "probability", "analysis"],

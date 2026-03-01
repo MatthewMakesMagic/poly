@@ -1178,9 +1178,62 @@ export class ExecutionLoop {
         );
 
         if (monitoringPositions.length > 0) {
+          // Update real position prices from CLOB market data before stop-loss evaluation
+          const activeWindows = windows || [];
+          const windowPriceMap = {};
+          for (const window of activeWindows) {
+            const wid = window.window_id || window.id;
+            if (window.market_price != null) {
+              windowPriceMap[wid] = {
+                up: window.market_price,
+                down: 1 - window.market_price,
+                upTokenId: window.token_id_up,
+                downTokenId: window.token_id_down,
+              };
+            }
+          }
+
+          if (Object.keys(windowPriceMap).length > 0) {
+            let pricesUpdated = 0;
+            for (const pos of monitoringPositions) {
+              const wp = windowPriceMap[pos.window_id];
+              if (!wp) continue;
+
+              // Determine token side from token_id
+              let tokenSide = null;
+              if (pos.token_id && wp.upTokenId && pos.token_id === wp.upTokenId) {
+                tokenSide = 'up';
+              } else if (pos.token_id && wp.downTokenId && pos.token_id === wp.downTokenId) {
+                tokenSide = 'down';
+              }
+
+              if (tokenSide) {
+                const newPrice = tokenSide === 'down' ? wp.down : wp.up;
+                try {
+                  await positionManager.updatePrice(pos.id, newPrice);
+                  pos.current_price = newPrice; // Update in-memory for getCurrentPrice below
+                  pricesUpdated++;
+                } catch (priceErr) {
+                  this.log.warn('position_price_update_failed', {
+                    position_id: pos.id,
+                    window_id: pos.window_id,
+                    error: priceErr.message,
+                  });
+                }
+              }
+            }
+
+            if (pricesUpdated > 0) {
+              this.log.debug('real_position_prices_updated', {
+                updated: pricesUpdated,
+                total: monitoringPositions.length,
+              });
+            }
+          }
+
           // Get current price for each position
           const getCurrentPrice = (position) => {
-            // Use position's current_price if available, otherwise fetch from spot
+            // Use position's current_price (now updated from CLOB), otherwise fetch from spot
             if (position.current_price) {
               return position.current_price;
             }
@@ -1194,6 +1247,9 @@ export class ExecutionLoop {
           stopLossResults = stopLossModule.evaluateAll(monitoringPositions, getCurrentPrice);
 
           // Close any triggered positions with lifecycle transitions
+          const tradingMode = this.config.tradingMode || 'PAPER';
+          const orderManager = this.modules['order-manager'];
+
           for (const result of stopLossResults.triggered) {
             try {
               // Phase 2.1: Lifecycle transitions: MONITORING -> STOP_TRIGGERED -> EXIT_PENDING -> CLOSED
@@ -1208,9 +1264,60 @@ export class ExecutionLoop {
                 });
               }
 
+              // Place sell order on CLOB in LIVE/DRY_RUN mode
+              let actualClosePrice = result.current_price;
+              let exitOrderId = null;
+
+              if (orderManager && (tradingMode === 'LIVE' || tradingMode === 'DRY_RUN')) {
+                // Look up the full position to get token_id, market_id, size
+                const pos = monitoringPositions.find(p => p.id === result.position_id);
+                if (pos && pos.token_id) {
+                  try {
+                    const sellResult = await orderManager.placeOrder({
+                      tokenId: pos.token_id,
+                      side: 'sell',
+                      size: pos.size,
+                      price: result.current_price,
+                      orderType: 'IOC',
+                      windowId: result.window_id,
+                      marketId: pos.market_id,
+                      signalContext: {
+                        exitReason: 'stop_loss',
+                        stopLossThreshold: result.stop_loss_threshold,
+                        triggerReason: result.reason,
+                        strategyId: pos.strategy_id,
+                      },
+                    }, { mode: tradingMode === 'DRY_RUN' ? 'DRY_RUN' : undefined });
+
+                    exitOrderId = sellResult.orderId;
+                    if (sellResult.fillPrice != null) {
+                      actualClosePrice = sellResult.fillPrice;
+                    }
+
+                    this.log.info('stop_loss_sell_order_placed', {
+                      position_id: result.position_id,
+                      order_id: sellResult.orderId,
+                      status: sellResult.status,
+                      fill_price: sellResult.fillPrice,
+                      latency_ms: sellResult.latencyMs,
+                      trading_mode: tradingMode,
+                    });
+                  } catch (sellErr) {
+                    this.log.error('stop_loss_sell_order_failed', {
+                      position_id: result.position_id,
+                      token_id: pos.token_id,
+                      error: sellErr.message,
+                      code: sellErr.code,
+                    });
+                    // Continue with position close even if sell order fails —
+                    // position must be marked closed to prevent re-triggering
+                  }
+                }
+              }
+
               await positionManager.closePosition(result.position_id, {
                 emergency: true,
-                closePrice: result.current_price,
+                closePrice: actualClosePrice,
                 reason: 'stop_loss_triggered',
               });
 
@@ -1218,10 +1325,12 @@ export class ExecutionLoop {
                 position_id: result.position_id,
                 window_id: result.window_id,
                 entry_price: result.entry_price,
-                close_price: result.current_price,
+                close_price: actualClosePrice,
                 stop_loss_threshold: result.stop_loss_threshold,
                 loss_amount: result.loss_amount,
                 loss_pct: result.loss_pct,
+                exit_order_id: exitOrderId,
+                trading_mode: tradingMode,
               });
 
               // Story 8-9: Remove entry from safeguards to allow future re-entry
@@ -1241,7 +1350,7 @@ export class ExecutionLoop {
                   await this.modules['trade-event'].recordExit({
                     windowId: result.window_id,
                     positionId: result.position_id,
-                    orderId: result.order_id,
+                    orderId: exitOrderId || result.order_id,
                     strategyId: result.strategy_id,
                     exitReason: 'stop_loss',
                     timestamps: {
@@ -1250,7 +1359,7 @@ export class ExecutionLoop {
                     },
                     prices: {
                       priceAtSignal: result.entry_price,
-                      priceAtFill: result.current_price,
+                      priceAtFill: actualClosePrice,
                       expectedPrice: result.expected_price || result.entry_price,
                     },
                   });
