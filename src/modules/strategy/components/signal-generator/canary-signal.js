@@ -25,8 +25,8 @@ export const metadata = {
  */
 const DEFAULTS = {
   entryWindowSeconds: 60,
-  minPositionSize: 1,
-  maxPositionSize: 1,
+  minPositionSize: 2,
+  maxPositionSize: 2,
 };
 
 /**
