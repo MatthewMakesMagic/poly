@@ -141,24 +141,48 @@ async function runAllAssertions() {
   passCount += passes.length;
   failureCount += failures.length;
 
-  if (failures.length > 0) {
-    log.error('assertion_failures', {
-      failed: failures.map(f => f.name),
-      messages: failures.map(f => f.message),
-      total_checked: results.length,
-    });
+  // Assertions that are warnings only (don't trip CB) — they have known false positives
+  const WARNING_ONLY_ASSERTIONS = new Set([
+    'signal_order_mapping',  // Signals can be blocked by safeguards without creating orders
+  ]);
 
-    // Trip circuit breaker on first failure
-    if (config.tripOnFailure && circuitBreakerRef) {
-      const failedNames = failures.map(f => f.name).join(', ');
-      try {
-        await circuitBreakerRef.trip('assertion_failure', {
-          failedAssertions: failures.map(f => ({ name: f.name, message: f.message })),
-          summary: `Assertions failed: ${failedNames}`,
-        });
-      } catch (tripErr) {
-        log.error('cb_trip_failed', { error: tripErr.message });
+  if (failures.length > 0) {
+    // Separate critical failures from warnings
+    const criticalFailures = failures.filter(f => !WARNING_ONLY_ASSERTIONS.has(f.name));
+    const warnings = failures.filter(f => WARNING_ONLY_ASSERTIONS.has(f.name));
+
+    if (warnings.length > 0) {
+      log.warn('assertion_warnings', {
+        warned: warnings.map(f => f.name),
+        messages: warnings.map(f => f.message),
+      });
+    }
+
+    if (criticalFailures.length > 0) {
+      log.error('assertion_failures', {
+        failed: criticalFailures.map(f => f.name),
+        messages: criticalFailures.map(f => f.message),
+        total_checked: results.length,
+      });
+
+      // Trip circuit breaker only on critical failures
+      if (config.tripOnFailure && circuitBreakerRef) {
+        const failedNames = criticalFailures.map(f => f.name).join(', ');
+        try {
+          await circuitBreakerRef.trip('assertion_failure', {
+            failedAssertions: criticalFailures.map(f => ({ name: f.name, message: f.message })),
+            summary: `Assertions failed: ${failedNames}`,
+          });
+        } catch (tripErr) {
+          log.error('cb_trip_failed', { error: tripErr.message });
+        }
       }
+    } else {
+      log.debug('all_assertions_passed_with_warnings', {
+        count: results.length,
+        warnings: warnings.length,
+        durationMs: Date.now() - checkStart,
+      });
     }
   } else {
     log.debug('all_assertions_passed', {
