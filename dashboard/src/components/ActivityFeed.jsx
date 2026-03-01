@@ -38,9 +38,11 @@ function formatEventData(event) {
     return `${d.strategy_id || d.strategyId || '?'} -> ${(d.symbol || '').toUpperCase()} ${d.side || d.direction || ''} (edge: ${d.edge != null ? (d.edge * 100).toFixed(1) + '%' : '?'})`;
   }
   if (e === 'order') {
+    if (d.action) return d.action + (d.count != null ? ` (${d.count} open)` : '');
     return `${d.side || ''} $${d.size_dollars || d.sizeDollars || '?'} @ $${d.price || '?'}`;
   }
   if (e === 'fill') {
+    if (d.action) return d.action + (d.strategy_id ? ` [${d.strategy_id}]` : '') + (d.symbol ? ` ${d.symbol}` : '');
     return `${d.shares || '?'} shares @ $${d.fill_price || d.fillPrice || '?'}`;
   }
   if (e === 'assertion') {
@@ -48,7 +50,10 @@ function formatEventData(event) {
     return `${pass ? 'PASS' : 'FAIL'}: ${d.name || d.message || 'check'}`;
   }
   if (e === 'window') {
-    return `Window ${d.window_id || d.windowId || '?'} ${d.action || d.status || ''}`;
+    return `${d.window_id || d.windowId || '?'} ${d.action || d.status || ''}`;
+  }
+  if (e === 'error') {
+    return d.message || d.error || 'Unknown error';
   }
 
   // Fallback: show JSON snippet

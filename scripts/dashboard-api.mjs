@@ -65,7 +65,7 @@ export function attachDashboard(httpServer, logger) {
 async function sendInitialState(ws) {
   try {
     const state = await orchestrator.getState();
-    const payload = buildStatePayload(state);
+    const payload = await buildStatePayload(state);
     if (ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'init', data: payload, ts: Date.now() }));
     }
@@ -80,7 +80,7 @@ async function sendInitialState(ws) {
 async function broadcastState() {
   try {
     const state = await orchestrator.getState();
-    const payload = buildStatePayload(state);
+    const payload = await buildStatePayload(state);
     const msg = JSON.stringify({ type: 'state', data: payload, ts: Date.now() });
 
     for (const client of wss.clients) {
@@ -112,9 +112,35 @@ export function broadcastEvent(eventType, data) {
 }
 
 /**
+ * Query open positions from DB for the state payload.
+ * Cached briefly to avoid hitting DB every 1s broadcast.
+ */
+let _positionsCache = { rows: [], fetchedAt: 0 };
+async function getOpenPositionsSafe() {
+  const now = Date.now();
+  if (now - _positionsCache.fetchedAt < 2000) return _positionsCache.rows;
+  try {
+    const rows = await persistence.all(`
+      SELECT id, window_id, market_id, token_id, direction, side,
+             entry_price, current_price, size_dollars, shares,
+             unrealized_pnl, stop_loss_price, take_profit_price,
+             strategy_id, opened_at, status, lifecycle_state, mode
+      FROM positions
+      WHERE status = 'open'
+      ORDER BY opened_at DESC
+      LIMIT 50
+    `);
+    _positionsCache = { rows, fetchedAt: now };
+    return rows;
+  } catch {
+    return _positionsCache.rows;
+  }
+}
+
+/**
  * Build the state payload from orchestrator state.
  */
-function buildStatePayload(state) {
+async function buildStatePayload(state) {
   const modules = state.modules || {};
 
   // Extract key data points
@@ -140,18 +166,18 @@ function buildStatePayload(state) {
     availableStrategies: state.availableStrategies || [],
     loadedStrategies: state.loadedStrategies || [],
 
-    // Positions
-    openPositions: positionManager.openPositions || [],
-    positionCount: positionManager.positionCount || 0,
+    // Positions (position-manager getState returns { positions: { open, closed }, stats: {...} })
+    openPositions: await getOpenPositionsSafe(),
+    positionCount: positionManager.positions?.open ?? positionManager.positionCount ?? 0,
 
     // Orders
     openOrders: orderManager.openOrders || [],
 
-    // Safety / Risk
-    balance: safety.currentBalance ?? null,
-    sessionPnl: safety.sessionPnl ?? null,
+    // Safety / Risk (values are inside safety.drawdown from getDrawdownStatus())
+    balance: safety.drawdown?.current_balance ?? null,
+    sessionPnl: safety.drawdown?.realized_pnl ?? null,
     drawdown: safety.drawdown ?? null,
-    startingCapital: safety.startingCapital ?? null,
+    startingCapital: safety.drawdown?.starting_balance ?? safety.startingCapital ?? null,
 
     // Circuit breaker
     circuitBreakerState: circuitBreaker.state || 'UNKNOWN',
@@ -163,8 +189,8 @@ function buildStatePayload(state) {
       tickCount: rtds.stats?.ticks_received || 0,
     },
 
-    // Windows
-    activeWindows: windowManager.activeWindows || 0,
+    // Windows (window-manager getState() returns cachedWindowCount, not activeWindows)
+    activeWindows: windowManager.cachedWindowCount ?? windowManager.activeWindows ?? 0,
 
     // Errors
     errorCount: state.errorCount || 0,
@@ -208,7 +234,7 @@ export async function handleDashboardRequest(req, res) {
   if (req.method === 'GET' && url === '/api/state') {
     try {
       const state = await orchestrator.getState();
-      const payload = buildStatePayload(state);
+      const payload = await buildStatePayload(state);
       json(res, 200, payload);
     } catch (err) {
       json(res, 500, { error: err.message });
