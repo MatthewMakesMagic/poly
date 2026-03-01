@@ -14,6 +14,7 @@ import { WebSocketServer } from 'ws';
 import * as orchestrator from '../src/modules/orchestrator/index.js';
 import persistence from '../src/persistence/index.js';
 import * as runtimeControls from '../src/modules/runtime-controls/index.js';
+import * as circuitBreaker from '../src/modules/circuit-breaker/index.js';
 
 let wss = null;
 let log = null;
@@ -121,7 +122,7 @@ async function getOpenPositionsSafe() {
   if (now - _positionsCache.fetchedAt < 2000) return _positionsCache.rows;
   try {
     const rows = await persistence.all(`
-      SELECT id, window_id, market_id, token_id, direction, side,
+      SELECT id, window_id, market_id, token_id, side,
              entry_price, current_price, size_dollars, shares,
              unrealized_pnl, stop_loss_price, take_profit_price,
              strategy_id, opened_at, status, lifecycle_state, mode
@@ -246,7 +247,7 @@ export async function handleDashboardRequest(req, res) {
   if (req.method === 'GET' && url === '/api/positions') {
     try {
       const rows = await persistence.all(`
-        SELECT id, window_id, market_id, token_id, direction, side,
+        SELECT id, window_id, market_id, token_id, side,
                entry_price, current_price, size_dollars, shares,
                unrealized_pnl, stop_loss_price, take_profit_price,
                strategy_id, opened_at, status
@@ -580,6 +581,17 @@ export async function handleDashboardRequest(req, res) {
       json(res, 200, { success: true, control: result });
     } catch (err) {
       json(res, 400, { success: false, error: err.message });
+    }
+    return true;
+  }
+
+  // POST /api/controls/reset-cb - Reset circuit breaker
+  if (req.method === 'POST' && url === '/api/controls/reset-cb') {
+    try {
+      await circuitBreaker.reset('dashboard', 'manual_reset_via_dashboard');
+      json(res, 200, { success: true, action: 'circuit_breaker_reset' });
+    } catch (err) {
+      json(res, 500, { error: err.message });
     }
     return true;
   }
