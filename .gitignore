@@ -28,7 +28,7 @@ logs/
 npm-debug.log*
 
 # Build
-dist/
+# dist/ — kept for dashboard/dist which needs to deploy to Railway
 build/
 .next/
 .vercel/
