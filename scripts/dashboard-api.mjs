@@ -584,6 +584,17 @@ export async function handleDashboardRequest(req, res) {
     return true;
   }
 
+  // POST /api/controls/clear-entries - Clear stale window_entries to allow retries
+  if (req.method === 'POST' && url === '/api/controls/clear-entries') {
+    try {
+      const result = await persistence.run(`DELETE FROM window_entries`);
+      json(res, 200, { success: true, deleted: result.changes });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
   // POST /api/controls/:action - Kill switch actions (legacy)
   if (req.method === 'POST' && url === '/api/controls/pause') {
     try {

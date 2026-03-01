@@ -311,20 +311,20 @@ export async function releaseEntry(windowId, strategyId = 'default') {
   }
 
   const result = await persistence.run(
-    `DELETE FROM window_entries WHERE window_id = $1 AND strategy_id = $2 AND status = 'reserved'`,
+    `DELETE FROM window_entries WHERE window_id = $1 AND strategy_id = $2`,
     [windowId, strategyId]
   );
 
-  const wasReserved = result.changes > 0;
+  const wasReleased = result.changes > 0;
 
-  if (wasReserved) {
+  if (wasReleased) {
     log.info('entry_released', {
       window_id: windowId,
       strategy_id: strategyId,
     });
   }
 
-  return wasReserved;
+  return wasReleased;
 }
 
 /**
