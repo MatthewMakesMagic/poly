@@ -339,6 +339,198 @@ export async function loadMergedTimeline(options) {
   return timeline;
 }
 
+// ─── Bulk Data Loading (for parallel engine) ───
+
+/**
+ * Load all tick data for a date range in one pass.
+ * Returns pre-sorted arrays for binary-search slicing.
+ *
+ * Note: For remote databases, this may be slow for large date ranges.
+ * Consider using loadWindowTickData() for per-window loading instead.
+ *
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @param {string[]} [options.symbols] - Filter exchange ticks to specific symbols
+ * @returns {Promise<{ rtdsTicks: Object[], clobSnapshots: Object[], exchangeTicks: Object[] }>}
+ */
+export async function loadAllData(options) {
+  const { startDate, endDate, symbols } = options;
+
+  if (!startDate || !endDate) {
+    throw new Error('startDate and endDate are required');
+  }
+
+  log.info('load_all_data_start', { startDate, endDate, symbols: symbols || 'all' });
+
+  // Load all three data sources in parallel
+  const [rtdsTicks, clobSnapshots, exchangeTicks] = await Promise.all([
+    loadRtdsTicks({
+      startDate,
+      endDate,
+      topics: ['crypto_prices_chainlink', 'crypto_prices'],
+    }),
+    loadAllClobSnapshots({ startDate, endDate }),
+    loadExchangeTicks({
+      startDate,
+      endDate,
+      symbols: symbols ? symbols.map(s => s.toLowerCase()) : undefined,
+    }),
+  ]);
+
+  log.info('load_all_data_complete', {
+    rtdsTicks: rtdsTicks.length,
+    clobSnapshots: clobSnapshots.length,
+    exchangeTicks: exchangeTicks.length,
+  });
+
+  return { rtdsTicks, clobSnapshots, exchangeTicks };
+}
+
+/**
+ * Load ALL CLOB snapshots for a date range (no window_epoch filter).
+ * Used by the parallel engine which slices per-window in memory.
+ *
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @returns {Promise<Object[]>}
+ */
+async function loadAllClobSnapshots(options) {
+  const { startDate, endDate } = options;
+
+  const sql = `
+    SELECT timestamp, symbol, token_id, best_bid, best_ask,
+           mid_price, spread, bid_size_top, ask_size_top, window_epoch
+    FROM clob_price_snapshots
+    WHERE timestamp >= $1 AND timestamp <= $2
+    ORDER BY timestamp ASC
+  `;
+
+  return persistence.all(sql, [startDate, endDate]);
+}
+
+// ─── Per-Window Data Loading (for remote databases) ───
+
+/**
+ * Load tick data for a single window.
+ * Faster for remote databases since each query is small (5-min window).
+ *
+ * @param {Object} options
+ * @param {Object} options.window - Window close event row
+ * @param {number} [options.windowDurationMs=300000] - Window duration in ms
+ * @returns {Promise<{ rtdsTicks: Object[], clobSnapshots: Object[], exchangeTicks: Object[] }>}
+ */
+export async function loadWindowTickData(options) {
+  const { window: win, windowDurationMs = 5 * 60 * 1000 } = options;
+
+  const closeMs = new Date(win.window_close_time).getTime();
+  const openMs = closeMs - windowDurationMs;
+  const openDate = new Date(openMs).toISOString();
+  const closeDate = win.window_close_time instanceof Date
+    ? win.window_close_time.toISOString()
+    : win.window_close_time;
+
+  const symbol = win.symbol?.toLowerCase() || 'btc';
+  // window_epoch in clob_price_snapshots is the window CLOSE time epoch
+  const windowEpoch = Math.floor(closeMs / 1000);
+
+  const [rtdsTicks, clobSnapshots, exchangeTicks] = await Promise.all([
+    // Oracle ticks for this window
+    persistence.all(`
+      SELECT timestamp, topic, symbol, price, received_at
+      FROM rtds_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND topic IN ('crypto_prices_chainlink', 'crypto_prices')
+      ORDER BY timestamp ASC
+    `, [openDate, closeDate]),
+
+    // CLOB snapshots for this window (filtered by window_epoch to exclude $0.50 data)
+    persistence.all(`
+      SELECT timestamp, symbol, token_id, best_bid, best_ask,
+             mid_price, spread, bid_size_top, ask_size_top, window_epoch
+      FROM clob_price_snapshots
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol LIKE $3
+        AND window_epoch = $4
+      ORDER BY timestamp ASC
+    `, [openDate, closeDate, `${symbol}%`, windowEpoch]),
+
+    // Exchange ticks for this window
+    persistence.all(`
+      SELECT timestamp, exchange, symbol, price, bid, ask
+      FROM exchange_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol = $3
+      ORDER BY timestamp ASC
+    `, [openDate, closeDate, symbol]),
+  ]);
+
+  return { rtdsTicks, clobSnapshots, exchangeTicks };
+}
+
+/**
+ * Load window close events with all ground truth columns.
+ * Includes gamma_resolved_direction when available.
+ *
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @param {string[]} [options.symbols]
+ * @returns {Promise<Object[]>}
+ */
+export async function loadWindowsWithGroundTruth(options) {
+  const { startDate, endDate } = options;
+
+  if (!startDate || !endDate) {
+    throw new Error('startDate and endDate are required');
+  }
+
+  const { clauses, params: filterParams } = buildFilters(options);
+
+  // Check if gamma_resolved_direction column exists
+  const colCheck = await persistence.get(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'window_close_events' AND column_name = 'gamma_resolved_direction'
+  `);
+  const hasGamma = !!colCheck;
+
+  let sql = `
+    SELECT window_close_time, symbol, strike_price,
+           chainlink_price_at_close, oracle_price_at_open,
+           resolved_direction, onchain_resolved_direction,
+           ${hasGamma ? 'gamma_resolved_direction,' : ''}
+           polymarket_binance_at_close, binance_price_at_close,
+           oracle_price_at_close, pyth_price_at_close,
+           market_up_price_60s, market_up_price_30s, market_up_price_10s,
+           market_up_price_5s, market_up_price_1s,
+           market_down_price_60s, market_down_price_30s, market_down_price_10s,
+           market_down_price_5s, market_down_price_1s,
+           market_consensus_direction, market_consensus_confidence,
+           surprise_resolution
+    FROM window_close_events
+    WHERE window_close_time >= $1 AND window_close_time <= $2
+  `;
+  const params = [startDate, endDate];
+
+  if (clauses.length > 0) {
+    sql += ' AND ' + clauses.join(' AND ');
+  }
+
+  sql += ' ORDER BY window_close_time ASC';
+
+  const rows = await persistence.all(sql, [...params, ...filterParams]);
+
+  log.info('load_windows_with_ground_truth', {
+    count: rows.length,
+    hasGamma,
+    startDate,
+    endDate,
+  });
+
+  return rows;
+}
+
 // ─── Utility ───
 
 /**

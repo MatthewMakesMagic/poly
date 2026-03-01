@@ -17,8 +17,15 @@
  * @module backtest
  */
 
-// Engine
+// Engine (sequential)
 export { runBacktest, runSweep } from './engine.js';
+
+// Engine (parallel)
+export {
+  evaluateWindow,
+  runParallelBacktest,
+  runParallelSweep,
+} from './parallel-engine.js';
 
 // Data loading
 export {
@@ -28,6 +35,9 @@ export {
   loadExchangeTicks,
   loadWindowEvents,
   loadMergedTimeline,
+  loadAllData,
+  loadWindowTickData,
+  loadWindowsWithGroundTruth,
   getTickCount,
   getTickDateRange,
   getAvailableSymbols,
