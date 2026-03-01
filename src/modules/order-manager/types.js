@@ -18,6 +18,9 @@ export const OrderManagerErrorCodes = {
   DATABASE_ERROR: 'ORDER_DATABASE_ERROR',
   CANCEL_FAILED: 'ORDER_CANCEL_FAILED',
   INVALID_CANCEL_STATE: 'ORDER_INVALID_CANCEL_STATE',
+  INSUFFICIENT_BALANCE: 'ORDER_INSUFFICIENT_BALANCE',
+  WINDOW_ORDER_CAP_EXCEEDED: 'ORDER_WINDOW_CAP_EXCEEDED',
+  CONFIRMATION_TIMEOUT: 'ORDER_CONFIRMATION_TIMEOUT',
 };
 
 /**
@@ -48,6 +51,7 @@ export const OrderStatus = {
   CANCELLED: 'cancelled',
   EXPIRED: 'expired',
   REJECTED: 'rejected',
+  UNKNOWN: 'unknown',
 };
 
 /**
@@ -71,14 +75,26 @@ export const Side = {
 };
 
 /**
+ * Trading Modes
+ * Determines the fill source for orders while keeping downstream code identical.
+ */
+export const TradingMode = {
+  LIVE: 'LIVE',       // Polymarket API -> real fill
+  PAPER: 'PAPER',     // SimulatedBook -> simulated fill, persisted with mode='PAPER'
+  DRY_RUN: 'DRY_RUN', // Log only -> synthetic fill at CLOB price
+  BACKTEST: 'BACKTEST',
+};
+
+/**
  * Valid status transitions for orders
  */
 export const ValidStatusTransitions = {
-  [OrderStatus.PENDING]: [OrderStatus.OPEN, OrderStatus.FILLED, OrderStatus.REJECTED],
-  [OrderStatus.OPEN]: [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
-  [OrderStatus.PARTIALLY_FILLED]: [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED],
+  [OrderStatus.PENDING]: [OrderStatus.OPEN, OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.UNKNOWN],
+  [OrderStatus.OPEN]: [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED, OrderStatus.UNKNOWN],
+  [OrderStatus.PARTIALLY_FILLED]: [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED, OrderStatus.UNKNOWN],
   [OrderStatus.FILLED]: [], // Terminal state
   [OrderStatus.CANCELLED]: [], // Terminal state
   [OrderStatus.EXPIRED]: [], // Terminal state
   [OrderStatus.REJECTED]: [], // Terminal state
+  [OrderStatus.UNKNOWN]: [OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.EXPIRED], // Can resolve to terminal state
 };

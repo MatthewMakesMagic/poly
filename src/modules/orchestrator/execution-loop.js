@@ -12,6 +12,7 @@
 
 import { LoopState } from './types.js';
 import * as vwapContrarian from '../paper-trader/vwap-contrarian-strategy.js';
+import { LifecycleState, isLocked, isMonitoring } from '../position-manager/lifecycle.js';
 
 /**
  * ExecutionLoop class - manages the main trading loop
@@ -189,6 +190,30 @@ export class ExecutionLoop {
       // 1. Check drawdown limit before evaluating entries (Story 4.4)
       let drawdownCheck = { breached: false, current: 0, limit: 0.05, autoStopped: false };
       let entriesSkipped = false;
+
+      // 0b. Runtime controls kill switch gate (Phase 0.3)
+      if (this.modules['runtime-controls']) {
+        try {
+          const killLevel = await this.modules['runtime-controls'].getKillSwitchLevel();
+          if (killLevel !== 'off') {
+            this.log.info('tick_kill_switch_active', {
+              tickCount: this.tickCount,
+              level: killLevel,
+            });
+            // 'flatten' / 'emergency': skip entire tick
+            if (killLevel === 'flatten' || killLevel === 'emergency') {
+              return;
+            }
+            // 'pause': skip new entries but still run exits and monitoring
+            entriesSkipped = true;
+          }
+        } catch (rcErr) {
+          this.log.warn('runtime_controls_check_failed', {
+            error: rcErr.message,
+            message: 'Runtime controls check failed — continuing tick',
+          });
+        }
+      }
       if (this.modules.safety && typeof this.modules.safety.checkDrawdownLimit === 'function') {
         drawdownCheck = this.modules.safety.checkDrawdownLimit();
 
@@ -518,75 +543,25 @@ export class ExecutionLoop {
                 trading_mode: this.config.tradingMode || 'PAPER',
               });
 
-              // TRADING MODE GATE - CRITICAL SAFETY CHECK
-              // Blocks order execution in PAPER mode (default)
-              const tradingMode = this.config.tradingMode || 'PAPER';
-              if (tradingMode !== 'LIVE') {
-                // Story 8-9: PAPER mode uses reserve/confirm flow to prevent duplicate paper signals
-                let reserved = false;
-                if (this.modules.safeguards) {
-                  reserved = await this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
-                  if (!reserved) {
-                    this.log.info('paper_mode_reservation_blocked', {
-                      window_id: signal.window_id,
-                      strategy_id: strategyId,
-                      trading_mode: tradingMode,
-                      message: 'Another signal already reserved this entry',
-                    });
-                    continue;
-                  }
-                }
-
-                this.log.info('paper_mode_signal', {
+              // OBSERVER-ONLY GATE - Phase 0.4: Distributed lock
+              // If this instance doesn't hold the active_trader lock, block orders
+              if (this.modules['startup-safety'] &&
+                  typeof this.modules['startup-safety'].isObserverOnly === 'function' &&
+                  this.modules['startup-safety'].isObserverOnly()) {
+                this.log.warn('order_blocked_observer_only', {
                   window_id: signal.window_id,
                   strategy_id: strategyId,
-                  direction: signal.direction,
-                  side: signal.side || 'UP',
-                  confidence: signal.confidence,
-                  market_price: signal.market_price,
-                  edge: signal.edge,
-                  size: sizingResult.actual_size,
-                  would_have_traded: true,
-                  trading_mode: tradingMode,
-                  message: 'Order blocked - PAPER mode active',
+                  message: 'Observer-only mode — another instance holds the active_trader lock',
                 });
-
-                // Create virtual position for PAPER mode tracking
-                // Enables stop-loss and take-profit simulation
-                if (this.modules['virtual-position-manager']) {
-                  try {
-                    const virtualPosition = this.modules['virtual-position-manager'].createVirtualPosition({
-                      ...signal,
-                      size: sizingResult.actual_size,
-                      strategy_id: strategyId,
-                    });
-                    this.log.info('virtual_position_opened', {
-                      position_id: virtualPosition.id,
-                      window_id: signal.window_id,
-                      strategy_id: strategyId,
-                      side: signal.side || 'UP',
-                      entry_price: signal.market_price,
-                      size: sizingResult.actual_size,
-                      trading_mode: tradingMode,
-                    });
-                  } catch (vpErr) {
-                    this.log.warn('virtual_position_creation_failed', {
-                      window_id: signal.window_id,
-                      error: vpErr.message,
-                    });
-                  }
-                }
-
-                // Story 8-9: Confirm the entry in paper mode
-                if (this.modules.safeguards && reserved) {
-                  await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
-                }
-                continue; // Skip to next signal - NO ORDER EXECUTION
+                continue;
               }
 
-              // Place order via order-manager (Story 3.4+)
+              // Phase 0.7: Unified trading mode — ALL modes go through the same pipeline
+              const tradingMode = this.config.tradingMode || 'PAPER';
+
+              // Place order via unified order-manager.execute (Story 3.4+ / Phase 0.7)
               if (this.modules['order-manager'] && signal.token_id) {
-                // Story 8-9: Reserve entry BEFORE order placement
+                // Story 8-9: Reserve entry BEFORE order placement (all modes)
                 let reserved = false;
                 if (this.modules.safeguards) {
                   reserved = await this.modules.safeguards.reserveEntry(signal.window_id, strategyId);
@@ -602,30 +577,49 @@ export class ExecutionLoop {
                 }
 
                 try {
-                  // IOC at model fair value — accept any fill up to what the model
-                  // says the token is worth. For cheap entries ($0.05 market) where
-                  // model says fair = $0.55, we'll pay up to $0.55 for immediate fill.
-                  // Edge is preserved: paying $0.08 for a token worth $0.55 is still +EV.
-                  const maxPrice = signal.confidence || signal.market_price || signal.expected_price;
-                  const orderResult = await this.modules['order-manager'].placeOrder({
-                    tokenId: signal.token_id,
-                    side: signal.direction === 'long' ? 'buy' : 'sell',
-                    size: sizingResult.actual_size,
-                    price: maxPrice,
-                    orderType: 'IOC',
-                    windowId: signal.window_id,
-                    marketId: signal.market_id,
-                    // Signal context for stale order detection
-                    signalContext: {
-                      edge: signal.edge,
-                      modelProbability: signal.confidence,
-                      symbol: signal.symbol,
-                      strategyId: strategyId,
-                      sideToken: signal.side || 'UP',
-                      originalMarketPrice: signal.market_price,
-                      maxPriceUsed: maxPrice,
-                    },
-                  });
+                  // IOC at market price — accept any fill up to current market mid.
+                  // signal.price is the CLOB mid price for all strategies.
+                  // signal.confidence is NOT a price (it's absVwapDeltaPct for VWAP signals).
+                  const maxPrice = signal.price || signal.market_price || signal.expected_price;
+
+                  // Phase 0.7: Use unified execute() for all modes
+                  const orderResult = this.modules['order-manager'].execute
+                    ? await this.modules['order-manager'].execute({
+                        tokenId: signal.token_id,
+                        side: signal.direction === 'long' ? 'buy' : 'sell',
+                        size: sizingResult.actual_size,
+                        price: maxPrice,
+                        orderType: 'IOC',
+                        windowId: signal.window_id,
+                        marketId: signal.market_id,
+                        signalContext: {
+                          edge: signal.edge,
+                          modelProbability: signal.confidence,
+                          symbol: signal.symbol,
+                          strategyId: strategyId,
+                          sideToken: signal.side || 'UP',
+                          originalMarketPrice: signal.market_price,
+                          maxPriceUsed: maxPrice,
+                        },
+                      }, tradingMode)
+                    : await this.modules['order-manager'].placeOrder({
+                        tokenId: signal.token_id,
+                        side: signal.direction === 'long' ? 'buy' : 'sell',
+                        size: sizingResult.actual_size,
+                        price: maxPrice,
+                        orderType: 'IOC',
+                        windowId: signal.window_id,
+                        marketId: signal.market_id,
+                        signalContext: {
+                          edge: signal.edge,
+                          modelProbability: signal.confidence,
+                          symbol: signal.symbol,
+                          strategyId: strategyId,
+                          sideToken: signal.side || 'UP',
+                          originalMarketPrice: signal.market_price,
+                          maxPriceUsed: maxPrice,
+                        },
+                      }, { mode: tradingMode === 'DRY_RUN' ? 'DRY_RUN' : undefined });
 
                   this.log.info('order_placed', {
                     window_id: signal.window_id,
@@ -651,6 +645,7 @@ export class ExecutionLoop {
                         entryPrice: actualPrice,
                         strategyId: strategyId,
                         orderId: orderResult.orderId,
+                        mode: tradingMode,
                       });
 
                       this.log.info('position_opened', {
@@ -709,14 +704,27 @@ export class ExecutionLoop {
                       continue;
                     }
                   } else if (this.modules.safeguards && reserved) {
-                    // Order rejected - release the reservation
-                    await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
-                    this.log.info('entry_released_order_rejected', {
-                      window_id: signal.window_id,
-                      strategy_id: strategyId,
-                      order_status: orderResult.status,
-                      trading_mode: tradingMode,
-                    });
+                    // Phase 0.5: UNKNOWN status means order was submitted but confirmation timed out
+                    // CONFIRM to block re-entry — money may have left the account
+                    if (orderResult.status === 'unknown') {
+                      await this.modules.safeguards.confirmEntry(signal.window_id, strategyId, signal.symbol);
+                      this.log.error('entry_confirmed_unknown_status', {
+                        level: 'CRITICAL',
+                        window_id: signal.window_id,
+                        strategy_id: strategyId,
+                        order_id: orderResult.orderId,
+                        message: 'Order confirmation timed out — blocking re-entry on this window',
+                      });
+                    } else {
+                      // Order rejected/cancelled - release the reservation
+                      await this.modules.safeguards.releaseEntry(signal.window_id, strategyId);
+                      this.log.info('entry_released_order_rejected', {
+                        window_id: signal.window_id,
+                        strategy_id: strategyId,
+                        order_status: orderResult.status,
+                        trading_mode: tradingMode,
+                      });
+                    }
                   }
 
                   // Record entry event for diagnostics (Story 5.2)
@@ -954,14 +962,18 @@ export class ExecutionLoop {
       let virtualStopLossResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
 
       // 5a. Evaluate real positions (guarded by position verification - V3 Stage 5)
+      // Phase 2.1: Filter by lifecycle state — only MONITORING positions are eligible
       if (verificationPassed && this.modules['stop-loss'] && this.modules['position-manager']) {
         const stopLossModule = this.modules['stop-loss'];
         const positionManager = this.modules['position-manager'];
 
-        // Get all open positions
+        // Get all open positions and filter to MONITORING only
         const openPositions = await positionManager.getPositions();
+        const monitoringPositions = openPositions.filter(
+          p => isMonitoring(p.lifecycle_state || 'MONITORING')
+        );
 
-        if (openPositions.length > 0) {
+        if (monitoringPositions.length > 0) {
           // Get current price for each position
           const getCurrentPrice = (position) => {
             // Use position's current_price if available, otherwise fetch from spot
@@ -975,11 +987,23 @@ export class ExecutionLoop {
             return null;
           };
 
-          stopLossResults = stopLossModule.evaluateAll(openPositions, getCurrentPrice);
+          stopLossResults = stopLossModule.evaluateAll(monitoringPositions, getCurrentPrice);
 
-          // Close any triggered positions
+          // Close any triggered positions with lifecycle transitions
           for (const result of stopLossResults.triggered) {
             try {
+              // Phase 2.1: Lifecycle transitions: MONITORING -> STOP_TRIGGERED -> EXIT_PENDING -> CLOSED
+              if (positionManager.transitionLifecycle) {
+                await positionManager.transitionLifecycle(result.position_id, LifecycleState.STOP_TRIGGERED, {
+                  reason: 'stop_loss_triggered',
+                  threshold: result.stop_loss_threshold,
+                  currentPrice: result.current_price,
+                });
+                await positionManager.transitionLifecycle(result.position_id, LifecycleState.EXIT_PENDING, {
+                  reason: 'placing_exit_order',
+                });
+              }
+
               await positionManager.closePosition(result.position_id, {
                 emergency: true,
                 closePrice: result.current_price,
@@ -1141,14 +1165,19 @@ export class ExecutionLoop {
       let virtualTakeProfitResults = { triggered: [], summary: { evaluated: 0, triggered: 0, safe: 0 } };
 
       // 6a. Evaluate real positions (guarded by position verification - V3 Stage 5)
+      // Phase 2.1: Filter by lifecycle state — only MONITORING positions are eligible
       if (verificationPassed && this.modules['take-profit'] && this.modules['position-manager']) {
         const takeProfitModule = this.modules['take-profit'];
         const positionManager = this.modules['position-manager'];
 
-        // Get all open positions (positions not already closed by stop-loss)
+        // Get all open positions and filter to MONITORING only
+        // (positions already closed by stop-loss above will have lifecycle CLOSED)
         const openPositions = await positionManager.getPositions();
+        const monitoringPositions = openPositions.filter(
+          p => isMonitoring(p.lifecycle_state || 'MONITORING')
+        );
 
-        if (openPositions.length > 0) {
+        if (monitoringPositions.length > 0) {
           // Get current price for each position
           const getCurrentPrice = (position) => {
             // Use position's current_price if available, otherwise fetch from spot
@@ -1162,11 +1191,23 @@ export class ExecutionLoop {
             return null;
           };
 
-          takeProfitResults = takeProfitModule.evaluateAll(openPositions, getCurrentPrice);
+          takeProfitResults = takeProfitModule.evaluateAll(monitoringPositions, getCurrentPrice);
 
           // Close any triggered positions (limit order, not emergency)
           for (const result of takeProfitResults.triggered) {
             try {
+              // Phase 2.1: Lifecycle transitions: MONITORING -> TP_TRIGGERED -> EXIT_PENDING -> CLOSED
+              if (positionManager.transitionLifecycle) {
+                await positionManager.transitionLifecycle(result.position_id, LifecycleState.TP_TRIGGERED, {
+                  reason: 'take_profit_triggered',
+                  threshold: result.take_profit_threshold,
+                  currentPrice: result.current_price,
+                });
+                await positionManager.transitionLifecycle(result.position_id, LifecycleState.EXIT_PENDING, {
+                  reason: 'placing_exit_order',
+                });
+              }
+
               await positionManager.closePosition(result.position_id, {
                 // Note: NOT emergency - use limit order for better fills
                 closePrice: result.current_price,
@@ -1293,15 +1334,19 @@ export class ExecutionLoop {
       }
 
       // 7. Evaluate exit conditions - window expiry (Story 3.6) - always evaluate even when auto-stopped
+      // Phase 2.1: Filter by lifecycle state — only MONITORING positions are eligible
       let windowExpiryResults = { expiring: [], resolved: [], summary: { evaluated: 0, expiring: 0, resolved: 0, safe: 0 } };
       if (this.modules['window-expiry'] && this.modules['position-manager']) {
         const windowExpiryModule = this.modules['window-expiry'];
         const positionManager = this.modules['position-manager'];
 
-        // Get all open positions (positions not already closed by stop-loss/take-profit)
+        // Get all open positions and filter to MONITORING only
         const openPositions = await positionManager.getPositions();
+        const monitoringPositions = openPositions.filter(
+          p => isMonitoring(p.lifecycle_state || 'MONITORING')
+        );
 
-        if (openPositions.length > 0) {
+        if (monitoringPositions.length > 0) {
           // Get window data (resolution info) for each window
           const getWindowData = (windowId) => {
             // Future: Query polymarket for window resolution data
@@ -1311,11 +1356,23 @@ export class ExecutionLoop {
             return {};
           };
 
-          windowExpiryResults = windowExpiryModule.evaluateAll(openPositions, getWindowData);
+          windowExpiryResults = windowExpiryModule.evaluateAll(monitoringPositions, getWindowData);
 
-          // Handle resolved positions - close with resolution P&L
+          // Handle resolved positions - close with lifecycle transitions
           for (const result of windowExpiryResults.resolved) {
             try {
+              // Phase 2.1: Lifecycle transitions: MONITORING -> EXPIRY -> SETTLEMENT -> CLOSED
+              if (positionManager.transitionLifecycle) {
+                await positionManager.transitionLifecycle(result.position_id, LifecycleState.EXPIRY, {
+                  reason: 'window_resolved',
+                  windowId: result.window_id,
+                });
+                await positionManager.transitionLifecycle(result.position_id, LifecycleState.SETTLEMENT, {
+                  reason: 'settling_position',
+                  resolutionPrice: result.resolution_price,
+                });
+              }
+
               await positionManager.closePosition(result.position_id, {
                 closePrice: result.resolution_price ?? result.current_price,
                 reason: 'window_expiry',

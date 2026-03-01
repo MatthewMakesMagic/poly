@@ -29,15 +29,19 @@ vi.mock('../../../persistence/write-ahead.js', () => ({
 
 vi.mock('../../../clients/polymarket/index.js', () => ({
   buy: vi.fn().mockResolvedValue({
-    orderID: 'order-123',
+    orderId: 'order-123',
     status: 'live',
     success: true,
   }),
   sell: vi.fn().mockResolvedValue({
-    orderID: 'order-456',
+    orderId: 'order-456',
     status: 'matched',
     success: true,
   }),
+  // Phase 0.5: Balance verification
+  getUSDCBalance: vi.fn().mockResolvedValue(1000),
+  // Phase 0.5: Order confirmation polling — return matched to avoid 5s timeout
+  getOrder: vi.fn().mockResolvedValue({ status: 'matched', size_matched: '10' }),
 }));
 
 vi.mock('../../logger/index.js', () => ({
@@ -61,7 +65,13 @@ describe('Order Manager Module', () => {
     await orderManager.shutdown();
     // Reset persistence mocks to defaults
     persistence.run.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
-    persistence.get.mockResolvedValue(undefined);
+    // Phase 0.5: persistence.get is used for both order lookups and cap check.
+    persistence.get.mockImplementation((sql) => {
+      if (sql && sql.includes('COUNT(*)')) {
+        return Promise.resolve({ count: 0 });
+      }
+      return Promise.resolve(undefined);
+    });
     persistence.all.mockResolvedValue([]);
   });
 
@@ -100,7 +110,7 @@ describe('Order Manager Module', () => {
         orderManager.placeOrder({
           tokenId: 'token-1',
           side: 'buy',
-          size: 100,
+          size: 5,
           price: 0.5,
           orderType: 'GTC',
           windowId: 'window-1',
@@ -113,7 +123,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -132,7 +142,7 @@ describe('Order Manager Module', () => {
         expect.objectContaining({
           tokenId: 'token-1',
           side: 'buy',
-          size: 100,
+          size: 5,
           price: 0.5,
           orderType: 'GTC',
         })
@@ -143,7 +153,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -162,7 +172,7 @@ describe('Order Manager Module', () => {
       const result = await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -178,14 +188,14 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
         marketId: 'market-1',
       });
 
-      expect(polymarketClient.buy).toHaveBeenCalledWith('token-1', 100, 0.5, 'GTC');
+      expect(polymarketClient.buy).toHaveBeenCalledWith('token-1', 5, 0.5, 'GTC');
       expect(polymarketClient.sell).not.toHaveBeenCalled();
     });
 
@@ -193,14 +203,14 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'sell',
-        size: 50,
+        size: 4,
         price: 0.75,
         orderType: 'GTC',
         windowId: 'window-1',
         marketId: 'market-1',
       });
 
-      expect(polymarketClient.sell).toHaveBeenCalledWith('token-1', 50, 0.75, 'GTC');
+      expect(polymarketClient.sell).toHaveBeenCalledWith('token-1', 4, 0.75, 'GTC');
       expect(polymarketClient.buy).not.toHaveBeenCalled();
     });
 
@@ -208,7 +218,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -227,7 +237,7 @@ describe('Order Manager Module', () => {
           'buy', // side
           'GTC', // order_type
           0.5, // price
-          100, // size
+          5, // size
         ])
       );
     });
@@ -236,7 +246,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -247,7 +257,9 @@ describe('Order Manager Module', () => {
         1,
         expect.objectContaining({
           orderId: 'order-123',
-          status: 'open',
+          // Phase 0.5: GTC orders go through confirmation polling.
+          // Mock getOrder returns 'matched', so status resolves to 'filled'.
+          status: 'filled',
         })
       );
     });
@@ -256,7 +268,7 @@ describe('Order Manager Module', () => {
       const result = await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -266,7 +278,9 @@ describe('Order Manager Module', () => {
       expect(result).toEqual(
         expect.objectContaining({
           orderId: 'order-123',
-          status: 'open',
+          // Phase 0.5: GTC orders go through confirmation polling.
+          // Mock getOrder returns 'matched', so status resolves to 'filled'.
+          status: 'filled',
           latencyMs: expect.any(Number),
           intentId: 1,
         })
@@ -278,7 +292,7 @@ describe('Order Manager Module', () => {
       const result = await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'sell',
-        size: 50,
+        size: 4,
         price: 0.75,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -294,7 +308,7 @@ describe('Order Manager Module', () => {
       const result = await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -327,7 +341,7 @@ describe('Order Manager Module', () => {
       const result = await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'sell',
-        size: 50,
+        size: 4,
         price: 0.75,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -340,13 +354,20 @@ describe('Order Manager Module', () => {
     });
 
     it('does not include orderFilledAt when order is not filled', async () => {
-      // buy returns live status (not filled)
+      // Use FOK order type: FOK bypasses confirmation polling,
+      // so a 'live' API response maps to 'open' (not filled).
+      polymarketClient.buy.mockResolvedValueOnce({
+        orderId: 'order-fok-1',
+        status: 'live',
+        success: true,
+      });
+
       const result = await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
-        orderType: 'GTC',
+        orderType: 'FOK',
         windowId: 'window-1',
         marketId: 'market-1',
       });
@@ -368,7 +389,7 @@ describe('Order Manager Module', () => {
         orderManager.placeOrder({
           tokenId: 'token-1',
           side: 'buy',
-          size: 100,
+          size: 5,
           price: 0.5,
           orderType: 'GTC',
           windowId: 'window-1',
@@ -388,7 +409,7 @@ describe('Order Manager Module', () => {
       await expect(
         orderManager.placeOrder({
           side: 'buy',
-          size: 100,
+          size: 5,
           price: 0.5,
           orderType: 'GTC',
           windowId: 'window-1',
@@ -402,7 +423,7 @@ describe('Order Manager Module', () => {
         orderManager.placeOrder({
           tokenId: 'token-1',
           side: 'invalid',
-          size: 100,
+          size: 5,
           price: 0.5,
           orderType: 'GTC',
           windowId: 'window-1',
@@ -416,7 +437,7 @@ describe('Order Manager Module', () => {
         orderManager.placeOrder({
           tokenId: 'token-1',
           side: 'buy',
-          size: 100,
+          size: 5,
           price: 1.5, // Invalid - must be 0.01-0.99
           orderType: 'GTC',
           windowId: 'window-1',
@@ -457,7 +478,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -533,7 +554,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -586,7 +607,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',
@@ -622,7 +643,7 @@ describe('Order Manager Module', () => {
       await orderManager.placeOrder({
         tokenId: 'token-1',
         side: 'buy',
-        size: 100,
+        size: 5,
         price: 0.5,
         orderType: 'GTC',
         windowId: 'window-1',

@@ -56,6 +56,15 @@ import * as clobPriceLogger from '../clob-price-logger/index.js';
 import * as exchangeFeedCollector from '../exchange-feed-collector/index.js';
 import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
 import * as paperTrader from '../paper-trader/index.js';
+import * as startupSafety from '../startup-safety/index.js';
+// Alerting module - Discord webhook alerts
+import * as alerter from '../alerter/index.js';
+// Feed monitoring - gap detection and feed health
+import * as feedMonitor from '../feed-monitor/index.js';
+// Runtime assertions - 10-assertion system correctness checks
+import * as assertions from '../assertions/index.js';
+// Runtime controls - DB-driven kill switch and trading mode (Phase 0.3)
+import * as runtimeControls from '../runtime-controls/index.js';
 import { writeSnapshot, buildSnapshot } from '../../../kill-switch/state-snapshot.js';
 // Strategy composition integration (Story 7-12)
 import {
@@ -126,6 +135,11 @@ const MODULE_MAP = {
   'exchange-feed-collector': exchangeFeedCollector,
   'exchange-trade-collector': exchangeTradeCollector,
   'paper-trader': paperTrader,
+  'startup-safety': startupSafety,
+  'alerter': alerter,
+  'feed-monitor': feedMonitor,
+  'runtime-controls': runtimeControls,
+  'assertions': assertions,
 };
 
 // PID file path for kill switch watchdog integration
@@ -395,6 +409,15 @@ async function initializeModules(cfg) {
         }
       }
 
+      // Special handling: if startup-safety entered observer-only mode, log it
+      if (entry.name === 'startup-safety') {
+        if (typeof moduleInstance.isObserverOnly === 'function' && moduleInstance.isObserverOnly()) {
+          log.warn('observer_only_mode_active', {
+            message: 'Another instance holds the active_trader lock. This instance is observer-only — no orders will be placed.',
+          });
+        }
+      }
+
       // Special handling: wire up circuit-breaker orchestrator ref (V3 Stage 5)
       if (entry.name === 'circuit-breaker') {
         if (typeof moduleInstance.setOrchestrator === 'function') {
@@ -416,6 +439,24 @@ async function initializeModules(cfg) {
         if (cbModule && orderManagerModule && typeof cbModule.setOrderManager === 'function') {
           cbModule.setOrderManager(orderManagerModule);
           log.info('circuit_breaker_order_manager_wired', { module: 'circuit-breaker' });
+        }
+      }
+
+      // Special handling: wire alerter to circuit breaker after alerter init
+      if (entry.name === 'alerter') {
+        const cbModule = getModule('circuit-breaker');
+        if (cbModule && typeof cbModule.setAlerter === 'function') {
+          cbModule.setAlerter(moduleInstance);
+          log.info('circuit_breaker_alerter_wired');
+        }
+      }
+
+      // Special handling: wire assertions module to circuit breaker after assertions init
+      if (entry.name === 'assertions') {
+        const cbModule = getModule('circuit-breaker');
+        if (cbModule && typeof moduleInstance.setCircuitBreaker === 'function') {
+          moduleInstance.setCircuitBreaker(cbModule);
+          log.info('assertions_circuit_breaker_wired');
         }
       }
 
@@ -1020,6 +1061,15 @@ function handleLoopError(err) {
       code: err.code,
       errorCount: state.errorCount,
     });
+    // Alert on fatal error
+    const alerterModule = getModule('alerter');
+    if (alerterModule?.send) {
+      alerterModule.send('health_endpoint_failure', {
+        error: err.message,
+        code: err.code || 'FATAL',
+        errorCount: state.errorCount,
+      }).catch(() => {});
+    }
     // Trigger shutdown on fatal error
     shutdown().catch((shutdownErr) => {
       log.error('shutdown_failed_after_fatal', { error: shutdownErr.message });

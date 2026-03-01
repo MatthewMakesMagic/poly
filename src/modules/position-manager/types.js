@@ -50,6 +50,15 @@ export const PositionStatus = {
 };
 
 /**
+ * Lifecycle State Values
+ * Maps to the lifecycle_state column in positions table
+ *
+ * ENTRY -> MONITORING -> { STOP_TRIGGERED | TP_TRIGGERED | EXPIRY }
+ *                         -> EXIT_PENDING | SETTLEMENT -> CLOSED
+ */
+export { LifecycleState } from './lifecycle.js';
+
+/**
  * Position Sides
  */
 export const Side = {

@@ -25,9 +25,16 @@ export async function getPosition(positionId) {
 
 /**
  * Get open positions from DB
+ * @param {string} [mode] - Optional mode filter (LIVE, PAPER, DRY_RUN). If omitted, returns all modes.
  * @returns {Promise<Object[]>} Array of open positions
  */
-export async function getOpenPositions() {
+export async function getOpenPositions(mode) {
+  if (mode) {
+    return persistence.all(
+      'SELECT * FROM positions WHERE status = $1 AND mode = $2',
+      [PositionStatus.OPEN, mode]
+    );
+  }
   return persistence.all(
     'SELECT * FROM positions WHERE status = $1',
     [PositionStatus.OPEN]
@@ -36,9 +43,17 @@ export async function getOpenPositions() {
 
 /**
  * Calculate total exposure across all open positions
+ * @param {string} [mode] - Optional mode filter. If omitted, sums all modes.
  * @returns {Promise<number>} Total exposure
  */
-export async function calculateTotalExposure() {
+export async function calculateTotalExposure(mode) {
+  if (mode) {
+    const result = await persistence.get(
+      `SELECT COALESCE(SUM(size * entry_price), 0) as total FROM positions WHERE status = $1 AND mode = $2`,
+      [PositionStatus.OPEN, mode]
+    );
+    return Number(result?.total || 0);
+  }
   const result = await persistence.get(
     `SELECT COALESCE(SUM(size * entry_price), 0) as total FROM positions WHERE status = $1`,
     [PositionStatus.OPEN]
@@ -49,9 +64,17 @@ export async function calculateTotalExposure() {
 /**
  * Count open positions for a specific market
  * @param {string} marketId - Market ID
+ * @param {string} [mode] - Optional mode filter
  * @returns {Promise<number>} Number of open positions in the market
  */
-export async function countPositionsByMarket(marketId) {
+export async function countPositionsByMarket(marketId, mode) {
+  if (mode) {
+    const result = await persistence.get(
+      `SELECT COUNT(*) as count FROM positions WHERE status = $1 AND market_id = $2 AND mode = $3`,
+      [PositionStatus.OPEN, marketId, mode]
+    );
+    return Number(result?.count || 0);
+  }
   const result = await persistence.get(
     `SELECT COUNT(*) as count FROM positions WHERE status = $1 AND market_id = $2`,
     [PositionStatus.OPEN, marketId]
@@ -61,17 +84,31 @@ export async function countPositionsByMarket(marketId) {
 
 /**
  * Get current state statistics from DB
+ * @param {string} [mode] - Optional mode filter. If omitted, returns stats for all modes.
  * @returns {Promise<Object>} State statistics
  */
-export async function getStats() {
-  const result = await persistence.get(
-    `SELECT
-       COUNT(*) FILTER (WHERE status = 'open') as open_count,
-       COUNT(*) FILTER (WHERE status = 'closed') as closed_count,
-       COUNT(*) as total_count,
-       COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) as total_pnl
-     FROM positions`
-  );
+export async function getStats(mode) {
+  let result;
+  if (mode) {
+    result = await persistence.get(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'open') as open_count,
+         COUNT(*) FILTER (WHERE status = 'closed') as closed_count,
+         COUNT(*) as total_count,
+         COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) as total_pnl
+       FROM positions WHERE mode = $1`,
+      [mode]
+    );
+  } else {
+    result = await persistence.get(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'open') as open_count,
+         COUNT(*) FILTER (WHERE status = 'closed') as closed_count,
+         COUNT(*) as total_count,
+         COALESCE(SUM(pnl) FILTER (WHERE status = 'closed'), 0) as total_pnl
+       FROM positions`
+    );
+  }
 
   return {
     positions: {

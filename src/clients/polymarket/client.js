@@ -659,6 +659,19 @@ export class WrappedPolymarketClient {
   }
 
   /**
+   * Get order details by ID (for confirmation polling)
+   *
+   * @param {string} orderId - Order ID
+   * @returns {Promise<Object>} Order details from Polymarket
+   */
+  async getOrder(orderId) {
+    return this.withRateLimit(
+      () => this.client.getOrder(orderId),
+      'getOrder'
+    );
+  }
+
+  /**
    * Cancel an order
    */
   async cancelOrder(orderId) {

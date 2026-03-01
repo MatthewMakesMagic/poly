@@ -37,6 +37,8 @@ export const MODULE_INIT_ORDER = [
   // Launch-config - reads launch manifest, must be first to provide strategy filter
   { name: 'launch-config', module: null, configKey: null },
   { name: 'persistence', module: null, configKey: 'database' },
+  // Runtime controls - DB-driven kill switch and trading mode (Phase 0.3)
+  { name: 'runtime-controls', module: null, configKey: null },
   // Circuit breaker - needs DB, before order-manager (V3 Stage 5)
   { name: 'circuit-breaker', module: null, configKey: null },
   { name: 'polymarket', module: null, configKey: 'polymarket' },
@@ -44,6 +46,8 @@ export const MODULE_INIT_ORDER = [
   // TEMP SOLUTION: Window manager for fetching active 15-min markets
   { name: 'window-manager', module: null, configKey: null },
   { name: 'position-manager', module: null, configKey: null },
+  // Startup safety - position reconciliation, distributed lock (Phase 0.4)
+  { name: 'startup-safety', module: null, configKey: null },
   // Virtual position manager - PAPER mode position tracking for stop-loss/take-profit
   { name: 'virtual-position-manager', module: null, configKey: null },
   // Safeguards module - entry rate limiting, duplicate prevention (Story 8-7)
@@ -82,6 +86,12 @@ export const MODULE_INIT_ORDER = [
   { name: 'exchange-trade-collector', module: null, configKey: null },
   // Paper trader V2 - VWAP edge testing with streaming L2
   { name: 'paper-trader', module: null, configKey: null },
+  // Alerter - Discord webhook alerts
+  { name: 'alerter', module: null, configKey: null },
+  // Feed monitor - gap detection and feed health
+  { name: 'feed-monitor', module: null, configKey: null },
+  // Runtime assertions - 10-assertion system correctness checks
+  { name: 'assertions', module: null, configKey: null },
 ];
 
 /**

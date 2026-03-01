@@ -22,6 +22,7 @@ import {
   countPositionsByMarket,
   setLastReconciliation,
 } from './state.js';
+import { LifecycleState } from './lifecycle.js';
 import * as safety from '../safety/index.js';
 
 /**
@@ -153,7 +154,7 @@ export async function checkLimits(params, riskConfig) {
  * @returns {Promise<Object>} Created position with id
  */
 export async function addPosition(params, log, riskConfig = null) {
-  const { windowId, marketId, tokenId, side, size, entryPrice, strategyId, orderId } = params;
+  const { windowId, marketId, tokenId, side, size, entryPrice, strategyId, orderId, mode } = params;
 
   // 1. Validate parameters
   validatePositionParams(params);
@@ -200,11 +201,12 @@ export async function addPosition(params, log, riskConfig = null) {
     const openedAt = new Date().toISOString();
 
     // 5. Insert to database using PostgreSQL parameterized queries
+    //    lifecycle_state starts as MONITORING (ENTRY is transient)
     const result = await persistence.runReturningId(
       `INSERT INTO positions (
         window_id, market_id, token_id, side, size, entry_price,
-        current_price, status, strategy_id, opened_at, order_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        current_price, status, strategy_id, opened_at, order_id, mode, lifecycle_state
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING id`,
       [
         windowId,
@@ -218,6 +220,8 @@ export async function addPosition(params, log, riskConfig = null) {
         strategyId,
         openedAt,
         orderId || null,
+        mode || 'LIVE',
+        LifecycleState.MONITORING,
       ]
     );
 
@@ -240,6 +244,8 @@ export async function addPosition(params, log, riskConfig = null) {
       close_price: null,
       pnl: null,
       exchange_verified_at: null,
+      mode: mode || 'LIVE',
+      lifecycle_state: LifecycleState.MONITORING,
     };
 
     // 7. Mark intent completed
@@ -321,10 +327,11 @@ export async function getPosition(positionId) {
  * Get all open positions
  * Now async - queries DB directly via state.
  *
+ * @param {string} [mode] - Optional mode filter (LIVE, PAPER, DRY_RUN). If omitted, returns all.
  * @returns {Promise<Object[]>} Array of open positions with unrealized_pnl
  */
-export async function getPositions() {
-  const openPositions = await getOpenPositions();
+export async function getPositions(mode) {
+  const openPositions = await getOpenPositions(mode);
   return openPositions.map((position) => ({
     ...position,
     unrealized_pnl: calculateUnrealizedPnl(position),
@@ -472,12 +479,12 @@ export async function closePosition(positionId, params, log) {
     const direction = position.side === Side.LONG ? 1 : -1;
     const pnl = priceDiff * position.size * direction;
 
-    // 3. Update database
+    // 3. Update database (also set lifecycle_state to CLOSED)
     const updateResult = await persistence.run(
       `UPDATE positions
-       SET status = $1, close_price = $2, closed_at = $3, pnl = $4
-       WHERE id = $5`,
-      [PositionStatus.CLOSED, actualClosePrice, closedAt, pnl, positionId]
+       SET status = $1, close_price = $2, closed_at = $3, pnl = $4, lifecycle_state = $5
+       WHERE id = $6`,
+      [PositionStatus.CLOSED, actualClosePrice, closedAt, pnl, LifecycleState.CLOSED, positionId]
     );
 
     // Verify the database update succeeded
@@ -496,6 +503,7 @@ export async function closePosition(positionId, params, log) {
       close_price: actualClosePrice,
       closed_at: closedAt,
       pnl,
+      lifecycle_state: LifecycleState.CLOSED,
     };
 
     // 4. Mark intent completed

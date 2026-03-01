@@ -15,6 +15,7 @@ import {
   OrderManagerErrorCodes,
   OrderStatus,
   Side,
+  TradingMode,
   ValidStatusTransitions,
 } from './types.js';
 import {
@@ -33,6 +34,10 @@ import {
  * @param {Object} params - Order parameters
  * @throws {OrderManagerError} If validation fails
  */
+// Hard cap on per-order dollar size. Defence-in-depth: even if position-sizer
+// or strategy miscalculates, no single order can exceed this amount.
+const MAX_ORDER_DOLLARS = 5;
+
 function validateOrderParams(params) {
   const { tokenId, side, size, price, orderType, windowId, marketId } = params;
 
@@ -48,6 +53,11 @@ function validateOrderParams(params) {
 
   if (typeof size !== 'number' || size <= 0) {
     errors.push('size must be a positive number');
+  }
+
+  // Per-position dollar cap: reject orders exceeding MAX_ORDER_DOLLARS
+  if (typeof size === 'number' && size > MAX_ORDER_DOLLARS) {
+    errors.push(`size ${size} exceeds per-order cap of $${MAX_ORDER_DOLLARS}`);
   }
 
   // Price can be null for market orders, but if provided must be valid
@@ -102,15 +112,699 @@ function mapPolymarketStatus(polymarketStatus, isImmediateOrder = false) {
   }
 }
 
+// Phase 0.5: Maximum orders per window per instrument (hardcoded safety cap)
+const MAX_ORDERS_PER_WINDOW_INSTRUMENT = 2;
+
+// Phase 0.5: Order confirmation polling settings
+const CONFIRMATION_POLL_INTERVAL_MS = 1000;
+const CONFIRMATION_TIMEOUT_MS = 5000;
+
+/**
+ * Phase 0.5: Verify USDC balance before placing an order
+ *
+ * @param {number} requiredAmount - Dollar amount needed
+ * @param {Object} log - Logger
+ * @throws {OrderManagerError} If insufficient balance
+ */
+async function verifyBalance(requiredAmount, log) {
+  try {
+    const balance = await polymarketClient.getUSDCBalance();
+
+    if (balance < requiredAmount) {
+      log.error('insufficient_balance', {
+        level: 'CRITICAL',
+        required: requiredAmount,
+        available: balance,
+        shortfall: requiredAmount - balance,
+      });
+
+      throw new OrderManagerError(
+        OrderManagerErrorCodes.INSUFFICIENT_BALANCE,
+        `Insufficient USDC balance: need $${requiredAmount.toFixed(2)}, have $${balance.toFixed(2)}`,
+        { required: requiredAmount, available: balance, orderSubmittedToExchange: false }
+      );
+    }
+
+    log.info('balance_verified', {
+      required: requiredAmount,
+      available: balance,
+      remaining_after: balance - requiredAmount,
+    });
+  } catch (err) {
+    if (err instanceof OrderManagerError) throw err;
+
+    // API call failed — log but don't block (fail-open for balance check)
+    log.warn('balance_check_failed', {
+      error: err.message,
+      required: requiredAmount,
+      message: 'Balance check failed — proceeding with order (fail-open)',
+    });
+  }
+}
+
+/**
+ * Phase 0.5: Check hard cap on orders per window per instrument
+ *
+ * @param {string} windowId - Window ID
+ * @param {string} tokenId - Token ID (instrument)
+ * @param {Object} log - Logger
+ * @throws {OrderManagerError} If cap exceeded
+ */
+async function checkWindowOrderCap(windowId, tokenId, log) {
+  try {
+    const result = await persistence.get(
+      `SELECT COUNT(*) as count FROM orders
+       WHERE window_id = $1 AND token_id = $2
+       AND status NOT IN ($3, $4)`,
+      [windowId, tokenId, OrderStatus.REJECTED, OrderStatus.CANCELLED]
+    );
+
+    const orderCount = Number(result?.count || 0);
+
+    if (orderCount >= MAX_ORDERS_PER_WINDOW_INSTRUMENT) {
+      log.warn('window_order_cap_exceeded', {
+        windowId,
+        tokenId,
+        existingOrders: orderCount,
+        cap: MAX_ORDERS_PER_WINDOW_INSTRUMENT,
+      });
+
+      throw new OrderManagerError(
+        OrderManagerErrorCodes.WINDOW_ORDER_CAP_EXCEEDED,
+        `Max ${MAX_ORDERS_PER_WINDOW_INSTRUMENT} orders per window per instrument. Already have ${orderCount}.`,
+        { windowId, tokenId, existingOrders: orderCount, cap: MAX_ORDERS_PER_WINDOW_INSTRUMENT, orderSubmittedToExchange: false }
+      );
+    }
+
+    log.debug('window_order_cap_ok', {
+      windowId,
+      tokenId,
+      existingOrders: orderCount,
+      cap: MAX_ORDERS_PER_WINDOW_INSTRUMENT,
+    });
+  } catch (err) {
+    if (err instanceof OrderManagerError) throw err;
+
+    // DB query failed — log but don't block
+    log.warn('window_order_cap_check_failed', {
+      error: err.message,
+      message: 'Cap check failed — proceeding with order',
+    });
+  }
+}
+
+/**
+ * Phase 0.5: Poll for order fill confirmation
+ *
+ * For non-IOC orders, polls the Polymarket API to confirm fill status.
+ * If no confirmation within timeout, marks order as UNKNOWN.
+ *
+ * @param {string} orderId - Order ID to confirm
+ * @param {string} currentStatus - Current order status from placement
+ * @param {Object} log - Logger
+ * @returns {Promise<Object|null>} Confirmed order data or null
+ */
+async function pollForConfirmation(orderId, currentStatus, log) {
+  // If already in a terminal state (filled, rejected, cancelled), skip polling
+  const terminalStates = [OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.EXPIRED];
+  if (terminalStates.includes(currentStatus)) {
+    return null; // No polling needed
+  }
+
+  const startTime = Date.now();
+  let lastStatus = currentStatus;
+
+  while (Date.now() - startTime < CONFIRMATION_TIMEOUT_MS) {
+    try {
+      const exchangeOrder = await polymarketClient.getOrder(orderId);
+
+      if (!exchangeOrder) {
+        log.warn('confirmation_poll_order_not_found', { orderId });
+        await sleep(CONFIRMATION_POLL_INTERVAL_MS);
+        continue;
+      }
+
+      const exchangeStatus = exchangeOrder.status;
+
+      if (exchangeStatus === 'matched') {
+        log.info('order_confirmed_filled', {
+          orderId,
+          pollingDurationMs: Date.now() - startTime,
+        });
+        return { status: OrderStatus.FILLED, exchangeOrder };
+      }
+
+      if (exchangeStatus === 'cancelled' || exchangeStatus === 'expired' || exchangeStatus === 'killed') {
+        log.info('order_confirmed_terminal', {
+          orderId,
+          exchangeStatus,
+          pollingDurationMs: Date.now() - startTime,
+        });
+        return { status: exchangeStatus === 'cancelled' || exchangeStatus === 'killed'
+          ? OrderStatus.CANCELLED : OrderStatus.EXPIRED, exchangeOrder };
+      }
+
+      lastStatus = exchangeStatus;
+    } catch (err) {
+      log.warn('confirmation_poll_error', {
+        orderId,
+        error: err.message,
+        elapsedMs: Date.now() - startTime,
+      });
+    }
+
+    await sleep(CONFIRMATION_POLL_INTERVAL_MS);
+  }
+
+  // Timeout — mark as UNKNOWN
+  log.error('order_confirmation_timeout', {
+    level: 'CRITICAL',
+    orderId,
+    lastKnownStatus: lastStatus,
+    timeoutMs: CONFIRMATION_TIMEOUT_MS,
+    message: 'Order confirmation timed out. Marking as UNKNOWN to block re-entry.',
+  });
+
+  return { status: OrderStatus.UNKNOWN, exchangeOrder: null };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Phase 0.7: Unified execute entry point.
+ *
+ * Routes signal to the correct fill source based on mode, then returns a
+ * uniform result that downstream code (PositionManager, StopLoss, TakeProfit,
+ * Settlement) can consume identically.
+ *
+ * @param {Object} signal - Trading signal
+ * @param {string} signal.tokenId - Token to trade
+ * @param {string} signal.side - 'buy' or 'sell'
+ * @param {number} signal.size - Dollar amount (buy) or shares (sell)
+ * @param {number} signal.price - Limit price
+ * @param {string} signal.orderType - Order type (GTC, FOK, IOC)
+ * @param {string} signal.windowId - Window ID
+ * @param {string} signal.marketId - Market ID
+ * @param {Object} [signal.signalContext] - Signal context metadata
+ * @param {string} mode - Trading mode: LIVE, PAPER, DRY_RUN
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Uniform order result
+ */
+export async function execute(signal, mode, log) {
+  switch (mode) {
+    case TradingMode.LIVE:
+      return placeOrder(signal, log, {});
+    case TradingMode.DRY_RUN:
+      return placeDryRunOrder(signal, log);
+    case TradingMode.PAPER:
+      return placePaperOrder(signal, log);
+    default:
+      throw new OrderManagerError(
+        OrderManagerErrorCodes.VALIDATION_FAILED,
+        `Unknown trading mode: ${mode}. Must be LIVE, PAPER, or DRY_RUN.`,
+        { mode }
+      );
+  }
+}
+
+/**
+ * Phase 0.7: Place a paper order — simulated fill using CLOB best prices.
+ *
+ * Identical validation to live, but fills are simulated locally.
+ * Persists to orders table with mode='PAPER' and a synthetic order ID.
+ * Unlike DRY_RUN, PAPER orders are meant to be tracked through the full
+ * position lifecycle (stop-loss, take-profit, settlement).
+ *
+ * @param {Object} params - Same as placeOrder
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Synthetic order result matching live placeOrder shape
+ */
+export async function placePaperOrder(params, log) {
+  const { tokenId, side, size, price, orderType, windowId, marketId, signalContext } = params;
+
+  // 1. Validate parameters — identical to live
+  validateOrderParams(params);
+
+  // 1c. Hard cap check
+  await checkWindowOrderCap(windowId, tokenId, log);
+
+  // 2. Log intent
+  const intentPayload = {
+    tokenId, side, size, price, orderType, windowId, marketId,
+    mode: 'PAPER',
+    requestedAt: new Date().toISOString(),
+  };
+
+  const intentId = await writeAhead.logIntent(
+    writeAhead.INTENT_TYPES.PLACE_ORDER,
+    windowId,
+    intentPayload
+  );
+
+  log.info('paper_order_payload', {
+    intentId, tokenId, side, size, price, orderType, windowId, marketId,
+    signalContext,
+    message: 'PAPER: Simulated order using CLOB best prices',
+  });
+
+  writeAhead.markExecuting(intentId);
+
+  const startTime = Date.now();
+  const orderSubmittedAt = new Date().toISOString();
+
+  try {
+    // 3. Fetch CLOB best bid/ask for realistic fill simulation
+    let orderBookSnapshot = null;
+    let simulatedFillPrice = price; // fallback
+
+    try {
+      const bestPrices = await polymarketClient.getBestPrices(tokenId);
+      orderBookSnapshot = {
+        bid: bestPrices.bid,
+        ask: bestPrices.ask,
+        spread: bestPrices.spread,
+        midpoint: bestPrices.midpoint,
+        capturedAt: new Date().toISOString(),
+      };
+
+      // Simulate realistic fill: ask for buys, bid for sells
+      if (side === Side.BUY && bestPrices.ask != null) {
+        simulatedFillPrice = bestPrices.ask;
+      } else if (side === Side.SELL && bestPrices.bid != null) {
+        simulatedFillPrice = bestPrices.bid;
+      }
+
+      log.info('paper_book_snapshot', {
+        tokenId, bid: bestPrices.bid, ask: bestPrices.ask,
+        spread: bestPrices.spread, simulatedFillPrice,
+      });
+    } catch (bookErr) {
+      log.warn('paper_book_fetch_failed', {
+        tokenId, error: bookErr.message,
+        message: 'Using requested price as fill price',
+      });
+    }
+
+    // 4. Generate synthetic order ID
+    const syntheticOrderId = `paper-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const orderAckedAt = new Date().toISOString();
+    const latencyMs = Date.now() - startTime;
+    recordLatency(latencyMs);
+
+    // 5. Simulate immediate fill
+    const status = OrderStatus.FILLED;
+    const orderFilledAt = orderAckedAt;
+
+    const actualFilledSize = side === Side.BUY
+      ? (simulatedFillPrice > 0 ? size / simulatedFillPrice : size)
+      : size;
+    const actualFillPrice = simulatedFillPrice;
+
+    // 6. Persist order record with mode='PAPER'
+    const orderRecord = {
+      order_id: syntheticOrderId,
+      intent_id: intentId,
+      position_id: null,
+      window_id: windowId,
+      market_id: marketId,
+      token_id: tokenId,
+      side,
+      order_type: orderType,
+      price,
+      size,
+      filled_size: actualFilledSize,
+      avg_fill_price: actualFillPrice,
+      fee_amount: 0,
+      status,
+      submitted_at: orderSubmittedAt,
+      latency_ms: latencyMs,
+      filled_at: orderFilledAt,
+      cancelled_at: null,
+      error_message: null,
+      original_edge: signalContext?.edge ?? null,
+      original_model_probability: signalContext?.modelProbability ?? null,
+      symbol: signalContext?.symbol ?? null,
+      strategy_id: signalContext?.strategyId ?? null,
+      side_token: signalContext?.sideToken ?? null,
+    };
+
+    let dbWriteFailed = false;
+    try {
+      await persistence.run(
+        `INSERT INTO orders (
+          order_id, intent_id, position_id, window_id, market_id, token_id,
+          side, order_type, price, size, filled_size, avg_fill_price,
+          status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
+          original_edge, original_model_probability, symbol, strategy_id, side_token,
+          fee_amount, mode, order_book_snapshot
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
+        [
+          orderRecord.order_id, orderRecord.intent_id, orderRecord.position_id,
+          orderRecord.window_id, orderRecord.market_id, orderRecord.token_id,
+          orderRecord.side, orderRecord.order_type, orderRecord.price,
+          orderRecord.size, orderRecord.filled_size, orderRecord.avg_fill_price,
+          orderRecord.status, orderRecord.submitted_at, orderRecord.latency_ms,
+          orderRecord.filled_at, orderRecord.cancelled_at, orderRecord.error_message,
+          orderRecord.original_edge, orderRecord.original_model_probability,
+          orderRecord.symbol, orderRecord.strategy_id, orderRecord.side_token,
+          orderRecord.fee_amount,
+          'PAPER',
+          orderBookSnapshot ? JSON.stringify(orderBookSnapshot) : null,
+        ]
+      );
+    } catch (dbErr) {
+      dbWriteFailed = true;
+      log.error('paper_order_db_insert_failed', {
+        orderId: syntheticOrderId, error: dbErr.message,
+      });
+    }
+
+    // 7. Record stats and mark intent completed
+    recordOrderPlaced();
+
+    writeAhead.markCompleted(intentId, {
+      orderId: syntheticOrderId, status, latencyMs, mode: 'PAPER',
+    });
+
+    log.info('paper_order_filled', {
+      orderId: syntheticOrderId, status, latencyMs, side, size,
+      simulatedFillPrice: actualFillPrice,
+      simulatedFilledSize: actualFilledSize,
+      orderBookSnapshot,
+    });
+
+    // 8. Return result matching live placeOrder shape
+    return {
+      orderId: syntheticOrderId,
+      status,
+      latencyMs,
+      intentId,
+      orderSubmittedToExchange: false,
+      dbWriteFailed,
+      fillPrice: actualFillPrice,
+      filledSize: actualFilledSize,
+      fillCost: size,
+      feeAmount: 0,
+      mode: 'PAPER',
+      orderBookSnapshot,
+      timestamps: {
+        orderSubmittedAt, orderAckedAt, orderFilledAt,
+      },
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - startTime;
+
+    writeAhead.markFailed(intentId, {
+      code: err.code || 'UNKNOWN', message: err.message, latencyMs, mode: 'PAPER',
+    });
+
+    log.error('paper_order_failed', {
+      intentId, error: err.message, code: err.code, latencyMs,
+    });
+
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.SUBMISSION_FAILED,
+      `Paper order failed: ${err.message}`,
+      { intentId, originalError: err.message, code: err.code, orderSubmittedToExchange: false, params }
+    );
+  }
+}
+
+/**
+ * Phase 0.6: Place a dry-run order — full code path except the final POST to Polymarket.
+ *
+ * - Validates params identically to live
+ * - Logs the full order payload that WOULD have been sent
+ * - Fetches CLOB best bid/ask for realistic fill simulation
+ * - Simulates immediate fill: bid for buys, ask for sells
+ * - Records order book snapshot at decision time
+ * - Persists to DB with mode='DRY_RUN' and a synthetic order ID
+ * - Full write-ahead logging, same as live
+ *
+ * @param {Object} params - Same as placeOrder
+ * @param {Object} log - Logger instance
+ * @returns {Promise<Object>} Synthetic order result matching live placeOrder shape
+ */
+export async function placeDryRunOrder(params, log) {
+  const { tokenId, side, size, price, orderType, windowId, marketId, signalContext } = params;
+
+  // 1. Validate parameters — identical to live
+  validateOrderParams(params);
+
+  // 1c. Hard cap check — still enforce in dry-run
+  await checkWindowOrderCap(windowId, tokenId, log);
+
+  // 2. Log the full order payload that WOULD have been sent
+  const intentPayload = {
+    tokenId,
+    side,
+    size,
+    price,
+    orderType,
+    windowId,
+    marketId,
+    mode: 'DRY_RUN',
+    requestedAt: new Date().toISOString(),
+  };
+
+  const intentId = await writeAhead.logIntent(
+    writeAhead.INTENT_TYPES.PLACE_ORDER,
+    windowId,
+    intentPayload
+  );
+
+  log.info('dry_run_order_payload', {
+    intentId,
+    tokenId,
+    side,
+    size,
+    price,
+    orderType,
+    windowId,
+    marketId,
+    signalContext,
+    message: 'DRY_RUN: Full order payload that would have been sent to Polymarket',
+  });
+
+  writeAhead.markExecuting(intentId);
+
+  const startTime = Date.now();
+  const orderSubmittedAt = new Date().toISOString();
+
+  try {
+    // 3. Fetch CLOB best bid/ask for realistic fill simulation
+    let orderBookSnapshot = null;
+    let simulatedFillPrice = price; // fallback to requested price
+
+    try {
+      const bestPrices = await polymarketClient.getBestPrices(tokenId);
+      orderBookSnapshot = {
+        bid: bestPrices.bid,
+        ask: bestPrices.ask,
+        spread: bestPrices.spread,
+        midpoint: bestPrices.midpoint,
+        capturedAt: new Date().toISOString(),
+      };
+
+      // Simulate realistic fill: bid for buys, ask for sells
+      if (side === Side.BUY && bestPrices.ask != null) {
+        simulatedFillPrice = bestPrices.ask;
+      } else if (side === Side.SELL && bestPrices.bid != null) {
+        simulatedFillPrice = bestPrices.bid;
+      }
+
+      log.info('dry_run_book_snapshot', {
+        tokenId,
+        bid: bestPrices.bid,
+        ask: bestPrices.ask,
+        spread: bestPrices.spread,
+        simulatedFillPrice,
+      });
+    } catch (bookErr) {
+      log.warn('dry_run_book_fetch_failed', {
+        tokenId,
+        error: bookErr.message,
+        message: 'Using requested price as fill price — CLOB unavailable',
+      });
+    }
+
+    // 4. Generate synthetic order ID
+    const syntheticOrderId = `dryrun-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const orderAckedAt = new Date().toISOString();
+    const latencyMs = Date.now() - startTime;
+    recordLatency(latencyMs);
+
+    // 5. Simulate immediate fill
+    const status = OrderStatus.FILLED;
+    const orderFilledAt = orderAckedAt;
+
+    // Simulated fill amounts
+    const actualFilledSize = side === Side.BUY
+      ? (simulatedFillPrice > 0 ? size / simulatedFillPrice : size)
+      : size;
+    const actualFillPrice = simulatedFillPrice;
+
+    // 6. Build and persist order record
+    const orderRecord = {
+      order_id: syntheticOrderId,
+      intent_id: intentId,
+      position_id: null,
+      window_id: windowId,
+      market_id: marketId,
+      token_id: tokenId,
+      side,
+      order_type: orderType,
+      price,
+      size,
+      filled_size: actualFilledSize,
+      avg_fill_price: actualFillPrice,
+      fee_amount: 0,
+      status,
+      submitted_at: orderSubmittedAt,
+      latency_ms: latencyMs,
+      filled_at: orderFilledAt,
+      cancelled_at: null,
+      error_message: null,
+      original_edge: signalContext?.edge ?? null,
+      original_model_probability: signalContext?.modelProbability ?? null,
+      symbol: signalContext?.symbol ?? null,
+      strategy_id: signalContext?.strategyId ?? null,
+      side_token: signalContext?.sideToken ?? null,
+    };
+
+    let dbWriteFailed = false;
+    try {
+      await persistence.run(
+        `INSERT INTO orders (
+          order_id, intent_id, position_id, window_id, market_id, token_id,
+          side, order_type, price, size, filled_size, avg_fill_price,
+          status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
+          original_edge, original_model_probability, symbol, strategy_id, side_token,
+          fee_amount, mode, order_book_snapshot
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
+        [
+          orderRecord.order_id,
+          orderRecord.intent_id,
+          orderRecord.position_id,
+          orderRecord.window_id,
+          orderRecord.market_id,
+          orderRecord.token_id,
+          orderRecord.side,
+          orderRecord.order_type,
+          orderRecord.price,
+          orderRecord.size,
+          orderRecord.filled_size,
+          orderRecord.avg_fill_price,
+          orderRecord.status,
+          orderRecord.submitted_at,
+          orderRecord.latency_ms,
+          orderRecord.filled_at,
+          orderRecord.cancelled_at,
+          orderRecord.error_message,
+          orderRecord.original_edge,
+          orderRecord.original_model_probability,
+          orderRecord.symbol,
+          orderRecord.strategy_id,
+          orderRecord.side_token,
+          orderRecord.fee_amount,
+          'DRY_RUN',
+          orderBookSnapshot ? JSON.stringify(orderBookSnapshot) : null,
+        ]
+      );
+    } catch (dbErr) {
+      dbWriteFailed = true;
+      log.error('dry_run_order_db_insert_failed', {
+        orderId: syntheticOrderId,
+        error: dbErr.message,
+      });
+    }
+
+    // 7. Record stats and mark intent completed
+    recordOrderPlaced();
+
+    writeAhead.markCompleted(intentId, {
+      orderId: syntheticOrderId,
+      status,
+      latencyMs,
+      mode: 'DRY_RUN',
+    });
+
+    log.info('dry_run_order_filled', {
+      orderId: syntheticOrderId,
+      status,
+      latencyMs,
+      side,
+      size,
+      simulatedFillPrice: actualFillPrice,
+      simulatedFilledSize: actualFilledSize,
+      orderBookSnapshot,
+    });
+
+    // 8. Return result matching live placeOrder shape
+    return {
+      orderId: syntheticOrderId,
+      status,
+      latencyMs,
+      intentId,
+      orderSubmittedToExchange: false, // CRITICAL: no money left the account
+      dbWriteFailed,
+      fillPrice: actualFillPrice,
+      filledSize: actualFilledSize,
+      fillCost: size,
+      feeAmount: 0,
+      mode: 'DRY_RUN',
+      orderBookSnapshot,
+      timestamps: {
+        orderSubmittedAt,
+        orderAckedAt,
+        orderFilledAt,
+      },
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - startTime;
+
+    writeAhead.markFailed(intentId, {
+      code: err.code || 'UNKNOWN',
+      message: err.message,
+      latencyMs,
+      mode: 'DRY_RUN',
+    });
+
+    log.error('dry_run_order_failed', {
+      intentId,
+      error: err.message,
+      code: err.code,
+      latencyMs,
+    });
+
+    throw new OrderManagerError(
+      OrderManagerErrorCodes.SUBMISSION_FAILED,
+      `Dry-run order failed: ${err.message}`,
+      {
+        intentId,
+        originalError: err.message,
+        code: err.code,
+        orderSubmittedToExchange: false,
+        params,
+      }
+    );
+  }
+}
+
 /**
  * Place an order with write-ahead logging
  *
  * Flow:
  * 1. Validate parameters
+ * 1b. Phase 0.5: Verify USDC balance (buy orders)
+ * 1c. Phase 0.5: Check window/instrument order cap
  * 2. Log intent BEFORE API call
  * 3. Mark intent as executing
  * 4. Call Polymarket API
  * 5. Record latency and persist order
+ * 5b. Phase 0.5: Poll for confirmation (non-IOC GTC orders)
  * 6. Mark intent completed/failed
  *
  * @param {Object} params - Order parameters
@@ -128,13 +822,28 @@ function mapPolymarketStatus(polymarketStatus, isImmediateOrder = false) {
  * @param {string} [params.signalContext.strategyId] - Strategy that generated signal
  * @param {string} [params.signalContext.sideToken] - Token side (UP or DOWN)
  * @param {Object} log - Logger instance
+ * @param {Object} [options] - Options
+ * @param {string} [options.mode] - Trading mode (LIVE, DRY_RUN). If DRY_RUN, routes to placeDryRunOrder.
  * @returns {Promise<Object>} Order result with orderId, status, latencyMs
  */
-export async function placeOrder(params, log) {
+export async function placeOrder(params, log, options = {}) {
+  // Phase 0.6: Route to dry-run path if mode is DRY_RUN
+  if (options.mode === 'DRY_RUN') {
+    return placeDryRunOrder(params, log);
+  }
+
   const { tokenId, side, size, price, orderType, windowId, marketId, signalContext } = params;
 
   // 1. Validate parameters
   validateOrderParams(params);
+
+  // 1b. Phase 0.5: Balance verification (buy orders only)
+  if (side === Side.BUY) {
+    await verifyBalance(size, log);
+  }
+
+  // 1c. Phase 0.5: Hard cap check — max orders per window per instrument
+  await checkWindowOrderCap(windowId, tokenId, log);
 
   // 2. Log intent BEFORE API call
   const intentPayload = {
@@ -181,12 +890,83 @@ export async function placeOrder(params, log) {
     const latencyMs = Date.now() - startTime;
     recordLatency(latencyMs);
 
+    // 7.5 Validate order_id — must never be null/undefined
+    if (!result.orderId) {
+      const noIdErr = new OrderManagerError(
+        OrderManagerErrorCodes.VALIDATION_FAILED,
+        'Exchange returned no order_id — refusing to persist',
+        { result, params }
+      );
+      writeAhead.markFailed(intentId, {
+        code: 'MISSING_ORDER_ID',
+        message: noIdErr.message,
+      });
+      throw noIdErr;
+    }
+
     // 8. Determine order status from API response
     const isImmediateOrder = orderType === 'FOK' || orderType === 'IOC';
-    const status = mapPolymarketStatus(result.status, isImmediateOrder);
+    let status = mapPolymarketStatus(result.status, isImmediateOrder);
+
+    // 8b. Phase 0.5: For non-immediate orders (GTC) that are OPEN, poll for confirmation
+    let confirmedFillData = null;
+    if (!isImmediateOrder && status === OrderStatus.OPEN && result.orderId) {
+      const confirmation = await pollForConfirmation(result.orderId, status, log);
+      if (confirmation) {
+        status = confirmation.status;
+        if (confirmation.exchangeOrder) {
+          confirmedFillData = confirmation.exchangeOrder;
+        }
+      }
+    }
 
     // 9. Capture orderFilledAt if order was immediately filled
     const orderFilledAt = status === OrderStatus.FILLED ? orderAckedAt : null;
+
+    // 9b. Phase 0.5: Extract actual fill amounts from exchange (not requested amounts)
+    // Priority: confirmed poll data > initial result data > requested values
+    let actualFilledSize = 0;
+    let actualFillPrice = null;
+    let feeAmount = 0;
+
+    if (status === OrderStatus.FILLED) {
+      // Use actual fill data from exchange
+      actualFilledSize = result.shares ?? result.cost ?? size;
+      actualFillPrice = result.priceFilled ?? price;
+
+      // Phase 0.5: Extract fee from raw order result
+      if (result.raw) {
+        const rawFee = result.raw.fee || result.raw.takerFee || result.raw.makerFee || 0;
+        feeAmount = typeof rawFee === 'string' ? parseFloat(rawFee) / 1_000_000 : rawFee;
+      }
+
+      // Override with confirmed data if available (from polling)
+      if (confirmedFillData) {
+        if (confirmedFillData.size_matched != null) {
+          actualFilledSize = parseFloat(confirmedFillData.size_matched);
+        }
+        if (confirmedFillData.price != null) {
+          const parsed = parseFloat(confirmedFillData.price);
+          if (parsed >= 0.01 && parsed <= 0.99) {
+            actualFillPrice = parsed;
+          }
+        }
+        if (confirmedFillData.fee != null) {
+          const parsedFee = parseFloat(confirmedFillData.fee);
+          if (!isNaN(parsedFee)) {
+            feeAmount = parsedFee;
+          }
+        }
+      }
+
+      log.info('fill_data_captured', {
+        orderId: result.orderId,
+        actualFilledSize,
+        actualFillPrice,
+        feeAmount,
+        source: confirmedFillData ? 'confirmation_poll' : 'initial_response',
+      });
+    }
 
     // 10. Build order record
     const orderRecord = {
@@ -200,14 +980,17 @@ export async function placeOrder(params, log) {
       order_type: orderType,
       price,
       size,
-      filled_size: status === OrderStatus.FILLED ? (result.cost ?? size) : 0,
-      avg_fill_price: status === OrderStatus.FILLED ? (result.priceFilled ?? price) : null,
+      filled_size: actualFilledSize,
+      avg_fill_price: actualFillPrice,
+      fee_amount: feeAmount,
       status,
       submitted_at: orderSubmittedAt,
       latency_ms: latencyMs,
       filled_at: orderFilledAt,
       cancelled_at: null,
-      error_message: null,
+      error_message: status === OrderStatus.UNKNOWN
+        ? 'Order confirmation timed out — status unknown'
+        : null,
       // Signal context for stale order detection
       original_edge: signalContext?.edge ?? null,
       original_model_probability: signalContext?.modelProbability ?? null,
@@ -225,8 +1008,9 @@ export async function placeOrder(params, log) {
           order_id, intent_id, position_id, window_id, market_id, token_id,
           side, order_type, price, size, filled_size, avg_fill_price,
           status, submitted_at, latency_ms, filled_at, cancelled_at, error_message,
-          original_edge, original_model_probability, symbol, strategy_id, side_token
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+          original_edge, original_model_probability, symbol, strategy_id, side_token,
+          fee_amount
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
         [
           orderRecord.order_id,
           orderRecord.intent_id,
@@ -251,6 +1035,7 @@ export async function placeOrder(params, log) {
           orderRecord.symbol,
           orderRecord.strategy_id,
           orderRecord.side_token,
+          orderRecord.fee_amount,
         ]
       );
 
@@ -287,6 +1072,7 @@ export async function placeOrder(params, log) {
       side,
       size,
       price,
+      feeAmount,
     });
 
     // 14. Return result with timestamps and fill data
@@ -297,10 +1083,11 @@ export async function placeOrder(params, log) {
       intentId,
       orderSubmittedToExchange: true, // CRITICAL: caller must know money may have left the account
       dbWriteFailed,
-      // Actual fill data from exchange (not request values)
-      fillPrice: result.priceFilled ?? null,
-      filledSize: result.shares ?? null,
+      // Phase 0.5: Actual fill data from exchange (not request values)
+      fillPrice: actualFillPrice,
+      filledSize: actualFilledSize || result.shares || null,
       fillCost: result.cost ?? null,
+      feeAmount,
       timestamps: {
         orderSubmittedAt,
         orderAckedAt,
@@ -390,7 +1177,7 @@ export async function updateOrderStatus(orderId, newStatus, updates = {}, log) {
   // Whitelist of allowed column names to prevent SQL injection
   const ALLOWED_COLUMNS = new Set([
     'status', 'filled_size', 'avg_fill_price', 'filled_at',
-    'cancelled_at', 'error_message', 'position_id',
+    'cancelled_at', 'error_message', 'position_id', 'fee_amount',
   ]);
 
   // Validate all column names against whitelist

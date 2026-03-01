@@ -18,6 +18,12 @@ import { child } from '../logger/index.js';
 import { PositionManagerError, PositionManagerErrorCodes } from './types.js';
 import * as logic from './logic.js';
 import { getStats, clearState, calculateTotalExposure, getLastReconciliation } from './state.js';
+import {
+  transitionState as transitionLifecycleState,
+  evaluateExit as evaluateExitLogic,
+  isLocked as isLifecycleLocked,
+  isMonitoring as isLifecycleMonitoring,
+} from './lifecycle.js';
 
 // Module state
 let log = null;
@@ -82,11 +88,12 @@ export async function getPosition(positionId) {
 /**
  * Get all open positions
  *
+ * @param {string} [mode] - Optional mode filter (LIVE, PAPER, DRY_RUN). If omitted, returns all modes.
  * @returns {Promise<Object[]>} Array of open positions with unrealized_pnl
  */
-export async function getPositions() {
+export async function getPositions(mode) {
   ensureInitialized();
-  return logic.getPositions();
+  return logic.getPositions(mode);
 }
 
 /**
@@ -175,6 +182,58 @@ export async function getState() {
 }
 
 /**
+ * Transition a position's lifecycle state
+ *
+ * @param {number} positionId - Position ID
+ * @param {string} toState - Target lifecycle state
+ * @param {Object} [context] - Additional context for logging
+ * @returns {Promise<Object>} Updated position row
+ * @throws {PositionManagerError} If transition is invalid
+ */
+export async function transitionLifecycle(positionId, toState, context = {}) {
+  ensureInitialized();
+  return transitionLifecycleState(positionId, toState, log, context);
+}
+
+/**
+ * Evaluate exit conditions for a position (single decision function)
+ *
+ * Checks stop-loss, take-profit, and expiry in priority order.
+ * Only evaluates positions in MONITORING state.
+ *
+ * @param {Object} position - Position object
+ * @param {number} currentPrice - Current market price
+ * @param {Object} modules - { stopLoss, takeProfit, windowExpiry }
+ * @param {Object} [windowData] - Window resolution data
+ * @param {Object} [options] - Additional options
+ * @returns {Object|null} Exit trigger or null
+ */
+export function evaluateExit(position, currentPrice, modules, windowData, options) {
+  ensureInitialized();
+  return evaluateExitLogic(position, currentPrice, modules, windowData, options);
+}
+
+/**
+ * Check if a position is in a locked lifecycle state
+ *
+ * @param {Object} position - Position with lifecycle_state
+ * @returns {boolean}
+ */
+export function isPositionLocked(position) {
+  return isLifecycleLocked(position.lifecycle_state);
+}
+
+/**
+ * Check if a position is being monitored (eligible for exit evaluation)
+ *
+ * @param {Object} position - Position with lifecycle_state
+ * @returns {boolean}
+ */
+export function isPositionMonitoring(position) {
+  return isLifecycleMonitoring(position.lifecycle_state);
+}
+
+/**
  * Shutdown the module gracefully
  *
  * @returns {Promise<void>}
@@ -216,3 +275,5 @@ export {
   PositionStatus,
   Side,
 } from './types.js';
+
+export { LifecycleState } from './lifecycle.js';

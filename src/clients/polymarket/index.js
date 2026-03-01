@@ -226,6 +226,17 @@ export async function sell(tokenId, shares, price, orderType = 'GTC') {
 }
 
 /**
+ * Get order details by ID (for confirmation polling)
+ *
+ * @param {string} orderId - Order ID
+ * @returns {Promise<Object>} Order details from Polymarket API
+ */
+export async function getOrder(orderId) {
+  ensureInitialized();
+  return client.getOrder(orderId);
+}
+
+/**
  * Cancel an order
  *
  * @param {string} orderId - Order ID to cancel

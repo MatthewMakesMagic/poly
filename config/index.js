@@ -74,11 +74,16 @@ function validateTradingMode() {
     return { mode: 'PAPER', isLive: false };
   }
 
-  // Must be exactly PAPER or LIVE
-  if (normalized !== 'PAPER' && normalized !== 'LIVE') {
+  // Must be exactly PAPER, LIVE, or DRY_RUN
+  if (normalized !== 'PAPER' && normalized !== 'LIVE' && normalized !== 'DRY_RUN') {
     throw new Error(
-      `[config] FATAL: TRADING_MODE must be 'PAPER' or 'LIVE', got '${raw}'`
+      `[config] FATAL: TRADING_MODE must be 'PAPER', 'LIVE', or 'DRY_RUN', got '${raw}'`
     );
+  }
+
+  // DRY_RUN mode: full code path except final POST to Polymarket
+  if (normalized === 'DRY_RUN') {
+    return { mode: 'DRY_RUN', isLive: false };
   }
 
   // LIVE mode requires explicit confirmation
@@ -266,8 +271,8 @@ const config = {
   risk: {
     maxPositionSize: 100,
     maxExposure: 1000,
-    dailyDrawdownLimit: null, // DISABLED
-    positionLimitPerMarket: null, // DISABLED
+    dailyDrawdownLimit: 0.02, // 2% of starting capital ($20 on $1000)
+    positionLimitPerMarket: 1, // 1 position per market at a time
   },
 
   // Logging configuration
@@ -317,7 +322,7 @@ const config = {
   safety: {
     startingCapital: parseStartingCapital(),
     unrealizedUpdateIntervalMs: 5000,
-    drawdownWarningPct: null, // DISABLED
+    drawdownWarningPct: 0.01, // 1% warning ($10 on $1000) before 2% auto-stop
     // auto-stop state persisted in PostgreSQL (auto_stop_state table)
   },
 
@@ -415,7 +420,7 @@ const config = {
     },
     takeProfit: {
       enabled: true,
-      defaultTakeProfitPct: null, // DISABLED - hold to expiry
+      defaultTakeProfitPct: 0.30, // 30% fixed take-profit (fallback when trailing disabled)
       trailingEnabled: true,
       trailingActivationPct: 0.01,
       trailingPullbackPct: 0.30,

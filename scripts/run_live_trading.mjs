@@ -29,11 +29,59 @@ console.log(`[STARTUP] LIVE_TRADING_ENABLED (after dotenv): "${process.env.LIVE_
 
 // Now import the configuration and orchestrator
 import { createServer } from 'http';
+import { readFile } from 'fs/promises';
+import { join, extname } from 'path';
+import { fileURLToPath } from 'url';
 import config from '../config/index.js';
 import * as orchestrator from '../src/modules/orchestrator/index.js';
 import persistence from '../src/persistence/index.js';
 import { init as initLogger, child } from '../src/modules/logger/index.js';
 import { buildStatusResponse, buildHealthResponse } from './health-endpoint.mjs';
+import { attachDashboard, handleDashboardRequest, shutdownDashboard } from './dashboard-api.mjs';
+
+// Dashboard static file serving
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const DASHBOARD_DIR = join(__dirname, '..', 'dashboard', 'dist');
+const MIME_TYPES = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+async function serveStatic(req, res) {
+  const urlPath = req.url.split('?')[0];
+  const filePath = join(DASHBOARD_DIR, urlPath === '/' ? 'index.html' : urlPath);
+
+  // Prevent path traversal
+  if (!filePath.startsWith(DASHBOARD_DIR)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+
+  try {
+    const data = await readFile(filePath);
+    const ext = extname(filePath);
+    res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+    res.end(data);
+  } catch {
+    // SPA fallback: serve index.html for unmatched paths (client-side routing)
+    try {
+      const index = await readFile(join(DASHBOARD_DIR, 'index.html'));
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(index);
+    } catch {
+      res.writeHead(404);
+      res.end('Not Found');
+    }
+  }
+}
 
 // Initialize logger BEFORE creating any child loggers
 await initLogger({ level: config.logging?.level || 'info', console: true });
@@ -174,8 +222,11 @@ function createHealthServer() {
         res.end(JSON.stringify({ healthy: false, error: 'internal_error' }));
       }
     } else {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not Found' }));
+      // Try dashboard API routes, then serve static dashboard files
+      const handled = await handleDashboardRequest(req, res);
+      if (!handled) {
+        await serveStatic(req, res);
+      }
     }
   });
 
@@ -196,7 +247,10 @@ async function shutdown(signal) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
   try {
-    // Close HTTP server first
+    // Close dashboard WebSocket connections first
+    shutdownDashboard();
+
+    // Close HTTP server
     if (httpServer) {
       await new Promise((resolve) => {
         httpServer.close(() => {
@@ -288,7 +342,12 @@ async function main() {
       log.info('http_server_started', { port: PORT });
       console.log(`   Health endpoint: http://localhost:${PORT}/api/live/status`);
       console.log(`   Health check:    http://localhost:${PORT}/health`);
+      console.log(`   Dashboard API:   http://localhost:${PORT}/api/state`);
+      console.log(`   Dashboard WS:    ws://localhost:${PORT}/ws`);
     });
+
+    // Attach dashboard WebSocket + REST API to the HTTP server
+    attachDashboard(httpServer, child({ module: 'dashboard-api' }));
 
     // Start the execution loop
     log.info('orchestrator_starting');

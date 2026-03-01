@@ -34,6 +34,7 @@ let fallbackOpen = false; // Set true if DB is unreachable during trip
 let escalationInterval = null;
 let orderManagerRef = null;
 let orchestratorRef = null;
+let alerterRef = null;
 
 /**
  * Get the current escalation stage based on time since trip
@@ -282,6 +283,15 @@ export async function trip(reason, context = {}) {
     tripped_at: now.toISOString(),
   });
 
+  // Send alert via alerter module
+  if (alerterRef?.send) {
+    alerterRef.send('circuit_breaker_trip', {
+      reason,
+      ...context,
+      tripped_at: now.toISOString(),
+    }).catch(() => {});
+  }
+
   startEscalation();
 }
 
@@ -452,6 +462,16 @@ export function setOrchestrator(ref) {
 }
 
 /**
+ * Set alerter reference for sending alerts on trip
+ *
+ * @param {Object} ref - Alerter module reference with send() method
+ */
+export function setAlerter(ref) {
+  alerterRef = ref;
+  if (log) log.info('alerter_wired');
+}
+
+/**
  * Shutdown the circuit breaker module
  */
 export async function shutdown() {
@@ -460,6 +480,7 @@ export async function shutdown() {
   stopEscalation();
   orderManagerRef = null;
   orchestratorRef = null;
+  alerterRef = null;
   initialized = false;
   currentState = CBState.CLOSED;
   currentTripReason = null;

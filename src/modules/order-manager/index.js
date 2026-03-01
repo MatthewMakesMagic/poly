@@ -44,6 +44,25 @@ export async function init(cfg) {
 }
 
 /**
+ * Phase 0.7: Unified execute entry point.
+ *
+ * Single code path that routes to different fill sources based on mode:
+ *   LIVE    -> Polymarket API -> real fill
+ *   PAPER   -> SimulatedBook -> simulated fill (persisted with mode='PAPER')
+ *   DRY_RUN -> Log only -> synthetic fill at CLOB price
+ *
+ * Everything downstream is identical: PositionManager.open, StopLoss, TakeProfit, Settlement.
+ *
+ * @param {Object} signal - Trading signal / order parameters
+ * @param {string} mode - Trading mode: 'LIVE', 'PAPER', or 'DRY_RUN'
+ * @returns {Promise<Object>} Uniform order result
+ */
+export async function execute(signal, mode) {
+  ensureInitialized();
+  return logic.execute(signal, mode, log);
+}
+
+/**
  * Place a new order
  *
  * @param {Object} params - Order parameters
@@ -54,12 +73,14 @@ export async function init(cfg) {
  * @param {string} params.orderType - Order type (GTC, FOK, IOC)
  * @param {string} params.windowId - Window ID for tracking
  * @param {string} params.marketId - Market ID
+ * @param {Object} [options] - Options
+ * @param {string} [options.mode] - Trading mode. If 'DRY_RUN', simulates fill without Polymarket POST.
  * @returns {Promise<Object>} Order result { orderId, status, latencyMs, intentId }
  * @throws {OrderManagerError} If validation fails or submission fails
  */
-export async function placeOrder(params) {
+export async function placeOrder(params, options = {}) {
   ensureInitialized();
-  return logic.placeOrder(params, log);
+  return logic.placeOrder(params, log, options);
 }
 
 /**
@@ -214,4 +235,5 @@ export {
   OrderStatus,
   OrderType,
   Side,
+  TradingMode,
 } from './types.js';

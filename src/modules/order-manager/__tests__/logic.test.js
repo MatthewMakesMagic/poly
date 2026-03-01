@@ -32,18 +32,24 @@ vi.mock('../../../persistence/write-ahead.js', () => ({
 
 vi.mock('../../../clients/polymarket/index.js', () => ({
   buy: vi.fn().mockResolvedValue({
-    orderID: 'order-123',
+    orderId: 'order-123',
     status: 'live',
     success: true,
   }),
   sell: vi.fn().mockResolvedValue({
-    orderID: 'order-456',
+    orderId: 'order-456',
     status: 'matched',
     success: true,
   }),
   cancelOrder: vi.fn().mockResolvedValue({
     success: true,
   }),
+  // Phase 0.5: Balance verification
+  getUSDCBalance: vi.fn().mockResolvedValue(1000),
+  // Phase 0.5: Order confirmation polling — return matched to avoid 5s timeout
+  getOrder: vi.fn().mockResolvedValue({ status: 'matched', size_matched: '10' }),
+  // Phase 0.6: DRY_RUN mode — CLOB best prices for simulated fill
+  getBestPrices: vi.fn().mockResolvedValue({ bid: 0.48, ask: 0.52, spread: 0.04, midpoint: 0.50 }),
 }));
 
 // Import after mocks
@@ -79,7 +85,14 @@ describe('Order Manager Logic', () => {
     clearStats();
     // Reset persistence mocks to defaults
     persistence.run.mockResolvedValue({ lastInsertRowid: 1, changes: 1 });
-    persistence.get.mockResolvedValue(undefined);
+    // Phase 0.5: persistence.get is used for both order lookups and cap check.
+    // Default: cap check returns 0 orders, order lookups return undefined.
+    persistence.get.mockImplementation((sql) => {
+      if (sql && sql.includes('COUNT(*)')) {
+        return Promise.resolve({ count: 0 });
+      }
+      return Promise.resolve(undefined);
+    });
     persistence.all.mockResolvedValue([]);
   });
 
@@ -87,7 +100,7 @@ describe('Order Manager Logic', () => {
     const validParams = {
       tokenId: 'token-1',
       side: 'buy',
-      size: 100,
+      size: 5,
       price: 0.5,
       orderType: 'GTC',
       windowId: 'window-1',
@@ -124,7 +137,7 @@ describe('Order Manager Logic', () => {
 
     it('allows null price for market orders', async () => {
       await logic.placeOrder({ ...validParams, price: null }, mockLog);
-      expect(polymarketClient.buy).toHaveBeenCalledWith('token-1', 100, null, 'GTC');
+      expect(polymarketClient.buy).toHaveBeenCalledWith('token-1', 5, null, 'GTC');
     });
 
     it('logs intent with correct payload', async () => {
@@ -136,7 +149,7 @@ describe('Order Manager Logic', () => {
         expect.objectContaining({
           tokenId: 'token-1',
           side: 'buy',
-          size: 100,
+          size: 5,
           price: 0.5,
           orderType: 'GTC',
           windowId: 'window-1',
@@ -177,7 +190,7 @@ describe('Order Manager Logic', () => {
       expect(params).toContain('buy'); // side
       expect(params).toContain('GTC'); // order_type
       expect(params).toContain(0.5); // price
-      expect(params).toContain(100); // size
+      expect(params).toContain(5); // size
     });
 
     it('records order placement in stats (not cache)', async () => {
@@ -195,7 +208,9 @@ describe('Order Manager Logic', () => {
         1,
         expect.objectContaining({
           orderId: 'order-123',
-          status: 'open',
+          // Phase 0.5: GTC orders go through confirmation polling.
+          // Mock getOrder returns 'matched', so status resolves to 'filled'.
+          status: 'filled',
           latencyMs: expect.any(Number),
         })
       );
@@ -213,11 +228,92 @@ describe('Order Manager Logic', () => {
     });
   });
 
+  describe('placeOrder() dollar cap', () => {
+    const validParams = {
+      tokenId: 'token-1',
+      side: 'buy',
+      size: 3,
+      price: 0.5,
+      orderType: 'GTC',
+      windowId: 'window-1',
+      marketId: 'market-1',
+    };
+
+    it('allows orders at or below the $5 cap', async () => {
+      const result = await logic.placeOrder({ ...validParams, size: 5 }, mockLog);
+      expect(result.orderId).toBeDefined();
+    });
+
+    it('rejects orders exceeding the $5 cap', async () => {
+      await expect(
+        logic.placeOrder({ ...validParams, size: 5.01 }, mockLog)
+      ).rejects.toThrow('exceeds per-order cap');
+    });
+
+    it('rejects large orders well above the cap', async () => {
+      await expect(
+        logic.placeOrder({ ...validParams, size: 100 }, mockLog)
+      ).rejects.toThrow('exceeds per-order cap');
+    });
+  });
+
+  describe('placeOrder() order_id null guard', () => {
+    const validParams = {
+      tokenId: 'token-1',
+      side: 'buy',
+      size: 3,
+      price: 0.5,
+      orderType: 'GTC',
+      windowId: 'window-1',
+      marketId: 'market-1',
+    };
+
+    it('throws when exchange returns no orderId', async () => {
+      polymarketClient.buy.mockResolvedValueOnce({
+        orderId: null,
+        status: 'live',
+        success: true,
+      });
+
+      await expect(
+        logic.placeOrder(validParams, mockLog)
+      ).rejects.toThrow('Exchange returned no order_id');
+    });
+
+    it('throws when exchange returns undefined orderId', async () => {
+      polymarketClient.buy.mockResolvedValueOnce({
+        status: 'live',
+        success: true,
+      });
+
+      await expect(
+        logic.placeOrder(validParams, mockLog)
+      ).rejects.toThrow('Exchange returned no order_id');
+    });
+
+    it('marks intent as failed when orderId is missing', async () => {
+      polymarketClient.buy.mockResolvedValueOnce({
+        orderId: null,
+        status: 'live',
+        success: true,
+      });
+
+      await expect(logic.placeOrder(validParams, mockLog)).rejects.toThrow();
+
+      expect(writeAhead.markFailed).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          code: 'MISSING_ORDER_ID',
+        })
+      );
+    });
+  });
+
   describe('placeOrder() error handling', () => {
     const validParams = {
       tokenId: 'token-1',
       side: 'buy',
-      size: 100,
+      size: 3,
       price: 0.5,
       orderType: 'GTC',
       windowId: 'window-1',
@@ -1004,7 +1100,7 @@ describe('Order Manager Logic', () => {
     const validParams = {
       tokenId: 'token-1',
       side: 'buy',
-      size: 100,
+      size: 5,
       price: 0.5,
       orderType: 'FOK',
       windowId: 'window-1',
@@ -1013,25 +1109,25 @@ describe('Order Manager Logic', () => {
 
     it('returns fill data from matched FOK order', async () => {
       polymarketClient.buy.mockResolvedValueOnce({
-        orderID: 'fok-order-1',
+        orderId: 'fok-order-1',
         status: 'matched',
         success: true,
         priceFilled: 0.48,
         shares: 208.33,
-        cost: 100,
+        cost: 5,
       });
 
       const result = await logic.placeOrder(validParams, mockLog);
 
       expect(result.fillPrice).toBe(0.48);
       expect(result.filledSize).toBe(208.33);
-      expect(result.fillCost).toBe(100);
+      expect(result.fillCost).toBe(5);
       expect(result.orderSubmittedToExchange).toBe(true);
     });
 
     it('returns null fill data when no fill info returned', async () => {
       polymarketClient.buy.mockResolvedValueOnce({
-        orderID: 'gtc-order-1',
+        orderId: 'gtc-order-1',
         status: 'live',
         success: true,
       });
@@ -1051,6 +1147,166 @@ describe('Order Manager Logic', () => {
       } catch (err) {
         expect(err.context.orderSubmittedToExchange).toBe(false);
       }
+    });
+  });
+
+  describe('placeDryRunOrder()', () => {
+    const validParams = {
+      tokenId: 'token-1',
+      side: 'buy',
+      size: 5,
+      price: 0.5,
+      orderType: 'IOC',
+      windowId: 'window-1',
+      marketId: 'market-1',
+    };
+
+    it('validates params identically to live', async () => {
+      await expect(
+        logic.placeDryRunOrder({ ...validParams, tokenId: null }, mockLog)
+      ).rejects.toThrow('tokenId is required');
+    });
+
+    it('returns a synthetic order ID prefixed with dryrun-', async () => {
+      const result = await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(result.orderId).toMatch(/^dryrun-/);
+      expect(result.status).toBe('filled');
+      expect(result.mode).toBe('DRY_RUN');
+    });
+
+    it('does NOT call buy/sell on Polymarket', async () => {
+      polymarketClient.buy.mockClear();
+      polymarketClient.sell.mockClear();
+
+      await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(polymarketClient.buy).not.toHaveBeenCalled();
+      expect(polymarketClient.sell).not.toHaveBeenCalled();
+    });
+
+    it('fetches CLOB best prices for realistic fill', async () => {
+      const result = await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(polymarketClient.getBestPrices).toHaveBeenCalledWith('token-1');
+      // Buy order fills at the ask price (0.52)
+      expect(result.fillPrice).toBe(0.52);
+    });
+
+    it('uses bid for sell orders', async () => {
+      const result = await logic.placeDryRunOrder(
+        { ...validParams, side: 'sell' },
+        mockLog
+      );
+
+      // Sell order fills at the bid price (0.48)
+      expect(result.fillPrice).toBe(0.48);
+    });
+
+    it('marks orderSubmittedToExchange as false', async () => {
+      const result = await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(result.orderSubmittedToExchange).toBe(false);
+    });
+
+    it('includes order book snapshot', async () => {
+      const result = await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(result.orderBookSnapshot).toBeDefined();
+      expect(result.orderBookSnapshot.bid).toBe(0.48);
+      expect(result.orderBookSnapshot.ask).toBe(0.52);
+      expect(result.orderBookSnapshot.spread).toBe(0.04);
+    });
+
+    it('persists to DB with mode=DRY_RUN', async () => {
+      await logic.placeDryRunOrder(validParams, mockLog);
+
+      const insertCall = persistence.run.mock.calls.find((call) =>
+        call[0].includes('INSERT INTO orders')
+      );
+      expect(insertCall).toBeDefined();
+      // mode param should be 'DRY_RUN'
+      expect(insertCall[1]).toContain('DRY_RUN');
+    });
+
+    it('logs full order payload', async () => {
+      await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(mockLog.info).toHaveBeenCalledWith(
+        'dry_run_order_payload',
+        expect.objectContaining({
+          tokenId: 'token-1',
+          side: 'buy',
+          size: 5,
+          price: 0.5,
+          orderType: 'IOC',
+          message: expect.stringContaining('DRY_RUN'),
+        })
+      );
+    });
+
+    it('records write-ahead intent and marks completed', async () => {
+      await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(writeAhead.logIntent).toHaveBeenCalledWith(
+        'place_order',
+        'window-1',
+        expect.objectContaining({ mode: 'DRY_RUN' })
+      );
+      expect(writeAhead.markExecuting).toHaveBeenCalled();
+      expect(writeAhead.markCompleted).toHaveBeenCalledWith(
+        expect.any(Number),
+        expect.objectContaining({ mode: 'DRY_RUN' })
+      );
+    });
+
+    it('falls back to requested price when CLOB unavailable', async () => {
+      polymarketClient.getBestPrices.mockRejectedValueOnce(new Error('API down'));
+
+      const result = await logic.placeDryRunOrder(validParams, mockLog);
+
+      expect(result.fillPrice).toBe(0.5); // fallback to requested price
+      expect(result.orderBookSnapshot).toBeNull();
+    });
+
+    it('records stats like live orders', async () => {
+      clearStats();
+
+      await logic.placeDryRunOrder(validParams, mockLog);
+
+      const stats = getStats();
+      expect(stats.ordersPlaced).toBe(1);
+    });
+
+    it('is routed via placeOrder with mode=DRY_RUN option', async () => {
+      const result = await logic.placeOrder(validParams, mockLog, { mode: 'DRY_RUN' });
+
+      expect(result.orderId).toMatch(/^dryrun-/);
+      expect(result.mode).toBe('DRY_RUN');
+      // Should NOT call buy/sell
+      expect(polymarketClient.buy).not.toHaveBeenCalled();
+    });
+
+    it('enforces window order cap in dry-run mode', async () => {
+      // Mock cap check to return 2 existing orders
+      persistence.get.mockImplementation((sql) => {
+        if (sql && sql.includes('COUNT(*)')) {
+          return Promise.resolve({ count: 2 });
+        }
+        return Promise.resolve(undefined);
+      });
+
+      await expect(
+        logic.placeDryRunOrder(validParams, mockLog)
+      ).rejects.toThrow('Max 2 orders per window per instrument');
+
+      // Reset mock
+      persistence.get.mockImplementation((sql) => {
+        if (sql && sql.includes('COUNT(*)')) {
+          return Promise.resolve({ count: 0 });
+        }
+        return Promise.resolve(undefined);
+      });
     });
   });
 });
