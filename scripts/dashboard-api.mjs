@@ -715,23 +715,32 @@ export async function handleDashboardRequest(req, res) {
           const epochMatch = trade.window_id?.match(/-(\d{9,10})$/);
           const epoch = epochMatch ? parseInt(epochMatch[1], 10) : null;
 
+          // Determine which outcome token was bought by querying the
+          // market data from the window_close_events
           let tokenSide = null;
-          if (epoch && symbol) {
-            // Try to look up from window_manager market data
-            const market = await persistence.get(
-              `SELECT token_id_up, token_id_down FROM window_backtest_states
-               WHERE symbol = $1 AND window_epoch = $2 LIMIT 1`,
-              [symbol.toUpperCase(), epoch]
-            );
-            if (market) {
-              if (trade.token_id === market.token_id_up) tokenSide = 'up';
-              else if (trade.token_id === market.token_id_down) tokenSide = 'down';
+
+          // The canary strategy buys the CLOB-favored side (market_consensus_direction)
+          // If entry_price > 0.5, we bought the consensus side
+          // If entry_price < 0.5, we bought the opposite side
+          const consensusRow = await persistence.get(
+            `SELECT market_consensus_direction FROM window_close_events WHERE window_id = $1`,
+            [trade.window_id]
+          );
+
+          if (consensusRow?.market_consensus_direction) {
+            const consensus = consensusRow.market_consensus_direction.toLowerCase();
+            const entryPrice = Number(trade.entry_price);
+            // entry_price > 0.5 means we bought the more expensive (consensus) token
+            if (entryPrice > 0.5) {
+              tokenSide = consensus;
+            } else {
+              tokenSide = consensus === 'up' ? 'down' : 'up';
             }
           }
 
           if (!tokenSide) {
             results.skipped++;
-            results.details.push({ id: trade.id, reason: 'cannot_determine_token_side' });
+            results.details.push({ id: trade.id, reason: 'cannot_determine_token_side', entry_price: Number(trade.entry_price) });
             continue;
           }
 
