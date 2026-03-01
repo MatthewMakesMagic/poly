@@ -129,7 +129,7 @@ function buildStatePayload(state) {
   return {
     // System status
     systemState: state.state,
-    tradingMode: state.manifest?.trading_mode || 'PAPER',
+    tradingMode: modules['runtime-controls']?.controls?.trading_mode || state.manifest?.trading_mode || 'PAPER',
     startedAt: state.startedAt,
     uptime: state.startedAt
       ? Math.floor((Date.now() - new Date(state.startedAt).getTime()) / 1000)
