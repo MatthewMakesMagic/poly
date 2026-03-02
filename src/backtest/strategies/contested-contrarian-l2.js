@@ -13,6 +13,7 @@
  */
 
 export const name = 'contested-contrarian-l2';
+export const description = 'Enhanced contested-contrarian that adds L2 order book confirmation (bid/ask depth imbalance, spread) before betting with exchange direction in near-50/50 windows.';
 
 export const defaults = {
   maxClobBias: 0.65,
@@ -20,7 +21,7 @@ export const defaults = {
   exchangeThreshold: 15,
   entryWindowMs: 90000,
   maxEntryPrice: 0.60,
-  positionSize: 1,
+  capitalPerTrade: 2,
   // L2 params
   minDepthImbalance: 0.0,     // Min bid/ask depth ratio to confirm (0 = no L2 filter)
   useL2Confirmation: true,    // Whether to require L2 confirmation
@@ -45,7 +46,7 @@ export function evaluate(state, config) {
     exchangeThreshold = defaults.exchangeThreshold,
     entryWindowMs = defaults.entryWindowMs,
     maxEntryPrice = defaults.maxEntryPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
     minDepthImbalance = defaults.minDepthImbalance,
     useL2Confirmation = defaults.useL2Confirmation,
   } = config;
@@ -92,7 +93,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-up`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `contested_l2: exch $${exchangeDiff.toFixed(0)} above, UP=${upMid.toFixed(3)}, L2_ok`,
       confidence: Math.min(Math.abs(exchangeDiff) / 50, 1),
     }];
@@ -103,7 +104,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-down`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `contested_l2: exch $${exchangeDiff.toFixed(0)} below, DOWN=${downMid.toFixed(3)}, L2_ok`,
       confidence: Math.min(Math.abs(exchangeDiff) / 50, 1),
     }];

@@ -12,12 +12,13 @@
  */
 
 export const name = 'clob-value-buyer';
+export const description = 'Contrarian value buyer that purchases tokens trading below fair value when Chainlink suggests a direction but CLOB has not yet repriced, exploiting MM risk-vs-certainty mispricing.';
 
 export const defaults = {
   maxPrice: 0.55,            // Max price for the "value" token (must be cheap)
   clSignalThreshold: 20,     // CL must suggest direction by this many $
   entryWindowMs: 180000,     // Enter in last 3 min
-  positionSize: 1,
+  capitalPerTrade: 2,
 };
 
 export const sweepGrid = {
@@ -37,7 +38,7 @@ export function evaluate(state, config) {
     maxPrice = defaults.maxPrice,
     clSignalThreshold = defaults.clSignalThreshold,
     entryWindowMs = defaults.entryWindowMs,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
   const { strike, chainlink, clobUp, clobDown, window: win } = state;
@@ -55,7 +56,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-up`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `value_buy: CL $${clAboveStrike.toFixed(0)} above, UP ask=${clobUp.bestAsk.toFixed(3)}`,
       confidence: Math.min((1 - clobUp.bestAsk) * clAboveStrike / 50, 1),
     }];
@@ -67,7 +68,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-down`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `value_buy: CL $${Math.abs(clAboveStrike).toFixed(0)} below, DOWN ask=${clobDown.bestAsk.toFixed(3)}`,
       confidence: Math.min((1 - clobDown.bestAsk) * Math.abs(clAboveStrike) / 50, 1),
     }];

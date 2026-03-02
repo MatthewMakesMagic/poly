@@ -1,0 +1,36 @@
+[
+  {
+    "strategy": "contested-contrarian",
+    "symbol": "BTC",
+    "windows": 1666,
+    "trades": 1606,
+    "winRate": 91.5,
+    "totalPnl": 2752.15,
+    "returnPct": 2752.15,
+    "sharpe": 10.11,
+    "maxDD": 1.45,
+    "pf": 11.12,
+    "evTrade": 0.4199,
+    "avgEntry": 0.4954,
+    "edge": 0.4199,
+    "dollarPnl": 1.7137,
+    "avgCost": 2,
+    "roc": 85.68,
+    "avgTokens": 4.05
+  },
+  {
+    "strategy": "contested-contrarian",
+    "symbol": "ETH",
+    "error": "Query failed: timeout exceeded when trying to connect"
+  },
+  {
+    "strategy": "contested-contrarian",
+    "symbol": "SOL",
+    "error": "Query failed: timeout exceeded when trying to connect"
+  },
+  {
+    "strategy": "contested-contrarian",
+    "symbol": "XRP",
+    "error": "Query failed: timeout exceeded when trying to connect"
+  }
+]

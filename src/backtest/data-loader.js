@@ -69,20 +69,10 @@ export async function* loadRtdsTicksBatched(options) {
 
   const { clauses, params: filterParams } = buildFilters(options);
 
-  let baseSql = `
-    SELECT id, timestamp, topic, symbol, price, received_at
-    FROM rtds_ticks
-    WHERE timestamp >= $1 AND timestamp <= $2
-  `;
-  const baseParams = [startDate, endDate];
-
-  if (clauses.length > 0) {
-    baseSql += ' AND ' + clauses.join(' AND ');
-  }
-
-  baseSql += ' ORDER BY timestamp ASC, id ASC';
-
-  let offset = 0;
+  // Keyset pagination: WHERE id > $lastId ORDER BY id ASC LIMIT $batchSize
+  // Eliminates O(n^2) OFFSET scanning on large tables
+  let lastId = 0;
+  let totalRows = 0;
   let hasMore = true;
 
   log.info('load_rtds_ticks_start', {
@@ -93,22 +83,37 @@ export async function* loadRtdsTicksBatched(options) {
   });
 
   while (hasMore) {
-    const limitIdx = baseParams.length + filterParams.length + 1;
-    const offsetIdx = limitIdx + 1;
-    const sql = `${baseSql} LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
-    const params = [...baseParams, ...filterParams, batchSize, offset];
+    const baseParams = [startDate, endDate, lastId];
+    let sql = `
+      SELECT id, timestamp, topic, symbol, price, received_at
+      FROM rtds_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND id > $3
+    `;
 
-    const rows = await persistence.all(sql, params);
+    if (clauses.length > 0) {
+      // Rebuild filter placeholders starting at $4
+      const { clauses: rebuildClauses, params: rebuildParams } = buildFilters(options, 4);
+      sql += ' AND ' + rebuildClauses.join(' AND ');
+      baseParams.push(...rebuildParams);
+    }
+
+    const limitIdx = baseParams.length + 1;
+    sql += ` ORDER BY id ASC LIMIT $${limitIdx}`;
+    baseParams.push(batchSize);
+
+    const rows = await persistence.all(sql, baseParams);
 
     if (rows.length > 0) {
       yield rows;
-      offset += rows.length;
+      lastId = rows[rows.length - 1].id;
+      totalRows += rows.length;
     }
 
     hasMore = rows.length === batchSize;
   }
 
-  log.info('load_rtds_ticks_complete', { totalRows: offset });
+  log.info('load_rtds_ticks_complete', { totalRows });
 }
 
 /**
@@ -120,7 +125,7 @@ export async function* loadRtdsTicksBatched(options) {
 export async function loadRtdsTicks(options) {
   const result = [];
   for await (const batch of loadRtdsTicksBatched(options)) {
-    result.push(...batch);
+    for (const row of batch) result.push(row);
   }
   return result;
 }
@@ -198,38 +203,85 @@ export async function loadClobSnapshots(options) {
 // ─── Exchange Ticks ───
 
 /**
+ * Load exchange ticks in batches using keyset pagination.
+ * Yields batches of rows for memory-efficient processing.
+ *
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @param {string[]} [options.symbols]
+ * @param {string[]} [options.exchanges]
+ * @param {number} [options.batchSize=500000]
+ * @yields {Object[]} Batches of tick rows
+ */
+async function* loadExchangeTicksBatched(options) {
+  const { startDate, endDate, batchSize = 500000 } = options;
+
+  if (!startDate || !endDate) {
+    throw new Error('startDate and endDate are required');
+  }
+
+  let lastId = 0;
+  let totalRows = 0;
+  let hasMore = true;
+
+  log.info('load_exchange_ticks_start', {
+    startDate, endDate,
+    symbols: options.symbols || 'all',
+    batchSize,
+  });
+
+  while (hasMore) {
+    const baseParams = [startDate, endDate, lastId];
+    let sql = `
+      SELECT id, timestamp, exchange, symbol, price, bid, ask
+      FROM exchange_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND id > $3
+    `;
+
+    const { clauses, params: filterParams } = buildFilters(options, 4);
+    if (clauses.length > 0) {
+      sql += ' AND ' + clauses.join(' AND ');
+    }
+    baseParams.push(...filterParams);
+
+    const limitIdx = baseParams.length + 1;
+    sql += ` ORDER BY id ASC LIMIT $${limitIdx}`;
+    baseParams.push(batchSize);
+
+    const rows = await persistence.all(sql, baseParams);
+
+    if (rows.length > 0) {
+      yield rows;
+      lastId = rows[rows.length - 1].id;
+      totalRows += rows.length;
+    }
+
+    hasMore = rows.length === batchSize;
+  }
+
+  log.info('load_exchange_ticks_complete', { totalRows });
+}
+
+/**
  * Load exchange ticks (binance, coinbase, kraken, bybit, okx).
+ * Uses batched keyset pagination for large result sets.
  *
  * @param {Object} options
  * @param {string} options.startDate
  * @param {string} options.endDate
  * @param {string[]} [options.symbols]
  * @param {string[]} [options.exchanges] - Filter to specific exchanges
+ * @param {number} [options.batchSize=500000] - Rows per batch
  * @returns {Promise<Object[]>}
  */
 export async function loadExchangeTicks(options) {
-  const { startDate, endDate } = options;
-
-  if (!startDate || !endDate) {
-    throw new Error('startDate and endDate are required');
+  const result = [];
+  for await (const batch of loadExchangeTicksBatched(options)) {
+    for (const row of batch) result.push(row);
   }
-
-  const { clauses, params: filterParams } = buildFilters(options);
-
-  let sql = `
-    SELECT timestamp, exchange, symbol, price, bid, ask
-    FROM exchange_ticks
-    WHERE timestamp >= $1 AND timestamp <= $2
-  `;
-  const params = [startDate, endDate];
-
-  if (clauses.length > 0) {
-    sql += ' AND ' + clauses.join(' AND ');
-  }
-
-  sql += ' ORDER BY timestamp ASC';
-
-  return persistence.all(sql, [...params, ...filterParams]);
+  return result;
 }
 
 // ─── Window Close Events ───
@@ -394,10 +446,23 @@ export async function loadAllData(options) {
  * @param {Object} options
  * @param {string} options.startDate
  * @param {string} options.endDate
+ * @param {string} [options.symbolPrefix] - Filter by symbol prefix (e.g. 'btc')
  * @returns {Promise<Object[]>}
  */
 async function loadAllClobSnapshots(options) {
-  const { startDate, endDate } = options;
+  const { startDate, endDate, symbolPrefix } = options;
+
+  if (symbolPrefix) {
+    const sql = `
+      SELECT timestamp, symbol, token_id, best_bid, best_ask,
+             mid_price, spread, bid_size_top, ask_size_top, window_epoch
+      FROM clob_price_snapshots
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol LIKE $3
+      ORDER BY timestamp ASC
+    `;
+    return persistence.all(sql, [startDate, endDate, `${symbolPrefix.toLowerCase()}%`]);
+  }
 
   const sql = `
     SELECT timestamp, symbol, token_id, best_bid, best_ask,
@@ -408,6 +473,46 @@ async function loadAllClobSnapshots(options) {
   `;
 
   return persistence.all(sql, [startDate, endDate]);
+}
+
+/**
+ * Load all data for a single symbol. Memory-efficient alternative to loadAllData().
+ * CLOB + exchange ticks are filtered to the symbol; rtds ticks are shared across symbols.
+ *
+ * @param {Object} options
+ * @param {string} options.startDate
+ * @param {string} options.endDate
+ * @param {string} options.symbol - Symbol to filter (e.g. 'btc')
+ * @param {Object} [options.sharedRtds] - Pre-loaded rtds ticks (avoids reloading)
+ * @returns {Promise<{ rtdsTicks: Object[], clobSnapshots: Object[], exchangeTicks: Object[] }>}
+ */
+export async function loadAllDataForSymbol(options) {
+  const { startDate, endDate, symbol, sharedRtds } = options;
+
+  if (!startDate || !endDate || !symbol) {
+    throw new Error('startDate, endDate, and symbol are required');
+  }
+
+  log.info('load_data_for_symbol_start', { startDate, endDate, symbol });
+
+  const rtdsPromise = sharedRtds
+    ? Promise.resolve(sharedRtds)
+    : loadRtdsTicks({ startDate, endDate, topics: ['crypto_prices_chainlink', 'crypto_prices'] });
+
+  const [rtdsTicks, clobSnapshots, exchangeTicks] = await Promise.all([
+    rtdsPromise,
+    loadAllClobSnapshots({ startDate, endDate, symbolPrefix: symbol }),
+    loadExchangeTicks({ startDate, endDate, symbols: [symbol.toLowerCase()] }),
+  ]);
+
+  log.info('load_data_for_symbol_complete', {
+    symbol,
+    rtdsTicks: rtdsTicks.length,
+    clobSnapshots: clobSnapshots.length,
+    exchangeTicks: exchangeTicks.length,
+  });
+
+  return { rtdsTicks, clobSnapshots, exchangeTicks };
 }
 
 // ─── Per-Window Data Loading (for remote databases) ───

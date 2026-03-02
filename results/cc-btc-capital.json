@@ -1,0 +1,21 @@
+[
+  {
+    "strategy": "contested-contrarian",
+    "symbol": "BTC",
+    "windows": 1658,
+    "trades": 1598,
+    "winRate": 91.6,
+    "totalPnl": 2739.56,
+    "returnPct": 2739.56,
+    "sharpe": 10.13,
+    "maxDD": 1.45,
+    "pf": 11.15,
+    "evTrade": 0.4201,
+    "avgEntry": 0.4954,
+    "edge": 0.4201,
+    "dollarPnl": 1.7144,
+    "avgCost": 2,
+    "roc": 85.72,
+    "avgTokens": 4.05
+  }
+]

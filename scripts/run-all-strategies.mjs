@@ -160,11 +160,15 @@ async function main() {
           evPerTrade: round(binaryMetrics.evPerTrade, 4),
           avgEntry: round(binaryMetrics.avgEntryPrice, 4),
           edgeCaptured: round(binaryMetrics.edgeCaptured, 4),
+          dollarPnlPerTrade: round(binaryMetrics.dollarPnlPerTrade, 4),
+          avgCost: round(binaryMetrics.avgCostPerTrade, 4),
+          returnOnCapital: round(binaryMetrics.returnOnCapitalPerTrade * 100, 2),
+          avgTokens: round(binaryMetrics.avgTokensPerTrade, 2),
           elapsed: `${elapsed}s`,
         };
 
         results.push(row);
-        console.log(` ${row.trades} trades, ${row.winRate}% WR, $${row.totalPnl} PnL, ${row.sharpe} Sharpe [${elapsed}s]`);
+        console.log(` ${row.trades} trades, ${row.winRate}% WR, $${row.totalPnl} PnL, $${row.dollarPnlPerTrade}/trade, ${row.returnOnCapital}% ROC [${elapsed}s]`);
       } catch (err) {
         console.log(` ERROR: ${err.message}`);
         results.push({
@@ -209,11 +213,15 @@ async function main() {
         evPerTrade: round(binaryMetrics.evPerTrade, 4),
         avgEntry: round(binaryMetrics.avgEntryPrice, 4),
         edgeCaptured: round(binaryMetrics.edgeCaptured, 4),
+        dollarPnlPerTrade: round(binaryMetrics.dollarPnlPerTrade, 4),
+        avgCost: round(binaryMetrics.avgCostPerTrade, 4),
+        returnOnCapital: round(binaryMetrics.returnOnCapitalPerTrade * 100, 2),
+        avgTokens: round(binaryMetrics.avgTokensPerTrade, 2),
         elapsed: `${elapsed}s`,
       };
 
       results.push(row);
-      console.log(` ${row.trades} trades, ${row.winRate}% WR, $${row.totalPnl} PnL, ${row.sharpe} Sharpe [${elapsed}s]`);
+      console.log(` ${row.trades} trades, ${row.winRate}% WR, $${row.totalPnl} PnL, $${row.dollarPnlPerTrade}/trade, ${row.returnOnCapital}% ROC [${elapsed}s]`);
     } catch (err) {
       console.log(` ERROR: ${err.message}`);
     }
@@ -221,51 +229,49 @@ async function main() {
   }
 
   // Print comparison table
-  console.log('\n' + '='.repeat(140));
-  console.log('STRATEGY COMPARISON TABLE (Gamma Ground Truth)');
-  console.log('='.repeat(140));
+  console.log('\n' + '='.repeat(180));
+  console.log('STRATEGY COMPARISON TABLE (Gamma Ground Truth, $2/trade capital-based sizing)');
+  console.log('='.repeat(180));
 
   const header = [
     'Strategy'.padEnd(25),
-    'Symbol'.padEnd(8),
-    'Windows'.padStart(8),
-    'Trades'.padStart(8),
-    'WinRate%'.padStart(9),
-    'TotalPnL'.padStart(10),
-    'Return%'.padStart(9),
-    'Sharpe'.padStart(8),
-    'MaxDD%'.padStart(8),
-    'PF'.padStart(6),
-    'EV/Trade'.padStart(10),
+    'Symbol'.padEnd(6),
+    'Trades'.padStart(7),
+    'WR%'.padStart(6),
+    'TotalPnL$'.padStart(11),
+    '$/Trade'.padStart(9),
+    'AvgCost$'.padStart(9),
+    'ROC%'.padStart(8),
+    'Sharpe'.padStart(7),
     'AvgEntry'.padStart(9),
-    'Edge'.padStart(8),
+    'AvgTkns'.padStart(8),
+    'PF'.padStart(6),
   ].join(' | ');
   console.log(header);
-  console.log('-'.repeat(140));
+  console.log('-'.repeat(180));
 
   for (const r of results) {
     if (r.error) {
-      console.log(`${(r.strategy || '').padEnd(25)} | ${(r.symbol || '').padEnd(8)} | ERROR: ${r.error}`);
+      console.log(`${(r.strategy || '').padEnd(25)} | ${(r.symbol || '').padEnd(6)} | ERROR: ${r.error}`);
       continue;
     }
     const row = [
       (r.strategy || '').padEnd(25),
-      (r.symbol || '').padEnd(8),
-      String(r.windows).padStart(8),
-      String(r.trades).padStart(8),
-      `${r.winRate}%`.padStart(9),
-      `$${r.totalPnl}`.padStart(10),
-      `${r.returnPct}%`.padStart(9),
-      String(r.sharpe).padStart(8),
-      `${r.maxDrawdown}%`.padStart(8),
-      String(r.profitFactor).padStart(6),
-      `$${r.evPerTrade}`.padStart(10),
+      (r.symbol || '').padEnd(6),
+      String(r.trades).padStart(7),
+      `${r.winRate}`.padStart(6),
+      `$${r.totalPnl}`.padStart(11),
+      `$${r.dollarPnlPerTrade}`.padStart(9),
+      `$${r.avgCost}`.padStart(9),
+      `${r.returnOnCapital}%`.padStart(8),
+      String(r.sharpe).padStart(7),
       String(r.avgEntry).padStart(9),
-      String(r.edgeCaptured).padStart(8),
+      String(r.avgTokens).padStart(8),
+      String(r.profitFactor).padStart(6),
     ].join(' | ');
     console.log(row);
   }
-  console.log('='.repeat(140));
+  console.log('='.repeat(180));
 
   // Flag profitable strategies
   console.log('\n--- Profitable Strategies (>55% WR and positive PnL across multiple symbols) ---');

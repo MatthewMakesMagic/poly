@@ -12,6 +12,7 @@
  */
 
 export const name = 'contested-contrarian';
+export const description = 'Targets contested windows (CLOB near 50/50) and bets with exchange median direction, exploiting the ~5s lead exchanges have over Chainlink oracle.';
 
 export const defaults = {
   maxClobBias: 0.65,         // Max CLOB price for either side (must be contested)
@@ -19,7 +20,7 @@ export const defaults = {
   exchangeThreshold: 15,     // Exchange must lean this far from strike
   entryWindowMs: 90000,      // Last 90s
   maxEntryPrice: 0.60,       // Max token price (contested windows should be near 0.50)
-  positionSize: 1,
+  capitalPerTrade: 2,        // $2 per trade — tokens = capital / fillPrice
 };
 
 export const sweepGrid = {
@@ -42,7 +43,7 @@ export function evaluate(state, config) {
     exchangeThreshold = defaults.exchangeThreshold,
     entryWindowMs = defaults.entryWindowMs,
     maxEntryPrice = defaults.maxEntryPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
   const { strike, clobUp, clobDown, window: win } = state;
@@ -69,7 +70,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-up`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `contested_contra: exch $${exchangeDiff.toFixed(0)} above, CLOB UP=${upMid.toFixed(3)}`,
       confidence: Math.min(Math.abs(exchangeDiff) / 50, 1),
     }];
@@ -80,7 +81,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-down`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `contested_contra: exch $${exchangeDiff.toFixed(0)} below, CLOB DOWN=${downMid.toFixed(3)}`,
       confidence: Math.min(Math.abs(exchangeDiff) / 50, 1),
     }];

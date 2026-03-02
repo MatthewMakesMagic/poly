@@ -13,13 +13,14 @@
  */
 
 export const name = 'late-momentum-reversal';
+export const description = 'Fades sharp CLOB price moves in the final 60-90s of a window. When MMs panic-reprice and CLOB momentum overshoots, bets on mean reversion since the VWAP-based oracle is slower to move.';
 
 export const defaults = {
   momentumThreshold: 0.08,   // Min CLOB price change to trigger fade (e.g. UP drops 0.08 in lookback)
   lookbackMs: 15000,          // Lookback period for momentum calculation (15s)
   entryWindowMs: 60000,       // Only enter in last 60s
   maxEntryPrice: 0.75,        // Max price for the counter-token
-  positionSize: 1,
+  capitalPerTrade: 2,
   fadeDirection: 'both',      // 'up_fade' (fade UP momentum), 'down_fade', or 'both'
 };
 
@@ -49,7 +50,7 @@ export function evaluate(state, config) {
     lookbackMs = defaults.lookbackMs,
     entryWindowMs = defaults.entryWindowMs,
     maxEntryPrice = defaults.maxEntryPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
     fadeDirection = defaults.fadeDirection,
   } = config;
 
@@ -84,7 +85,7 @@ export function evaluate(state, config) {
         signals.push({
           action: 'buy',
           token: `${win.symbol}-down`,
-          size: positionSize,
+          capitalPerTrade,
           reason: `late_reversal: fade UP surge=${momentum.toFixed(3)} over ${lookbackMs}ms`,
           confidence: Math.min(momentum / 0.20, 1),
         });
@@ -104,7 +105,7 @@ export function evaluate(state, config) {
         signals.push({
           action: 'buy',
           token: `${win.symbol}-up`,
-          size: positionSize,
+          capitalPerTrade,
           reason: `late_reversal: fade DOWN surge=${momentum.toFixed(3)} over ${lookbackMs}ms`,
           confidence: Math.min(momentum / 0.20, 1),
         });

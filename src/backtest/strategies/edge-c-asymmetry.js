@@ -12,6 +12,7 @@
  */
 
 export const name = 'edge-c-asymmetry';
+export const description = 'Exploits the structural ~$80 gap between Chainlink (settlement oracle) and exchange prices. Buys DOWN when polyRef is near strike but Chainlink is significantly below, since settlement uses the lower CL value.';
 
 /**
  * Default strategy parameters.
@@ -22,7 +23,7 @@ export const defaults = {
   nearStrikeThreshold: 100,   // polyRef must be within this of strike
   entryWindowMs: 120000,      // Only enter within last 2 min of window
   maxDownPrice: 0.65,         // Max price willing to pay for DOWN token
-  positionSize: 1,            // Tokens to buy
+  capitalPerTrade: 2,         // $2 per trade — tokens = capital / fillPrice
 };
 
 /**
@@ -38,7 +39,7 @@ export function evaluate(state, config) {
     nearStrikeThreshold = defaults.nearStrikeThreshold,
     entryWindowMs = defaults.entryWindowMs,
     maxDownPrice = defaults.maxDownPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
   const { strike, chainlink, polyRef, clobDown, window: win } = state;
@@ -58,7 +59,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token,
-      size: positionSize,
+      capitalPerTrade,
       reason: `edge_c: deficit=$${deficit.toFixed(0)}, ref_gap=$${(polyRef.price - strike).toFixed(0)}`,
       confidence: Math.min(deficit / 150, 1),
     }];

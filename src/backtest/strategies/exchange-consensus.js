@@ -9,13 +9,14 @@
  */
 
 export const name = 'exchange-consensus';
+export const description = 'Bets when 3+ exchanges agree on direction relative to strike. More conservative than single-exchange strategies, requiring multi-exchange consensus before entry.';
 
 export const defaults = {
   minExchangesAgreeing: 3,   // At least N exchanges must agree
   exchangeThreshold: 20,     // Each exchange must be this far from strike
   entryWindowMs: 120000,     // Last 2 min
   maxEntryPrice: 0.75,
-  positionSize: 1,
+  capitalPerTrade: 2,
 };
 
 export const sweepGrid = {
@@ -37,7 +38,7 @@ export function evaluate(state, config) {
     exchangeThreshold = defaults.exchangeThreshold,
     entryWindowMs = defaults.entryWindowMs,
     maxEntryPrice = defaults.maxEntryPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
   const { strike, clobUp, clobDown, window: win } = state;
@@ -66,7 +67,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-up`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `exch_consensus: ${aboveCount}/${exchanges.length} above strike by $${exchangeThreshold}+`,
       confidence: Math.min(aboveCount / exchanges.length, 1),
     }];
@@ -78,7 +79,7 @@ export function evaluate(state, config) {
     return [{
       action: 'buy',
       token: `${win.symbol}-down`,
-      size: positionSize,
+      capitalPerTrade,
       reason: `exch_consensus: ${belowCount}/${exchanges.length} below strike by $${exchangeThreshold}+`,
       confidence: Math.min(belowCount / exchanges.length, 1),
     }];

@@ -13,13 +13,14 @@
  */
 
 export const name = 'exchange-oracle-divergence';
+export const description = 'Bets with exchange direction when exchanges and Chainlink oracle disagree. Exchanges lead oracles by ~5s, so when they diverge, the oracle typically catches up to exchange prices before close.';
 
 export const defaults = {
   exchangeLeadThreshold: 30,   // Exchange must be this many $ above/below strike
   clDisagreeThreshold: 20,     // CL must be at least this many $ in opposite direction
   entryWindowMs: 90000,        // Only enter in last 90s
   maxEntryPrice: 0.70,         // Max token price
-  positionSize: 1,
+  capitalPerTrade: 2,
   minExchanges: 2,             // Need at least N exchanges agreeing
 };
 
@@ -42,7 +43,7 @@ export function evaluate(state, config) {
     clDisagreeThreshold = defaults.clDisagreeThreshold,
     entryWindowMs = defaults.entryWindowMs,
     maxEntryPrice = defaults.maxEntryPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
     minExchanges = defaults.minExchanges,
   } = config;
 
@@ -70,7 +71,7 @@ export function evaluate(state, config) {
       return [{
         action: 'buy',
         token: `${win.symbol}-up`,
-        size: positionSize,
+        capitalPerTrade,
         reason: `exch_oracle_div: exch=${exchangeAboveStrike.toFixed(0)} above, cl=${clAboveStrike.toFixed(0)} below`,
         confidence: Math.min(Math.abs(exchangeAboveStrike) / 100, 1),
       }];
@@ -84,7 +85,7 @@ export function evaluate(state, config) {
       return [{
         action: 'buy',
         token: `${win.symbol}-down`,
-        size: positionSize,
+        capitalPerTrade,
         reason: `exch_oracle_div: exch=${exchangeAboveStrike.toFixed(0)} below, cl=${clAboveStrike.toFixed(0)} above`,
         confidence: Math.min(Math.abs(exchangeAboveStrike) / 100, 1),
       }];

@@ -13,13 +13,14 @@
  */
 
 export const name = 'clob-reversal';
+export const description = 'Buys when CLOB probability drops sharply from its window peak. Targets MM overreaction to short-term oracle moves, entering when price has fallen by a configurable threshold from peak.';
 
 export const defaults = {
   dropThreshold: 0.15,       // Min drop from peak to trigger (e.g. 0.15 = 15 cents)
   entryWindowMs: 180000,     // Only enter within last 3 min of window
   maxEntryPrice: 0.70,       // Max price willing to pay for token
   minPeakPrice: 0.55,        // Peak must have been at least this to count
-  positionSize: 1,
+  capitalPerTrade: 2,
   direction: 'both',         // 'up', 'down', or 'both'
 };
 
@@ -49,7 +50,7 @@ export function evaluate(state, config) {
     entryWindowMs = defaults.entryWindowMs,
     maxEntryPrice = defaults.maxEntryPrice,
     minPeakPrice = defaults.minPeakPrice,
-    positionSize = defaults.positionSize,
+    capitalPerTrade = defaults.capitalPerTrade,
     direction = defaults.direction,
   } = config;
 
@@ -73,7 +74,7 @@ export function evaluate(state, config) {
       signals.push({
         action: 'buy',
         token: `${win.symbol}-up`,
-        size: positionSize,
+        capitalPerTrade,
         reason: `clob_reversal_up: peak=${peakUp.toFixed(3)}, drop=${dropFromPeak.toFixed(3)}`,
         confidence: Math.min(dropFromPeak / 0.30, 1),
       });
@@ -88,7 +89,7 @@ export function evaluate(state, config) {
       signals.push({
         action: 'buy',
         token: `${win.symbol}-down`,
-        size: positionSize,
+        capitalPerTrade,
         reason: `clob_reversal_down: peak=${peakDown.toFixed(3)}, drop=${dropFromPeak.toFixed(3)}`,
         confidence: Math.min(dropFromPeak / 0.30, 1),
       });

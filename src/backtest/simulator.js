@@ -96,11 +96,24 @@ export class Simulator {
       if (fillPrice <= 0 || fillPrice >= 1) {
         return { filled: false, reason: `invalid_fill_price_${fillPrice}` };
       }
-      const cost = fillPrice * signal.size;
+
+      // Capital-based sizing: compute token count from capital allocation
+      let fillSize = signal.size;
+      if (signal.capitalPerTrade != null) {
+        fillSize = signal.capitalPerTrade / fillPrice;
+      }
+
+      const cost = fillPrice * fillSize;
       if (cost > this.capital) {
         return { filled: false, reason: 'insufficient_capital' };
       }
-      return { filled: true, fillPrice, fillSize: signal.size, cost, reason: 'filled' };
+
+      // L2 liquidity check: verify order book has enough depth at the ask
+      if (clobData.askSize != null && clobData.askSize > 0 && fillSize > clobData.askSize) {
+        return { filled: false, reason: 'insufficient_liquidity', requestedSize: fillSize, availableSize: clobData.askSize };
+      }
+
+      return { filled: true, fillPrice, fillSize, cost, reason: 'filled' };
     }
 
     if (signal.action === 'sell') {

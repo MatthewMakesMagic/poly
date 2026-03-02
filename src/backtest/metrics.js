@@ -340,6 +340,10 @@ export function calculateBinaryMetrics(trades) {
       evPerTrade: 0,
       totalEV: 0,
       totalTrades: 0,
+      dollarPnlPerTrade: 0,
+      avgCostPerTrade: 0,
+      returnOnCapitalPerTrade: 0,
+      avgTokensPerTrade: 0,
     };
   }
 
@@ -359,10 +363,17 @@ export function calculateBinaryMetrics(trades) {
   // Positive means we're buying underpriced tokens on average
   const edgeCaptured = winRate - avgEntryPrice;
 
-  // EV per trade = (winRate * (1 - avgEntry)) - ((1 - winRate) * avgEntry)
+  // EV per trade (per token) = (winRate * (1 - avgEntry)) - ((1 - winRate) * avgEntry)
   const evPerTrade = (winRate * (1 - avgEntryPrice)) - ((1 - winRate) * avgEntryPrice);
 
   const totalEV = evPerTrade * trades.length;
+
+  // Dollar-based metrics (account for capital-based sizing)
+  const totalDollarPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const dollarPnlPerTrade = totalDollarPnl / trades.length;
+  const avgCostPerTrade = trades.reduce((s, t) => s + t.cost, 0) / trades.length;
+  const returnOnCapitalPerTrade = avgCostPerTrade > 0 ? dollarPnlPerTrade / avgCostPerTrade : 0;
+  const avgTokensPerTrade = trades.reduce((s, t) => s + t.size, 0) / trades.length;
 
   return {
     winRate,
@@ -373,6 +384,10 @@ export function calculateBinaryMetrics(trades) {
     evPerTrade,
     totalEV,
     totalTrades: trades.length,
+    dollarPnlPerTrade,
+    avgCostPerTrade,
+    returnOnCapitalPerTrade,
+    avgTokensPerTrade,
   };
 }
 
