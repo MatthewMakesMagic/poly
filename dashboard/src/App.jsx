@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import HealthBar from './components/HealthBar.jsx';
 import CommandCenter from './views/CommandCenter.jsx';
@@ -6,11 +6,16 @@ import RiskDashboard from './views/RiskDashboard.jsx';
 import InstrumentDeepDive from './views/InstrumentDeepDive.jsx';
 import TradeHistory from './views/TradeHistory.jsx';
 
+const StrategyLab = lazy(() => import('./views/StrategyLab.jsx'));
+const BacktestReview = lazy(() => import('./views/BacktestReview.jsx'));
+
 const VIEWS = [
   { key: 'command', label: 'Command Center', icon: '\u25C9' },
   { key: 'instruments', label: 'Instruments', icon: '\u25CE' },
   { key: 'risk', label: 'Risk', icon: '\u25B2' },
   { key: 'trades', label: 'History', icon: '\u2630' },
+  { key: 'lab', label: 'Strategy Lab', icon: '\u2B21' },
+  { key: 'backtest', label: 'Backtest', icon: '\u29D6' },
 ];
 
 export default function App() {
@@ -53,6 +58,16 @@ export default function App() {
         )}
         {activeView === 'trades' && (
           <TradeHistory />
+        )}
+        {activeView === 'lab' && (
+          <Suspense fallback={<div className="glass p-12 text-center"><p className="text-xs text-white/30 animate-pulse">Loading Strategy Lab...</p></div>}>
+            <StrategyLab />
+          </Suspense>
+        )}
+        {activeView === 'backtest' && (
+          <Suspense fallback={<div className="glass p-12 text-center"><p className="text-xs text-white/30 animate-pulse">Loading Backtest Review...</p></div>}>
+            <BacktestReview />
+          </Suspense>
         )}
       </main>
     </div>

@@ -26,7 +26,7 @@ const ASSERTION_LABELS = {
   system_heartbeat: 'Heartbeat',
 };
 
-export default function AssertionBoard({ assertions }) {
+export default React.memo(function AssertionBoard({ assertions }) {
   const cbState = assertions?.circuitBreakerState || 'UNKNOWN';
   const results = assertions?.assertions || [];
   const lastCheck = assertions?.lastCheckAt;
@@ -112,4 +112,4 @@ export default function AssertionBoard({ assertions }) {
       </div>
     </div>
   );
-}
+})

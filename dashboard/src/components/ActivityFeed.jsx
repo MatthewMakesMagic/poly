@@ -71,7 +71,7 @@ function formatEventData(event) {
   return keys.slice(0, 3).map(k => `${k}=${JSON.stringify(d[k])}`).join(' ');
 }
 
-export default function ActivityFeed({ events }) {
+export default React.memo(function ActivityFeed({ events }) {
   return (
     <div className="glass p-5">
       <h2 className="section-title mb-4">Activity Feed</h2>
@@ -99,4 +99,4 @@ export default function ActivityFeed({ events }) {
       )}
     </div>
   );
-}
+})

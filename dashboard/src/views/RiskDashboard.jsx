@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import DrawdownChart from '../components/DrawdownChart.jsx';
 import AssertionBoard from '../components/AssertionBoard.jsx';
 import RuntimeControls from '../components/RuntimeControls.jsx';
@@ -72,21 +72,22 @@ export default function RiskDashboard({ state, connected }) {
 }
 
 function StrategyPnL({ trades, state }) {
-  // Group trades by strategy
-  const byStrategy = {};
-  for (const t of trades) {
-    const sid = t.strategy_id || t.strategyId || 'unknown';
-    if (!byStrategy[sid]) {
-      byStrategy[sid] = { count: 0, pnl: 0, wins: 0, losses: 0 };
+  // Group trades by strategy (memoized)
+  const strategies = useMemo(() => {
+    const byStrategy = {};
+    for (const t of trades) {
+      const sid = t.strategy_id || t.strategyId || 'unknown';
+      if (!byStrategy[sid]) {
+        byStrategy[sid] = { count: 0, pnl: 0, wins: 0, losses: 0 };
+      }
+      byStrategy[sid].count++;
+      const pnl = Number(t.realized_pnl || t.realizedPnl || 0);
+      byStrategy[sid].pnl += pnl;
+      if (pnl > 0) byStrategy[sid].wins++;
+      else if (pnl < 0) byStrategy[sid].losses++;
     }
-    byStrategy[sid].count++;
-    const pnl = Number(t.realized_pnl || t.realizedPnl || 0);
-    byStrategy[sid].pnl += pnl;
-    if (pnl > 0) byStrategy[sid].wins++;
-    else if (pnl < 0) byStrategy[sid].losses++;
-  }
-
-  const strategies = Object.entries(byStrategy);
+    return Object.entries(byStrategy);
+  }, [trades]);
   const activeStrategy = state?.activeStrategy;
 
   return (

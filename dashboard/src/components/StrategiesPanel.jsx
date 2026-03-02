@@ -65,7 +65,7 @@ function StrategyRow({ name, isActive, onActivate, activating, metrics }) {
   );
 }
 
-export default function StrategiesPanel({ state }) {
+export default React.memo(function StrategiesPanel({ state }) {
   const [activating, setActivating] = useState(false);
   const [tradeMetrics, setTradeMetrics] = useState({});
   const active = state?.activeStrategy;
@@ -135,4 +135,4 @@ export default function StrategiesPanel({ state }) {
       )}
     </div>
   );
-}
+})

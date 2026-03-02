@@ -38,7 +38,7 @@ function PositionRow({ pos }) {
   );
 }
 
-export default function PositionsPanel({ state }) {
+export default React.memo(function PositionsPanel({ state }) {
   const positions = state?.openPositions || [];
 
   return (
@@ -82,4 +82,4 @@ export default function PositionsPanel({ state }) {
       )}
     </div>
   );
-}
+})
