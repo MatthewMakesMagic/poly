@@ -17,6 +17,7 @@
 
 import { createMarketState } from './market-state.js';
 import { createSimulator } from './simulator.js';
+import { BacktestOrderBook } from './orderbook.js';
 import { loadWindowTickData } from './data-loader.js';
 import { child } from '../modules/logger/index.js';
 
@@ -83,7 +84,7 @@ function getGroundTruth(window) {
  * @returns {Object[]} Sorted timeline events
  */
 function buildWindowTimeline(windowData) {
-  const { rtdsTicks, clobSnapshots, exchangeTicks } = windowData;
+  const { rtdsTicks, clobSnapshots, exchangeTicks, coingeckoTicks, l2BookTicks } = windowData;
   const timeline = [];
 
   for (let i = 0; i < rtdsTicks.length; i++) {
@@ -110,6 +111,22 @@ function buildWindowTimeline(windowData) {
   for (let i = 0; i < exchangeTicks.length; i++) {
     const tick = exchangeTicks[i];
     timeline.push({ ...tick, source: `exchange_${tick.exchange}` });
+  }
+
+  if (l2BookTicks) {
+    for (let i = 0; i < l2BookTicks.length; i++) {
+      const tick = l2BookTicks[i];
+      const isDown = tick.direction === 'down' || tick.symbol?.toLowerCase().includes('down');
+      const source = isDown ? 'l2Down' : 'l2Up';
+      timeline.push({ ...tick, source });
+    }
+  }
+
+  if (coingeckoTicks) {
+    for (let i = 0; i < coingeckoTicks.length; i++) {
+      const tick = coingeckoTicks[i];
+      timeline.push({ ...tick, source: 'coingecko' });
+    }
   }
 
   // Sort by timestamp
@@ -152,6 +169,14 @@ export function evaluateWindow({
   const state = createMarketState();
   const simulator = createSimulator({ initialCapital, spreadBuffer, tradingFee });
 
+  // Create orderbook only if strategy uses passive orders
+  const usePassive = strategy.usesPassiveOrders === true;
+  let orderbook = null;
+  if (usePassive) {
+    orderbook = new BacktestOrderBook();
+    state._orderbook = orderbook;
+  }
+
   const closeMs = new Date(win.window_close_time).getTime();
   const openMs = closeMs - windowDurationMs;
   const openTime = new Date(openMs).toISOString();
@@ -180,6 +205,39 @@ export function evaluateWindow({
     state.updateTimeToClose(event.timestamp);
     eventsProcessed++;
 
+    // Check for passive fills on L2 ticks
+    if (orderbook && (event.source === 'l2Up' || event.source === 'l2Down')) {
+      const sym = win.symbol?.toLowerCase() || 'btc';
+      const l2Token = event.source === 'l2Up' ? `${sym}-up` : `${sym}-down`;
+      const fills = orderbook.processL2Tick({
+        token: l2Token,
+        levels: event.top_levels,
+        timestamp: event.timestamp,
+      });
+      for (const fill of fills) {
+        if (fill.side === 'bid') {
+          simulator.buyToken({
+            token: fill.token,
+            price: fill.price,
+            size: fill.size,
+            timestamp: fill.timestamp,
+            reason: fill.reason,
+          });
+        } else {
+          simulator.sellToken({
+            token: fill.token,
+            price: fill.price,
+            timestamp: fill.timestamp,
+            reason: fill.reason,
+          });
+        }
+        // Notify strategy of passive fill
+        if (strategy.onPassiveFill) {
+          strategy.onPassiveFill(fill);
+        }
+      }
+    }
+
     // Evaluate strategy
     try {
       const signals = strategy.evaluate(state, strategyConfig);
@@ -187,7 +245,32 @@ export function evaluateWindow({
 
       for (let s = 0; s < signals.length; s++) {
         const signal = signals[s];
-        if (!signal.action || !signal.token) continue;
+        if (!signal.action) continue;
+
+        // Handle passive order signals
+        if (orderbook) {
+          if (signal.action === 'place_limit_buy' || signal.action === 'place_limit_sell') {
+            const size = signal.size ?? (signal.capitalPerTrade / signal.price);
+            orderbook.placeOrder({
+              token: signal.token,
+              side: signal.action === 'place_limit_buy' ? 'bid' : 'ask',
+              price: signal.price,
+              size,
+              timestamp: event.timestamp,
+              reason: signal.reason || '',
+            });
+            continue;
+          } else if (signal.action === 'cancel_order') {
+            orderbook.cancelOrder(signal.orderId);
+            continue;
+          } else if (signal.action === 'cancel_all') {
+            orderbook.cancelAll(signal.token);
+            continue;
+          }
+        }
+
+        // Handle aggressive buy/sell signals (existing behavior)
+        if (!signal.token) continue;
 
         const execResult = simulator.execute(signal, state, strategyConfig);
 
@@ -213,6 +296,11 @@ export function evaluateWindow({
     } catch (err) {
       // Swallow strategy errors per-event
     }
+  }
+
+  // Cancel remaining passive orders at window close
+  if (orderbook) {
+    orderbook.cancelAll();
   }
 
   // Resolve window positions
@@ -333,9 +421,11 @@ function sliceClobForWindow(allClob, startMs, endMs, symbol, windowEpoch) {
     if (!sym.startsWith(prefix)) return false;
     // If window_epoch is available on the snap, filter by it
     if (snap.window_epoch != null && windowEpoch != null) {
-      return Number(snap.window_epoch) === windowEpoch;
+      if (Number(snap.window_epoch) !== windowEpoch) return false;
     }
-    return true;
+    // Filter to active trading range — tokens converging to 0 or 1 are from adjacent windows
+    const mid = Number(snap.mid_price ?? snap.best_bid ?? snap.best_ask ?? 0);
+    return mid >= 0.05 && mid <= 0.95;
   });
 }
 
@@ -366,7 +456,7 @@ function sliceClobForWindow(allClob, startMs, endMs, symbol, windowEpoch) {
  * @param {ParallelBacktestConfig} params.config - Backtest configuration
  * @returns {Promise<Object>} Aggregated backtest result
  */
-export async function runParallelBacktest({ windows, allData, config }) {
+export async function runParallelBacktest({ windows, allData, config, loadWindowTickDataFn }) {
   const {
     strategy,
     strategyConfig = {},
@@ -377,6 +467,7 @@ export async function runParallelBacktest({ windows, allData, config }) {
     concurrency = 50,
     onProgress,
   } = config;
+  const loadFn = loadWindowTickDataFn || loadWindowTickData;
 
   if (!strategy || typeof strategy.evaluate !== 'function') {
     throw new Error('strategy must have an evaluate function');
@@ -405,21 +496,25 @@ export async function runParallelBacktest({ windows, allData, config }) {
 
       if (usePreloaded) {
         // Mode 1: Slice pre-loaded data
-        const { rtdsTicks, clobSnapshots, exchangeTicks } = allData;
+        const { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks } = allData;
         const closeMs = new Date(win.window_close_time).getTime();
         const openMs = closeMs - windowDurationMs;
-        // window_epoch in clob_price_snapshots is the window CLOSE time epoch
-        const windowEpochSec = Math.floor(closeMs / 1000);
+        // window_epoch in clob_price_snapshots is the window OPEN time, not CLOSE time
+        // 900 = 15 minutes (one window duration in seconds)
+        const windowEpochSec = Math.floor(closeMs / 1000) - 900;
 
         const winRtds = sliceByTime(rtdsTicks, openMs, closeMs);
         const winClob = sliceClobForWindow(clobSnapshots, openMs, closeMs, win.symbol, windowEpochSec);
         const winExchange = sliceByTime(exchangeTicks, openMs, closeMs).filter(
           t => t.symbol?.toLowerCase() === win.symbol?.toLowerCase()
         );
-        windowData = { rtdsTicks: winRtds, clobSnapshots: winClob, exchangeTicks: winExchange };
+        const winL2 = l2BookTicks ? sliceByTime(l2BookTicks, openMs, closeMs).filter(
+          t => t.symbol?.toLowerCase().startsWith(win.symbol?.toLowerCase())
+        ) : [];
+        windowData = { rtdsTicks: winRtds, clobSnapshots: winClob, exchangeTicks: winExchange, l2BookTicks: winL2 };
       } else {
         // Mode 2: Load per-window from DB
-        windowData = await loadWindowTickData({ window: win, windowDurationMs });
+        windowData = await loadFn({ window: win, windowDurationMs });
       }
 
       const timeline = buildWindowTimeline(windowData);

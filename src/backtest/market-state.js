@@ -29,6 +29,7 @@ export class MarketState {
 
     // Reference tier
     this.polyRef = null;    // { price, ts }
+    this.coingecko = null;  // { price, ts } — CoinGecko 1700+ exchange VWAP
 
     // CLOB tier
     this.clobUp = null;     // { bestBid, bestAsk, mid, spread, bidSize, askSize, ts }
@@ -64,6 +65,11 @@ export class MarketState {
         price: parseFloat(event.price),
         ts: event.timestamp,
       };
+    } else if (source === 'coingecko') {
+      this.coingecko = {
+        price: parseFloat(event.price),
+        ts: event.timestamp,
+      };
     } else if (source === 'clobUp') {
       this.clobUp = {
         bestBid: parseFloat(event.best_bid),
@@ -82,6 +88,26 @@ export class MarketState {
         spread: parseFloat(event.spread),
         bidSize: parseFloat(event.bid_size_top || 0),
         askSize: parseFloat(event.ask_size_top || 0),
+        ts: event.timestamp,
+      };
+    } else if (source === 'l2Up') {
+      this.clobUp = {
+        ...this.clobUp,
+        bestBid: parseFloat(event.best_bid) || this.clobUp?.bestBid,
+        bestAsk: parseFloat(event.best_ask) || this.clobUp?.bestAsk,
+        levels: event.top_levels,
+        bidDepth1pct: parseFloat(event.bid_depth_1pct) || 0,
+        askDepth1pct: parseFloat(event.ask_depth_1pct) || 0,
+        ts: event.timestamp,
+      };
+    } else if (source === 'l2Down') {
+      this.clobDown = {
+        ...this.clobDown,
+        bestBid: parseFloat(event.best_bid) || this.clobDown?.bestBid,
+        bestAsk: parseFloat(event.best_ask) || this.clobDown?.bestAsk,
+        levels: event.top_levels,
+        bidDepth1pct: parseFloat(event.bid_depth_1pct) || 0,
+        askDepth1pct: parseFloat(event.ask_depth_1pct) || 0,
         ts: event.timestamp,
       };
     } else if (source.startsWith('exchange_')) {
@@ -106,6 +132,7 @@ export class MarketState {
   setWindow(windowEvent, openTime) {
     const closeTime = windowEvent.window_close_time;
     this.strike = windowEvent.strike_price != null ? parseFloat(windowEvent.strike_price) : null;
+    this.oraclePriceAtOpen = windowEvent.oracle_price_at_open != null ? parseFloat(windowEvent.oracle_price_at_open) : null;
     this.window = {
       id: closeTime, // use close time as window ID
       symbol: windowEvent.symbol,
@@ -113,6 +140,7 @@ export class MarketState {
       closeTime,
       timeToCloseMs: null,
       resolvedDirection: windowEvent.resolved_direction || null,
+      oraclePriceAtOpen: this.oraclePriceAtOpen,
     };
   }
 
@@ -229,6 +257,7 @@ export class MarketState {
     this.chainlink = null;
     this.strike = null;
     this.polyRef = null;
+    this.coingecko = null;
     this.clobUp = null;
     this.clobDown = null;
     this.window = null;
