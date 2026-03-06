@@ -6,21 +6,48 @@ const ACTIONS = [
     label: 'Reset Circuit Breaker',
     description: 'Clears circuit breaker trip state, re-enabling trading after a CB halt.',
     endpoint: '/api/controls/reset-cb',
-    color: 'accent-yellow',
+    styles: {
+      text: 'text-accent-yellow',
+      textLabel: 'text-accent-yellow/90',
+      bg: 'bg-accent-yellow/15',
+      bgHover: 'hover:bg-accent-yellow/25',
+      bgConfirm: 'bg-accent-yellow/30',
+      bgConfirmHover: 'hover:bg-accent-yellow/40',
+      border: 'border-accent-yellow/20',
+      borderConfirm: 'border-accent-yellow/40',
+    },
   },
   {
     id: 'clear-entries',
     label: 'Clear Window Entries',
     description: 'Removes all pending window entries. Use if stale entries are blocking new trades.',
     endpoint: '/api/controls/clear-entries',
-    color: 'accent-blue',
+    styles: {
+      text: 'text-accent-blue',
+      textLabel: 'text-accent-blue/90',
+      bg: 'bg-accent-blue/15',
+      bgHover: 'hover:bg-accent-blue/25',
+      bgConfirm: 'bg-accent-blue/30',
+      bgConfirmHover: 'hover:bg-accent-blue/40',
+      border: 'border-accent-blue/20',
+      borderConfirm: 'border-accent-blue/40',
+    },
   },
   {
     id: 'backfill-pnl',
     label: 'Backfill P&L',
     description: 'Recalculates realized P&L for all closed trades from on-chain resolution data.',
     endpoint: '/api/controls/backfill-pnl',
-    color: 'accent-green',
+    styles: {
+      text: 'text-accent-green',
+      textLabel: 'text-accent-green/90',
+      bg: 'bg-accent-green/15',
+      bgHover: 'hover:bg-accent-green/25',
+      bgConfirm: 'bg-accent-green/30',
+      bgConfirmHover: 'hover:bg-accent-green/40',
+      border: 'border-accent-green/20',
+      borderConfirm: 'border-accent-green/40',
+    },
   },
 ];
 
@@ -59,23 +86,23 @@ function ActionButton({ action }) {
     }
   }, [action.endpoint]);
 
-  const c = action.color;
+  const s = action.styles;
 
   return (
-    <div className={`rounded-lg bg-white/[0.02] border border-white/5 p-3 space-y-2`}>
+    <div className="rounded-lg bg-white/[0.02] border border-white/5 p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div>
-          <span className={`text-xs font-bold text-${c}/90`}>{action.label}</span>
+          <span className={`text-xs font-bold ${s.textLabel}`}>{action.label}</span>
           <p className="text-[10px] text-white/30 mt-0.5">{action.description}</p>
         </div>
 
         {confirming ? (
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`text-[10px] text-${c} font-semibold animate-pulse`}>Confirm?</span>
+            <span className={`text-[10px] ${s.text} font-semibold animate-pulse`}>Confirm?</span>
             <button
               onClick={execute}
               disabled={loading}
-              className={`px-3 py-1.5 bg-${c}/30 hover:bg-${c}/40 text-${c} text-[10px] font-bold rounded-lg border border-${c}/40 transition-all duration-300 disabled:opacity-50`}
+              className={`px-3 py-1.5 ${s.bgConfirm} ${s.bgConfirmHover} ${s.text} text-[10px] font-bold rounded-lg border ${s.borderConfirm} transition-all duration-300 disabled:opacity-50`}
             >
               {loading ? '...' : 'YES'}
             </button>
@@ -89,7 +116,7 @@ function ActionButton({ action }) {
         ) : (
           <button
             onClick={() => { setConfirming(true); setResult(null); }}
-            className={`px-4 py-1.5 bg-${c}/15 hover:bg-${c}/25 text-${c} text-[10px] font-bold rounded-lg border border-${c}/20 transition-all duration-300 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] shrink-0`}
+            className={`px-4 py-1.5 ${s.bg} ${s.bgHover} ${s.text} text-[10px] font-bold rounded-lg border ${s.border} transition-all duration-300 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] shrink-0`}
           >
             {action.label}
           </button>
