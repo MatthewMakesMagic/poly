@@ -1079,6 +1079,64 @@ export async function handleDashboardRequest(req, res) {
     return true;
   }
 
+  // GET /api/passive-mm/trades - Passive MM trade history
+  if (req.method === 'GET' && url === '/api/passive-mm/trades') {
+    try {
+      // Summary stats
+      const summary = await persistence.get(`
+        SELECT
+          COUNT(DISTINCT window_id) as total_windows,
+          COUNT(*) as total_fills,
+          COUNT(DISTINCT CASE WHEN is_paired THEN window_id END) as paired_windows,
+          COALESCE(SUM(pnl), 0) as cumulative_pnl
+        FROM passive_mm_trades
+      `);
+
+      // Per-window aggregation
+      const windows = await persistence.all(`
+        SELECT
+          window_id,
+          COUNT(*) as fills,
+          SUM(capital) as total_cost,
+          SUM(payout) as total_payout,
+          SUM(pnl) as pnl,
+          MAX(resolved_direction) as resolved_direction,
+          MIN(filled_at) as first_fill,
+          MAX(filled_at) as last_fill,
+          BOOL_OR(is_paired) as is_paired
+        FROM passive_mm_trades
+        GROUP BY window_id
+        ORDER BY MAX(filled_at) DESC
+        LIMIT 100
+      `);
+
+      // Recent individual fills
+      const recentFills = await persistence.all(`
+        SELECT
+          id, window_id, side, token, fill_price, fill_size,
+          capital, filled_at, resolved_direction, payout, pnl, is_paired,
+          trading_mode
+        FROM passive_mm_trades
+        ORDER BY filled_at DESC
+        LIMIT 50
+      `);
+
+      json(res, 200, {
+        summary: {
+          totalWindows: parseInt(summary?.total_windows) || 0,
+          totalFills: parseInt(summary?.total_fills) || 0,
+          pairedWindows: parseInt(summary?.paired_windows) || 0,
+          cumulativePnl: parseFloat(summary?.cumulative_pnl) || 0,
+        },
+        windows,
+        recentFills,
+      });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
   return false;
 }
 

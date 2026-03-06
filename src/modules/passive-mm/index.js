@@ -80,6 +80,27 @@ export async function init(cfg = {}) {
   // Ensure DB table exists
   await ensureTable();
 
+  // Load cumulative stats from DB so they survive redeploys
+  try {
+    const row = await persistence.get(`
+      SELECT
+        COUNT(DISTINCT window_id) as windows,
+        COUNT(*) as fills,
+        COUNT(DISTINCT CASE WHEN is_paired THEN window_id END) as paired,
+        COALESCE(SUM(pnl), 0) as cumulative_pnl
+      FROM passive_mm_trades
+    `);
+    if (row) {
+      stats.windowsTracked = parseInt(row.windows) || 0;
+      stats.fills = parseInt(row.fills) || 0;
+      stats.pairedFills = parseInt(row.paired) || 0;
+      stats.cumulativePnl = parseFloat(row.cumulative_pnl) || 0;
+      log.info('stats_loaded_from_db', { ...stats });
+    }
+  } catch (err) {
+    log.warn('stats_load_error', { error: err.message });
+  }
+
   initialized = true;
 
   // Start window scan loop

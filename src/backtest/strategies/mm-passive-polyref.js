@@ -34,7 +34,7 @@ export const defaults = {
   maxPerSide: 10,              // max capital per side
   capitalPerEntry: 2,          // capital per limit order
   minRequoteIntervalMs: 500,   // anti-storm: min ms between cancel/replace cycles
-  entryWindowMs: 270000,       // stop new entries at T-30s
+  entryWindowMs: 840000,       // enter within first minute of 15-min window (14 min entry window)
   exitWindowMs: 30000,         // cancel all at T-30s
   aggressiveHedgeMs: 15000,    // aggressive hedge in final 15s
   maxEntryPrice: 0.65,         // max bid price for any side
@@ -230,6 +230,7 @@ export function evaluate(state, config) {
 
 export const LIVE_DEFAULTS = {
   ...defaults,
+  entryWindowMs: 840000,       // 14 min — nearly full window for MM rebalancing
   minEntryPrice: 0.20,  // up from 0.03 — avoid illiquid OTM range
   maxEntryPrice: 0.55,  // tighter — avoid overpaying (down from 0.65)
 };
