@@ -296,22 +296,24 @@ async function main() {
   console.log(`   PID: ${process.pid}`);
   console.log('═'.repeat(70));
 
-  // Validate critical environment variables
-  const required = [
-    'POLYMARKET_API_KEY',
-    'POLYMARKET_API_SECRET',
-    'POLYMARKET_PASSPHRASE',
-    'POLYMARKET_PRIVATE_KEY',
-  ];
+  // Validate critical environment variables (only required for LIVE mode)
+  if (!isPaperMode) {
+    const required = [
+      'POLYMARKET_API_KEY',
+      'POLYMARKET_API_SECRET',
+      'POLYMARKET_PASSPHRASE',
+      'POLYMARKET_PRIVATE_KEY',
+    ];
 
-  const missing = required.filter(v => !process.env[v]);
-  if (missing.length > 0) {
-    console.error('\nMissing required environment variables:');
-    for (const v of missing) {
-      console.error(`   - ${v}`);
+    const missing = required.filter(v => !process.env[v]);
+    if (missing.length > 0) {
+      console.error('\nMissing required environment variables for LIVE mode:');
+      for (const v of missing) {
+        console.error(`   - ${v}`);
+      }
+      console.error('\nPlease set these in your .env file.\n');
+      process.exit(1);
     }
-    console.error('\nPlease set these in your .env file.\n');
-    process.exit(1);
   }
 
   // Register signal handlers
