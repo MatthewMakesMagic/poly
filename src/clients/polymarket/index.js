@@ -48,17 +48,21 @@ export async function init(cfg) {
 
   // Extract polymarket config - credentials MUST come from config, not env directly
   const polyConfig = cfg.polymarket || {};
-
-  // Validate we have the required config section
-  if (!cfg.polymarket) {
-    throw new PolymarketError(
-      PolymarketErrorCodes.AUTH_FAILED,
-      'Missing polymarket configuration section',
-      { hasPolymarketConfig: false }
-    );
-  }
-
   config = polyConfig;
+
+  // Check if credentials are available
+  const hasCredentials = polyConfig.apiKey && polyConfig.apiSecret &&
+    polyConfig.passphrase && polyConfig.privateKey;
+
+  if (!hasCredentials) {
+    // Degraded mode: no credentials, module initializes but can't place orders.
+    // This is expected in PAPER mode where trading controls are managed from the dashboard.
+    log.warn('module_init_degraded', {
+      reason: 'missing_credentials',
+      hint: 'Set POLYMARKET_* env vars or configure from dashboard for LIVE trading',
+    });
+    return;
+  }
 
   // Create and initialize wrapped client
   client = new WrappedPolymarketClient({ logger: log });
