@@ -318,6 +318,14 @@ export function createOrderTracker({ mode, polymarketClient, strategy, tokenIds,
         ? 1.0 - (upCost / upTokens + downCost / downTokens)
         : null,
       fillDetails: fills,
+      restingOrderDetails: restingOrders.map(o => ({
+        id: o.id,
+        side: o.side,
+        price: o.price,
+        size: o.size,
+        capital: o.capital,
+        placedAt: o.placedAt,
+      })),
     };
   }
 

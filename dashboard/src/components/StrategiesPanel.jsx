@@ -9,11 +9,31 @@ async function setActiveStrategy(strategyName) {
   return res.ok;
 }
 
-function StrategyRow({ name, isActive, onActivate, activating, metrics }) {
-  const pnl = metrics?.pnl ?? 0;
+function ModeMetrics({ mode, data }) {
+  const pnl = data.total_pnl ?? 0;
   const pnlColor = pnl > 0 ? 'text-accent-green' : pnl < 0 ? 'text-accent-red' : 'text-white/25';
   const pnlSign = pnl > 0 ? '+' : '';
-  const winRate = metrics?.count > 0 ? ((metrics.wins / metrics.count) * 100).toFixed(0) : null;
+
+  return (
+    <div className="flex items-center gap-3 mt-1.5 ml-5 text-[9px] text-white/25">
+      <span className={`font-bold ${mode === 'LIVE' ? 'text-accent-green/60' : 'text-accent-yellow/60'}`}>{mode}</span>
+      <span>{data.total_trades} trades</span>
+      <span>{data.win_rate} WR</span>
+      <span className={pnlColor}>{pnlSign}${pnl.toFixed(2)}</span>
+      <span>best: ${data.best_trade?.toFixed(2) ?? '--'}</span>
+      <span>worst: ${data.worst_trade?.toFixed(2) ?? '--'}</span>
+      {data.open_positions > 0 && (
+        <span className="text-accent-blue/60">{data.open_positions} open</span>
+      )}
+    </div>
+  );
+}
+
+function StrategyRow({ name, isActive, onActivate, activating, modes }) {
+  const allPnl = Object.values(modes || {}).reduce((s, m) => s + (m.total_pnl ?? 0), 0);
+  const pnlColor = allPnl > 0 ? 'text-accent-green' : allPnl < 0 ? 'text-accent-red' : 'text-white/25';
+  const pnlSign = allPnl > 0 ? '+' : '';
+  const totalTrades = Object.values(modes || {}).reduce((s, m) => s + (m.total_trades ?? 0), 0);
 
   return (
     <div className={`rounded-lg p-3 transition-all duration-300 ${
@@ -33,9 +53,9 @@ function StrategyRow({ name, isActive, onActivate, activating, metrics }) {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {metrics && metrics.count > 0 && (
+          {totalTrades > 0 && (
             <span className={`text-[10px] font-bold ${pnlColor}`}>
-              {pnlSign}${pnl.toFixed(2)}
+              {pnlSign}${allPnl.toFixed(2)}
             </span>
           )}
           {isActive ? (
@@ -53,21 +73,16 @@ function StrategyRow({ name, isActive, onActivate, activating, metrics }) {
           )}
         </div>
       </div>
-      {metrics && metrics.count > 0 && (
-        <div className="flex items-center gap-3 mt-1.5 ml-5 text-[9px] text-white/25">
-          <span>{metrics.count} trades</span>
-          <span className="text-accent-green/60">{metrics.wins}W</span>
-          <span className="text-accent-red/60">{metrics.losses}L</span>
-          {winRate !== null && <span>WR: {winRate}%</span>}
-        </div>
-      )}
+      {modes && Object.entries(modes).map(([mode, data]) => (
+        data.total_trades > 0 && <ModeMetrics key={mode} mode={mode} data={data} />
+      ))}
     </div>
   );
 }
 
 export default React.memo(function StrategiesPanel({ state }) {
   const [activating, setActivating] = useState(false);
-  const [tradeMetrics, setTradeMetrics] = useState({});
+  const [strategyPerf, setStrategyPerf] = useState({});
   const active = state?.activeStrategy;
   const loaded = state?.loadedStrategies || [];
   const available = state?.availableStrategies || [];
@@ -81,32 +96,23 @@ export default React.memo(function StrategiesPanel({ state }) {
     setActivating(false);
   }, []);
 
-  // Fetch trade metrics per strategy
+  // Fetch pre-aggregated strategy performance
   useEffect(() => {
-    async function fetchMetrics() {
+    async function fetchPerf() {
       try {
-        const res = await fetch('/api/trades');
+        const res = await fetch('/api/strategy-performance');
         const data = await res.json();
-        const trades = data.trades || [];
         const byStrategy = {};
-        for (const t of trades) {
-          const sid = t.strategy_id || t.strategyId || 'unknown';
-          if (!byStrategy[sid]) {
-            byStrategy[sid] = { count: 0, pnl: 0, wins: 0, losses: 0 };
-          }
-          byStrategy[sid].count++;
-          const pnl = Number(t.realized_pnl || t.realizedPnl || t.pnl || 0);
-          byStrategy[sid].pnl += pnl;
-          if (pnl > 0) byStrategy[sid].wins++;
-          else if (pnl < 0) byStrategy[sid].losses++;
+        for (const s of (data.strategies || [])) {
+          byStrategy[s.strategy_id] = s.modes || {};
         }
-        setTradeMetrics(byStrategy);
+        setStrategyPerf(byStrategy);
       } catch {
         // Ignore
       }
     }
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 15000);
+    fetchPerf();
+    const interval = setInterval(fetchPerf, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -128,7 +134,7 @@ export default React.memo(function StrategiesPanel({ state }) {
               isActive={name === active}
               onActivate={handleActivate}
               activating={activating}
-              metrics={tradeMetrics[name]}
+              modes={strategyPerf[name]}
             />
           ))}
         </div>

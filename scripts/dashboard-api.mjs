@@ -199,6 +199,41 @@ async function buildStatePayload(state) {
     // Windows (window-manager getState() returns cachedWindowCount, not activeWindows)
     activeWindows: windowManager.cachedWindowCount ?? windowManager.activeWindows ?? 0,
 
+    // Window details for countdown timers
+    windowDetails: (() => {
+      const wm = modules['window-manager'] || {};
+      // windowCache.windows is exposed via orchestrator getState as the full module state
+      const wins = wm.windows || wm.cachedWindows || [];
+      if (Array.isArray(wins)) {
+        return wins.map(w => ({
+          window_id: w.window_id || w.id,
+          crypto: (w.crypto || w.symbol || '').toLowerCase(),
+          time_remaining_ms: w.time_remaining_ms || w.timeRemaining || 0,
+          epoch: w.epoch,
+          end_time: w.end_time || w.endTime,
+          market_price: w.market_price,
+          reference_price: w.reference_price,
+          best_bid: w.best_bid,
+          best_ask: w.best_ask,
+        }));
+      }
+      // If windows is an object (keyed by id), convert
+      if (typeof wins === 'object') {
+        return Object.values(wins).map(w => ({
+          window_id: w.window_id || w.id,
+          crypto: (w.crypto || w.symbol || '').toLowerCase(),
+          time_remaining_ms: w.time_remaining_ms || w.timeRemaining || 0,
+          epoch: w.epoch,
+          end_time: w.end_time || w.endTime,
+          market_price: w.market_price,
+          reference_price: w.reference_price,
+          best_bid: w.best_bid,
+          best_ask: w.best_ask,
+        }));
+      }
+      return [];
+    })(),
+
     // Errors
     errorCount: state.errorCount || 0,
     errorCount1m: state.errorCount1m || 0,

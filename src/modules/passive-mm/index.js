@@ -127,6 +127,14 @@ export function getState() {
       downCost: orders.downCost,
       paired: orders.paired,
       pairEdge: orders.pairEdge,
+      restingOrderDetails: orders.restingOrderDetails || [],
+      fillDetails: (orders.fillDetails || []).map(f => ({
+        side: f.side,
+        price: f.price,
+        size: f.size,
+        capital: f.capital,
+        filledAt: f.filledAt,
+      })),
     });
   }
 

@@ -98,8 +98,8 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* Smooth transitions */
-*, *::before, *::after {
+/* Smooth transitions — scoped to glass panels only */
+.glass, .glass-subtle, .glass-strong {
   transition-property: background-color, border-color, color, opacity, box-shadow;
   transition-duration: 150ms;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);

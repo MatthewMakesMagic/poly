@@ -1,6 +1,8 @@
 import React from 'react';
 import StatusBar from '../components/StatusBar.jsx';
 import KillSwitchPanel from '../components/KillSwitchPanel.jsx';
+import PriceSparkline from '../components/PriceSparkline.jsx';
+import WindowTimers from '../components/WindowTimers.jsx';
 import StrategiesPanel from '../components/StrategiesPanel.jsx';
 import PositionsPanel from '../components/PositionsPanel.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
@@ -9,11 +11,15 @@ import PassiveMmPanel from '../components/PassiveMmPanel.jsx';
 export default function CommandCenter({ state, events, connected }) {
   return (
     <div className="space-y-4">
-      {/* Top row: Status + Kill switches */}
+      {/* Top row: Status + Kill switches + Price Sparkline */}
       <div className="flex flex-col sm:flex-row gap-4">
         <StatusBar state={state} connected={connected} />
         <KillSwitchPanel state={state} />
+        <PriceSparkline />
       </div>
+
+      {/* Window countdown timers */}
+      <WindowTimers state={state} />
 
       {/* Middle row: Strategies + Positions */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

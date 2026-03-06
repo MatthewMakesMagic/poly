@@ -83,7 +83,7 @@ export default React.memo(function ActivityFeed({ events }) {
       ) : (
         <div className="space-y-0.5 max-h-72 overflow-y-auto pr-1">
           {events.map((event, i) => (
-            <div key={i} className={`flex items-start gap-2 py-1.5 px-2 text-[11px] rounded-md transition-colors duration-200 ${eventBgColor(event._event)} hover:bg-white/[0.04]`}>
+            <div key={event._ts + '-' + i} className={`flex items-start gap-2 py-1.5 px-2 text-[11px] rounded-md transition-colors duration-200 ${eventBgColor(event._event)} hover:bg-white/[0.04]`}>
               <span className="text-white/25 shrink-0 w-14 font-light">
                 {formatTime(event._ts)}
               </span>

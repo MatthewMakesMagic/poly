@@ -18,7 +18,7 @@ export default React.memo(function DrawdownChart({ state, trades }) {
     let cumPnl = 0;
     let peak = 0;
     return sorted.map((t) => {
-      const pnl = Number(t.realized_pnl || t.realizedPnl || 0);
+      const pnl = Number(t.pnl || t.realized_pnl || t.realizedPnl || 0);
       cumPnl += pnl;
       if (cumPnl > peak) peak = cumPnl;
       const drawdown = peak - cumPnl;
