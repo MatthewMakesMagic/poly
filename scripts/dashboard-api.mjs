@@ -212,6 +212,12 @@ async function buildStatePayload(state) {
 
     // Loop metrics
     loop: state.loop || null,
+
+    // Module states (for specialized panels)
+    modules: {
+      'passive-mm': modules['passive-mm'] || null,
+      'paper-trader': modules['paper-trader'] || null,
+    },
   };
 }
 
