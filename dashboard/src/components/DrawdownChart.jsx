@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart } from 'recharts';
 
-export default function DrawdownChart({ state, trades }) {
+export default React.memo(function DrawdownChart({ state, trades }) {
   // Build cumulative P&L data from trades (chronological)
   const chartData = useMemo(() => {
     if (!trades || trades.length === 0) return [];
@@ -99,4 +99,4 @@ export default function DrawdownChart({ state, trades }) {
       )}
     </div>
   );
-}
+})

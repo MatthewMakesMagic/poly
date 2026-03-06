@@ -45,7 +45,7 @@ function summarizeFeeds(feeds) {
   return feedSummary;
 }
 
-export default function HealthBar({ state, connected }) {
+export default React.memo(function HealthBar({ state, connected }) {
   const wsColor = connected ? 'text-accent-green' : 'text-accent-red';
   const wsDot = connected
     ? 'bg-accent-green shadow-[0_0_8px_rgba(52,211,153,0.6)] animate-pulse-slow'
@@ -77,7 +77,7 @@ export default function HealthBar({ state, connected }) {
   };
 
   return (
-    <header className="bg-black/30 backdrop-blur-md border-b border-white/5 px-5 py-2 flex items-center justify-between text-[10px]">
+    <header className="sticky top-0 z-20 bg-black/30 backdrop-blur-md border-b border-white/5 px-5 py-2 flex items-center justify-between text-[10px]">
       <div className="flex items-center gap-4">
         <span className="text-sm font-bold tracking-widest text-white/90">POLY</span>
         <div className="flex items-center gap-1.5">
@@ -89,6 +89,21 @@ export default function HealthBar({ state, connected }) {
       </div>
 
       <div className="flex items-center gap-3">
+        {/* Key metrics strip */}
+        {state?.sessionPnl != null && (
+          <>
+            <span className={`font-bold ${Number(state.sessionPnl) >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+              P&L: {Number(state.sessionPnl) >= 0 ? '+' : ''}${Number(state.sessionPnl).toFixed(2)}
+            </span>
+            <div className="w-px h-3 bg-white/10" />
+          </>
+        )}
+        {state?.openPositions?.length > 0 && (
+          <>
+            <span className="text-white/50">Pos: {state.openPositions.length}</span>
+            <div className="w-px h-3 bg-white/10" />
+          </>
+        )}
         {keyFeeds.map((feed) => (
           <FeedDot
             key={feed}
@@ -113,4 +128,4 @@ export default function HealthBar({ state, connected }) {
       </div>
     </header>
   );
-}
+})

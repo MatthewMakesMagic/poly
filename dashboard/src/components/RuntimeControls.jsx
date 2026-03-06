@@ -52,7 +52,7 @@ async function updateControl(key, value) {
   return res.ok;
 }
 
-export default function RuntimeControls({ controls, onRefresh }) {
+export default React.memo(function RuntimeControls({ controls, onRefresh }) {
   const [editing, setEditing] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -181,4 +181,4 @@ export default function RuntimeControls({ controls, onRefresh }) {
       )}
     </div>
   );
-}
+})

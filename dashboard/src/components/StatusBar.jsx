@@ -29,7 +29,7 @@ function SystemStateIndicator({ systemState, tradingMode }) {
   );
 }
 
-export default function StatusBar({ state, connected }) {
+export default React.memo(function StatusBar({ state, connected }) {
   const balance = state?.balance;
   const pnl = state?.sessionPnl;
   const pnlColor = pnl > 0 ? 'text-accent-green' : pnl < 0 ? 'text-accent-red' : 'text-white/60';
@@ -69,4 +69,4 @@ export default function StatusBar({ state, connected }) {
       </div>
     </div>
   );
-}
+})

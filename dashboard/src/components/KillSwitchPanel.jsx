@@ -5,7 +5,7 @@ async function postControl(action) {
   return res.json();
 }
 
-export default function KillSwitchPanel({ state }) {
+export default React.memo(function KillSwitchPanel({ state }) {
   const [loading, setLoading] = useState(null);
   const [confirmStop, setConfirmStop] = useState(false);
 
@@ -74,4 +74,4 @@ export default function KillSwitchPanel({ state }) {
       )}
     </div>
   );
-}
+})

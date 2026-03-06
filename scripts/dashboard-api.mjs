@@ -117,6 +117,7 @@ export function broadcastEvent(eventType, data) {
  * Cached briefly to avoid hitting DB every 1s broadcast.
  */
 let _positionsCache = { rows: [], fetchedAt: 0 };
+let _backtestCache = null;
 async function getOpenPositionsSafe() {
   const now = Date.now();
   if (now - _positionsCache.fetchedAt < 2000) return _positionsCache.rows;
@@ -810,6 +811,227 @@ export async function handleDashboardRequest(req, res) {
       await runtimeControls.updateControl('kill_switch', 'emergency');
       orchestrator.stop();
       json(res, 200, { success: true, action: 'stop' });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Backtest runs & trades endpoints
+  // ---------------------------------------------------------------------------
+
+  // GET /api/backtest/runs - List all backtest runs
+  if (req.method === 'GET' && url === '/api/backtest/runs') {
+    try {
+      const rows = await persistence.all(`
+        SELECT run_id, status, started_at, completed_at, total_strategies, total_symbols,
+               total_windows, completed_pairs, progress_pct,
+               summary->'totalTrades' as total_trades,
+               summary->'totalPnl' as total_pnl,
+               ai_commentary IS NOT NULL as has_commentary
+        FROM backtest_runs ORDER BY started_at DESC
+      `);
+      json(res, 200, { runs: rows });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/backtest/runs/:id/trades - Trades for a run
+  const backtestTradesMatch = url.match(/^\/api\/backtest\/runs\/([^/]+)\/trades$/);
+  if (req.method === 'GET' && backtestTradesMatch) {
+    try {
+      const runId = backtestTradesMatch[1];
+      const params = parseQueryParams(req.url);
+      const conditions = ['run_id = $1'];
+      const values = [runId];
+      let paramIdx = 2;
+
+      if (params.strategy) {
+        conditions.push(`strategy = $${paramIdx++}`);
+        values.push(params.strategy);
+      }
+      if (params.symbol) {
+        conditions.push(`symbol = $${paramIdx++}`);
+        values.push(params.symbol);
+      }
+      if (params.minEntry) {
+        conditions.push(`entry_price >= $${paramIdx++}::numeric`);
+        values.push(params.minEntry);
+      }
+      if (params.maxEntry) {
+        conditions.push(`entry_price <= $${paramIdx++}::numeric`);
+        values.push(params.maxEntry);
+      }
+      if (params.won === 'true') {
+        conditions.push(`won = true`);
+      } else if (params.won === 'false') {
+        conditions.push(`won = false`);
+      }
+
+      const allowedSorts = { pnl: 'pnl', entry_price: 'entry_price', cost: 'cost' };
+      const sortCol = allowedSorts[params.sort] || 'pnl';
+      const limit = Math.min(parseInt(params.limit) || 500, 5000);
+      const offset = parseInt(params.offset) || 0;
+
+      const where = conditions.join(' AND ');
+      const rows = await persistence.all(
+        `SELECT * FROM backtest_trades
+         WHERE ${where}
+         ORDER BY ${sortCol} DESC
+         LIMIT ${limit} OFFSET ${offset}`,
+        values
+      );
+
+      const countResult = await persistence.get(
+        `SELECT COUNT(*) as total FROM backtest_trades WHERE ${where}`,
+        values
+      );
+
+      json(res, 200, {
+        trades: rows,
+        total: parseInt(countResult?.total || '0'),
+        limit,
+        offset,
+      });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/backtest/runs/:id/summary - Aggregated summary for a run
+  const backtestSummaryMatch = url.match(/^\/api\/backtest\/runs\/([^/]+)\/summary$/);
+  if (req.method === 'GET' && backtestSummaryMatch) {
+    try {
+      const runId = backtestSummaryMatch[1];
+      const rows = await persistence.all(
+        `SELECT strategy, symbol,
+                COUNT(*) as trades,
+                SUM(CASE WHEN won THEN 1 ELSE 0 END) as wins,
+                ROUND(SUM(CASE WHEN won THEN 1 ELSE 0 END)::numeric / COUNT(*) * 100, 1) as win_rate,
+                SUM(pnl) as total_pnl,
+                AVG(pnl) as avg_pnl,
+                AVG(entry_price) as avg_entry,
+                AVG(cost) as avg_cost,
+                MAX(strategy_description) as description
+         FROM backtest_trades WHERE run_id = $1
+         GROUP BY strategy, symbol
+         ORDER BY strategy, symbol`,
+        [runId]
+      );
+      json(res, 200, { summary: rows });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/backtest/runs/:id/cheap - Cheap entry analysis
+  const backtestCheapMatch = url.match(/^\/api\/backtest\/runs\/([^/]+)\/cheap$/);
+  if (req.method === 'GET' && backtestCheapMatch) {
+    try {
+      const runId = backtestCheapMatch[1];
+      const rows = await persistence.all(
+        `SELECT strategy, symbol, entry_price, size, cost, pnl, payout, won, reason, confidence, direction
+         FROM backtest_trades
+         WHERE run_id = $1 AND entry_price < 0.20
+         ORDER BY pnl DESC
+         LIMIT 100`,
+        [runId]
+      );
+      json(res, 200, { trades: rows });
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/backtest/runs/:id - Single run detail (must come after sub-routes)
+  const backtestRunMatch = url.match(/^\/api\/backtest\/runs\/([^/]+)$/);
+  if (req.method === 'GET' && backtestRunMatch) {
+    try {
+      const runId = backtestRunMatch[1];
+      const row = await persistence.get(
+        `SELECT * FROM backtest_runs WHERE run_id = $1`,
+        [runId]
+      );
+      if (!row) {
+        json(res, 404, { error: 'Run not found' });
+      } else {
+        json(res, 200, { run: row });
+      }
+    } catch (err) {
+      json(res, 500, { error: err.message });
+    }
+    return true;
+  }
+
+  // GET /api/backtest-dataset - Full window_close_events dataset for Strategy Lab
+  if (req.method === 'GET' && url === '/api/backtest-dataset') {
+    try {
+      if (_backtestCache && Date.now() - _backtestCache.fetchedAt < 300_000) {
+        json(res, 200, _backtestCache.data);
+        return true;
+      }
+
+      const rows = await persistence.all(`
+        SELECT
+          window_id,
+          symbol,
+          window_epoch::float AS window_epoch,
+          window_close_time,
+          COALESCE(
+            NULLIF(gamma_resolved_direction, 'UNRESOLVED'),
+            NULLIF(onchain_resolved_direction, ''),
+            resolved_direction
+          ) AS resolved_direction,
+          market_consensus_direction,
+          consensus_confidence::float AS consensus_confidence,
+          strike_price::float AS strike_price,
+          oracle_close_price::float AS oracle_close_price,
+          oracle_open_price::float AS oracle_open_price,
+          clob_up_60s::float AS clob_up_60s,
+          clob_down_60s::float AS clob_down_60s,
+          clob_up_30s::float AS clob_up_30s,
+          clob_down_30s::float AS clob_down_30s,
+          clob_up_10s::float AS clob_up_10s,
+          clob_down_10s::float AS clob_down_10s,
+          clob_up_5s::float AS clob_up_5s,
+          clob_down_5s::float AS clob_down_5s,
+          clob_up_1s::float AS clob_up_1s,
+          clob_down_1s::float AS clob_down_1s,
+          clob_up_close::float AS clob_up_close,
+          clob_down_close::float AS clob_down_close,
+          gamma_resolved_direction,
+          gamma_backfilled_at
+        FROM window_close_events
+        ORDER BY window_close_time
+      `);
+
+      // Compute meta
+      const symbols = [...new Set(rows.map(r => r.symbol).filter(Boolean))];
+      const dates = rows.map(r => r.window_close_time).filter(Boolean).sort();
+      const gammaCount = rows.filter(r => r.gamma_resolved_direction).length;
+
+      const data = {
+        windows: rows,
+        meta: {
+          total: rows.length,
+          symbols,
+          dateRange: { from: dates[0] || null, to: dates[dates.length - 1] || null },
+          resolutionCoverage: {
+            gamma: gammaCount,
+            total: rows.length,
+            pct: rows.length > 0 ? ((gammaCount / rows.length) * 100).toFixed(1) + '%' : '0%',
+          },
+        },
+      };
+
+      _backtestCache = { data, fetchedAt: Date.now() };
+      json(res, 200, data);
     } catch (err) {
       json(res, 500, { error: err.message });
     }
