@@ -86,6 +86,8 @@ export const MODULE_INIT_ORDER = [
   { name: 'exchange-trade-collector', module: null, configKey: null },
   // Paper trader V2 - VWAP edge testing with streaming L2
   { name: 'paper-trader', module: null, configKey: null },
+  // Passive MM - limit order paper trading
+  { name: 'passive-mm', module: null, configKey: null },
   // Alerter - Discord webhook alerts
   { name: 'alerter', module: null, configKey: null },
   // Feed monitor - gap detection and feed health

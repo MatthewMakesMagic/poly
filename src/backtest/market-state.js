@@ -56,68 +56,84 @@ export class MarketState {
     const { source } = event;
 
     if (source === 'chainlink') {
-      this.chainlink = {
-        price: parseFloat(event.price),
-        ts: event.timestamp,
-      };
+      if (!this.chainlink) this.chainlink = { price: 0, ts: null };
+      this.chainlink.price = parseFloat(event.price);
+      this.chainlink.ts = event.timestamp;
     } else if (source === 'polyRef') {
-      this.polyRef = {
-        price: parseFloat(event.price),
-        ts: event.timestamp,
-      };
+      if (!this.polyRef) this.polyRef = { price: 0, ts: null };
+      this.polyRef.price = parseFloat(event.price);
+      this.polyRef.ts = event.timestamp;
     } else if (source === 'coingecko') {
-      this.coingecko = {
-        price: parseFloat(event.price),
-        ts: event.timestamp,
-      };
+      if (!this.coingecko) this.coingecko = { price: 0, ts: null };
+      this.coingecko.price = parseFloat(event.price);
+      this.coingecko.ts = event.timestamp;
     } else if (source === 'clobUp') {
-      this.clobUp = {
-        bestBid: parseFloat(event.best_bid),
-        bestAsk: parseFloat(event.best_ask),
-        mid: parseFloat(event.mid_price),
-        spread: parseFloat(event.spread),
-        bidSize: parseFloat(event.bid_size_top || 0),
-        askSize: parseFloat(event.ask_size_top || 0),
-        ts: event.timestamp,
-      };
+      if (!this.clobUp) this.clobUp = {};
+      const bid = parseFloat(event.best_bid);
+      const ask = parseFloat(event.best_ask);
+      // Only accept CLOB bid/ask in tradeable range (0.01–0.99).
+      // Stale snapshots from near-resolved books have extreme values.
+      if (bid && bid >= 0.01 && bid <= 0.99) this.clobUp.bestBid = bid;
+      if (ask && ask >= 0.01 && ask <= 0.99) this.clobUp.bestAsk = ask;
+      if (bid && ask && bid >= 0.01 && ask <= 0.99) {
+        this.clobUp.mid = (bid + ask) / 2;
+      }
+      this.clobUp.spread = parseFloat(event.spread);
+      this.clobUp.bidSize = parseFloat(event.bid_size_top || 0);
+      this.clobUp.askSize = parseFloat(event.ask_size_top || 0);
+      this.clobUp.ts = event.timestamp;
     } else if (source === 'clobDown') {
-      this.clobDown = {
-        bestBid: parseFloat(event.best_bid),
-        bestAsk: parseFloat(event.best_ask),
-        mid: parseFloat(event.mid_price),
-        spread: parseFloat(event.spread),
-        bidSize: parseFloat(event.bid_size_top || 0),
-        askSize: parseFloat(event.ask_size_top || 0),
-        ts: event.timestamp,
-      };
+      if (!this.clobDown) this.clobDown = {};
+      const bid = parseFloat(event.best_bid);
+      const ask = parseFloat(event.best_ask);
+      if (bid && bid >= 0.01 && bid <= 0.99) this.clobDown.bestBid = bid;
+      if (ask && ask >= 0.01 && ask <= 0.99) this.clobDown.bestAsk = ask;
+      if (bid && ask && bid >= 0.01 && ask <= 0.99) {
+        this.clobDown.mid = (bid + ask) / 2;
+      }
+      this.clobDown.spread = parseFloat(event.spread);
+      this.clobDown.bidSize = parseFloat(event.bid_size_top || 0);
+      this.clobDown.askSize = parseFloat(event.ask_size_top || 0);
+      this.clobDown.ts = event.timestamp;
     } else if (source === 'l2Up') {
-      this.clobUp = {
-        ...this.clobUp,
-        bestBid: parseFloat(event.best_bid) || this.clobUp?.bestBid,
-        bestAsk: parseFloat(event.best_ask) || this.clobUp?.bestAsk,
-        levels: event.top_levels,
-        bidDepth1pct: parseFloat(event.bid_depth_1pct) || 0,
-        askDepth1pct: parseFloat(event.ask_depth_1pct) || 0,
-        ts: event.timestamp,
-      };
+      if (!this.clobUp) this.clobUp = {};
+      const bid = parseFloat(event.best_bid);
+      const ask = parseFloat(event.best_ask);
+      // Only accept L2 bid/ask in the tradeable range (0.01–0.99).
+      // Values outside this are dust from nearly-resolved books.
+      if (bid && bid >= 0.01 && bid <= 0.99) this.clobUp.bestBid = bid;
+      if (ask && ask >= 0.01 && ask <= 0.99) this.clobUp.bestAsk = ask;
+      if (bid && ask && bid >= 0.01 && ask <= 0.99) {
+        this.clobUp.mid = (bid + ask) / 2;
+      }
+      this.clobUp.levels = event.top_levels;
+      this.clobUp.bidDepth1pct = parseFloat(event.bid_depth_1pct) || 0;
+      this.clobUp.askDepth1pct = parseFloat(event.ask_depth_1pct) || 0;
+      this.clobUp.ts = event.timestamp;
     } else if (source === 'l2Down') {
-      this.clobDown = {
-        ...this.clobDown,
-        bestBid: parseFloat(event.best_bid) || this.clobDown?.bestBid,
-        bestAsk: parseFloat(event.best_ask) || this.clobDown?.bestAsk,
-        levels: event.top_levels,
-        bidDepth1pct: parseFloat(event.bid_depth_1pct) || 0,
-        askDepth1pct: parseFloat(event.ask_depth_1pct) || 0,
-        ts: event.timestamp,
-      };
+      if (!this.clobDown) this.clobDown = {};
+      const bid = parseFloat(event.best_bid);
+      const ask = parseFloat(event.best_ask);
+      if (bid && bid >= 0.01 && bid <= 0.99) this.clobDown.bestBid = bid;
+      if (ask && ask >= 0.01 && ask <= 0.99) this.clobDown.bestAsk = ask;
+      if (bid && ask && bid >= 0.01 && ask <= 0.99) {
+        this.clobDown.mid = (bid + ask) / 2;
+      }
+      this.clobDown.levels = event.top_levels;
+      this.clobDown.bidDepth1pct = parseFloat(event.bid_depth_1pct) || 0;
+      this.clobDown.askDepth1pct = parseFloat(event.ask_depth_1pct) || 0;
+      this.clobDown.ts = event.timestamp;
     } else if (source.startsWith('exchange_')) {
       const exchangeName = source.slice('exchange_'.length);
-      this._exchanges.set(exchangeName, {
-        price: parseFloat(event.price),
-        bid: event.bid != null ? parseFloat(event.bid) : null,
-        ask: event.ask != null ? parseFloat(event.ask) : null,
-        ts: event.timestamp,
-      });
+      let ex = this._exchanges.get(exchangeName);
+      if (!ex) {
+        ex = { price: 0, bid: null, ask: null, ts: null };
+        this._exchanges.set(exchangeName, ex);
+      }
+      ex.price = parseFloat(event.price);
+      ex.bid = event.bid != null ? parseFloat(event.bid) : null;
+      ex.ask = event.ask != null ? parseFloat(event.ask) : null;
+      ex.ts = event.timestamp;
     }
     // rtds_* topics we don't explicitly model get ignored
   }
@@ -133,6 +149,7 @@ export class MarketState {
     const closeTime = windowEvent.window_close_time;
     this.strike = windowEvent.strike_price != null ? parseFloat(windowEvent.strike_price) : null;
     this.oraclePriceAtOpen = windowEvent.oracle_price_at_open != null ? parseFloat(windowEvent.oracle_price_at_open) : null;
+    this._closeMsCached = null; // invalidate cached close time
     this.window = {
       id: closeTime, // use close time as window ID
       symbol: windowEvent.symbol,
@@ -152,8 +169,20 @@ export class MarketState {
   updateTimeToClose(timestamp) {
     if (!this.window?.closeTime) return;
     const currentMs = new Date(timestamp).getTime();
-    const closeMs = new Date(this.window.closeTime).getTime();
-    this.window.timeToCloseMs = Math.max(0, closeMs - currentMs);
+    this.updateTimeToCloseMs(currentMs);
+  }
+
+  /**
+   * Fast path: recalculate timeToCloseMs from pre-parsed ms value.
+   *
+   * @param {number} currentMs - Current time in ms
+   */
+  updateTimeToCloseMs(currentMs) {
+    if (!this.window) return;
+    if (this._closeMsCached == null) {
+      this._closeMsCached = new Date(this.window.closeTime).getTime();
+    }
+    this.window.timeToCloseMs = Math.max(0, this._closeMsCached - currentMs);
   }
 
   // ─── Exchange Accessors ───
@@ -264,5 +293,6 @@ export class MarketState {
     this._exchanges.clear();
     this._positions = [];
     this._tickCount = 0;
+    this._closeMsCached = null;
   }
 }

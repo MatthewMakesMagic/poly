@@ -389,7 +389,7 @@ export async function loadAllData(options) {
  * Load all data for a single symbol.
  */
 export async function loadAllDataForSymbol(options) {
-  const { startDate, endDate, symbol, sharedRtds } = options;
+  const { startDate, endDate, symbol, sharedRtds, includeL2 = false } = options;
   if (!startDate || !endDate || !symbol) {
     throw new Error('startDate, endDate, and symbol are required');
   }
@@ -407,7 +407,21 @@ export async function loadAllDataForSymbol(options) {
     symbols: [symbol.toLowerCase()],
   });
 
-  return { rtdsTicks, clobSnapshots, exchangeTicks };
+  // L2 data is too large for bulk preload (~9M rows for BTC alone = multi-GB).
+  // It's loaded per-window by the engine instead (fast with window_id index).
+
+  // CoinGecko ticks
+  let coingeckoTicks = [];
+  try {
+    coingeckoTicks = getDb().prepare(`
+      SELECT timestamp, symbol, price FROM coingecko_ticks
+      WHERE timestamp >= ? AND timestamp <= ? AND symbol = ?
+      ORDER BY timestamp ASC
+    `).all(startDate, endDate, symbol.toLowerCase());
+    for (const r of coingeckoTicks) parseDates(r, 'timestamp');
+  } catch { /* table may not exist */ }
+
+  return { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks };
 }
 
 // ─── Per-Window Data Loading ───
@@ -470,6 +484,11 @@ export async function loadWindowTickData(options) {
   // L2 book ticks (if table exists)
   let l2BookTicks = [];
   try {
+    // Compute window_id to filter L2 to current window's tokens only
+    // window_id format: "btc-15m-{epochSec}" where epochSec = window open time
+    const windowOpenEpoch = Math.floor(new Date(closeDate).getTime() / 1000) - 900;
+    const windowIdFilter = `${symbol}-15m-${windowOpenEpoch}`;
+
     l2BookTicks = d.prepare(`
       SELECT id, timestamp, token_id, symbol, window_id, event_type,
              best_bid, best_ask, mid_price, spread,
@@ -477,23 +496,14 @@ export async function loadWindowTickData(options) {
       FROM l2_book_ticks
       WHERE timestamp >= ? AND timestamp <= ?
         AND symbol LIKE ?
+        AND window_id = ?
       ORDER BY timestamp ASC
-    `).all(openDate, closeDate, `${symbol}%`);
-    // Build token_id → direction lookup from CLOB snapshots (which have btc-up/btc-down symbols)
-    const tokenDirMap = {};
-    try {
-      const clobTokens = d.prepare(
-        `SELECT DISTINCT token_id, symbol FROM clob_price_snapshots WHERE symbol IN (?, ?)`,
-      ).all(`${symbol}-up`, `${symbol}-down`);
-      for (const t of clobTokens) {
-        tokenDirMap[t.token_id] = t.symbol.includes('down') ? 'down' : 'up';
-      }
-    } catch { /* ignore */ }
+    `).all(openDate, closeDate, `${symbol}%`, windowIdFilter);
 
     for (const r of l2BookTicks) {
       parseDates(r, 'timestamp');
-      // Tag direction from CLOB token_id mapping
-      r.direction = tokenDirMap[r.token_id] || null;
+      // Derive direction from symbol column (e.g. 'btc-up' → 'up', 'btc-down' → 'down')
+      r.direction = r.symbol?.toLowerCase().includes('down') ? 'down' : 'up';
       if (r.top_levels && typeof r.top_levels === 'string') {
         try {
           r.top_levels = JSON.parse(r.top_levels);
@@ -518,6 +528,48 @@ export async function loadWindowTickData(options) {
   } catch { /* table may not exist */ }
 
   return { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks };
+}
+
+/**
+ * Load L2 book ticks for a single window.
+ * Designed for hybrid mode: bulk-load RTDS/CLOB/exchange, per-window L2.
+ * Uses window_id index for fast lookups (~30ms per window).
+ */
+export function loadL2ForWindow(options) {
+  const { window: win, windowDurationMs = 5 * 60 * 1000 } = options;
+  const closeMs = new Date(win.window_close_time).getTime();
+  const openMs = closeMs - windowDurationMs;
+  const openDate = new Date(openMs).toISOString();
+  const closeDate = win.window_close_time instanceof Date
+    ? win.window_close_time.toISOString()
+    : win.window_close_time;
+  const symbol = win.symbol?.toLowerCase() || 'btc';
+  const windowOpenEpoch = Math.floor(new Date(closeDate).getTime() / 1000) - 900;
+  const windowIdFilter = `${symbol}-15m-${windowOpenEpoch}`;
+
+  const d = getDb();
+  let l2BookTicks = [];
+  try {
+    l2BookTicks = d.prepare(`
+      SELECT id, timestamp, token_id, symbol, window_id, event_type,
+             best_bid, best_ask, mid_price, spread,
+             bid_depth_1pct, ask_depth_1pct, top_levels
+      FROM l2_book_ticks
+      WHERE timestamp >= ? AND timestamp <= ?
+        AND symbol LIKE ?
+        AND window_id = ?
+      ORDER BY timestamp ASC
+    `).all(openDate, closeDate, `${symbol}%`, windowIdFilter);
+
+    for (const r of l2BookTicks) {
+      parseDates(r, 'timestamp');
+      r.direction = r.symbol?.toLowerCase().includes('down') ? 'down' : 'up';
+      if (r.top_levels && typeof r.top_levels === 'string') {
+        try { r.top_levels = JSON.parse(r.top_levels); } catch { r.top_levels = null; }
+      }
+    }
+  } catch { /* table may not exist */ }
+  return l2BookTicks;
 }
 
 /**

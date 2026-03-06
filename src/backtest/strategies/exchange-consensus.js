@@ -41,9 +41,11 @@ export function evaluate(state, config) {
     capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
-  const { strike, clobUp, clobDown, window: win } = state;
+  const { clobUp, clobDown, window: win, oraclePriceAtOpen } = state;
+  // Resolution = CL@close >= CL@open, compare exchanges to CL@open
+  const clOpen = oraclePriceAtOpen || state.strike;
   if (hasBought) return [];
-  if (!win || strike == null) return [];
+  if (!win || clOpen == null) return [];
 
   const timeOk = win.timeToCloseMs != null && win.timeToCloseMs < entryWindowMs;
   if (!timeOk) return [];
@@ -51,12 +53,12 @@ export function evaluate(state, config) {
   const exchanges = state.getAllExchanges();
   if (exchanges.length < minExchangesAgreeing) return [];
 
-  // Count how many exchanges are above/below strike
+  // Count how many exchanges are above/below CL@open
   let aboveCount = 0;
   let belowCount = 0;
   for (const ex of exchanges) {
     if (ex.price == null) continue;
-    const diff = ex.price - strike;
+    const diff = ex.price - clOpen;
     if (diff > exchangeThreshold) aboveCount++;
     else if (diff < -exchangeThreshold) belowCount++;
   }

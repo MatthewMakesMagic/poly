@@ -47,9 +47,11 @@ export function evaluate(state, config) {
     minExchanges = defaults.minExchanges,
   } = config;
 
-  const { strike, chainlink, clobUp, clobDown, window: win } = state;
+  const { chainlink, clobUp, clobDown, window: win, oraclePriceAtOpen } = state;
+  // Resolution = CL@close >= CL@open, compare to CL@open
+  const clOpen = oraclePriceAtOpen || state.strike;
   if (hasBought) return [];
-  if (!win || !chainlink?.price || strike == null) return [];
+  if (!win || !chainlink?.price || clOpen == null) return [];
 
   const timeOk = win.timeToCloseMs != null && win.timeToCloseMs < entryWindowMs;
   if (!timeOk) return [];
@@ -61,8 +63,8 @@ export function evaluate(state, config) {
   const exchangeMedian = state.getExchangeMedian();
   if (exchangeMedian == null) return [];
 
-  const exchangeAboveStrike = exchangeMedian - strike;  // positive = exchanges say UP
-  const clAboveStrike = chainlink.price - strike;        // positive = CL says UP
+  const exchangeAboveStrike = exchangeMedian - clOpen;  // positive = exchanges say UP
+  const clAboveStrike = chainlink.price - clOpen;        // positive = CL says UP
 
   // Case 1: Exchanges say UP (above strike), CL says DOWN (below strike)
   if (exchangeAboveStrike > exchangeLeadThreshold && clAboveStrike < -clDisagreeThreshold) {

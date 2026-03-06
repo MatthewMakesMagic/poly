@@ -83,6 +83,17 @@ function getGroundTruth(window) {
  * @param {Object} windowData - { rtdsTicks, clobSnapshots, exchangeTicks }
  * @returns {Object[]} Sorted timeline events
  */
+/**
+ * Parse timestamp to ms, handling both Date objects and ISO strings.
+ * Cached on the object as `_ms` to avoid re-parsing.
+ */
+function toMs(obj) {
+  if (obj._ms != null) return obj._ms;
+  const ts = obj.timestamp;
+  obj._ms = typeof ts === 'object' ? ts.getTime() : new Date(ts).getTime();
+  return obj._ms;
+}
+
 function buildWindowTimeline(windowData) {
   const { rtdsTicks, clobSnapshots, exchangeTicks, coingeckoTicks, l2BookTicks } = windowData;
   const timeline = [];
@@ -98,43 +109,46 @@ function buildWindowTimeline(windowData) {
     } else {
       source = `rtds_${topic}`;
     }
-    timeline.push({ ...tick, source });
+    tick.source = source;
+    toMs(tick);
+    timeline.push(tick);
   }
 
   for (let i = 0; i < clobSnapshots.length; i++) {
     const snap = clobSnapshots[i];
-    const isDown = snap.symbol?.toLowerCase().includes('down');
-    const source = isDown ? 'clobDown' : 'clobUp';
-    timeline.push({ ...snap, source });
+    snap.source = snap.symbol?.toLowerCase().includes('down') ? 'clobDown' : 'clobUp';
+    toMs(snap);
+    timeline.push(snap);
   }
 
   for (let i = 0; i < exchangeTicks.length; i++) {
     const tick = exchangeTicks[i];
-    timeline.push({ ...tick, source: `exchange_${tick.exchange}` });
+    tick.source = `exchange_${tick.exchange}`;
+    toMs(tick);
+    timeline.push(tick);
   }
 
   if (l2BookTicks) {
     for (let i = 0; i < l2BookTicks.length; i++) {
       const tick = l2BookTicks[i];
       const isDown = tick.direction === 'down' || tick.symbol?.toLowerCase().includes('down');
-      const source = isDown ? 'l2Down' : 'l2Up';
-      timeline.push({ ...tick, source });
+      tick.source = isDown ? 'l2Down' : 'l2Up';
+      toMs(tick);
+      timeline.push(tick);
     }
   }
 
   if (coingeckoTicks) {
     for (let i = 0; i < coingeckoTicks.length; i++) {
       const tick = coingeckoTicks[i];
-      timeline.push({ ...tick, source: 'coingecko' });
+      tick.source = 'coingecko';
+      toMs(tick);
+      timeline.push(tick);
     }
   }
 
-  // Sort by timestamp
-  timeline.sort((a, b) => {
-    const tA = new Date(a.timestamp).getTime();
-    const tB = new Date(b.timestamp).getTime();
-    return tA - tB;
-  });
+  // Sort by pre-parsed numeric ms (no Date parsing in comparator)
+  timeline.sort((a, b) => a._ms - b._ms);
 
   return timeline;
 }
@@ -173,7 +187,9 @@ export function evaluateWindow({
   const usePassive = strategy.usesPassiveOrders === true;
   let orderbook = null;
   if (usePassive) {
-    orderbook = new BacktestOrderBook();
+    orderbook = new BacktestOrderBook({
+      queuePositionFraction: strategyConfig.queuePositionFraction ?? 0.5,
+    });
     state._orderbook = orderbook;
   }
 
@@ -194,7 +210,7 @@ export function evaluateWindow({
   // Replay timeline
   for (let i = 0; i < timeline.length; i++) {
     const event = timeline[i];
-    const eventMs = new Date(event.timestamp).getTime();
+    const eventMs = event._ms ?? toMs(event);
 
     // Skip events outside window
     if (eventMs < openMs) continue;
@@ -202,7 +218,7 @@ export function evaluateWindow({
 
     // Update market state
     state.processEvent(event);
-    state.updateTimeToClose(event.timestamp);
+    state.updateTimeToCloseMs(eventMs);
     eventsProcessed++;
 
     // Check for passive fills on L2 ticks
@@ -231,9 +247,9 @@ export function evaluateWindow({
             reason: fill.reason,
           });
         }
-        // Notify strategy of passive fill
+        // Notify strategy of passive fill (pass state for per-window tracking)
         if (strategy.onPassiveFill) {
-          strategy.onPassiveFill(fill);
+          strategy.onPassiveFill(fill, state);
         }
       }
     }
@@ -456,7 +472,7 @@ function sliceClobForWindow(allClob, startMs, endMs, symbol, windowEpoch) {
  * @param {ParallelBacktestConfig} params.config - Backtest configuration
  * @returns {Promise<Object>} Aggregated backtest result
  */
-export async function runParallelBacktest({ windows, allData, config, loadWindowTickDataFn }) {
+export async function runParallelBacktest({ windows, allData, config, loadWindowTickDataFn, loadL2ForWindowFn }) {
   const {
     strategy,
     strategyConfig = {},
@@ -495,7 +511,7 @@ export async function runParallelBacktest({ windows, allData, config, loadWindow
       let windowData;
 
       if (usePreloaded) {
-        // Mode 1: Slice pre-loaded data
+        // Mode 1: Slice pre-loaded data (RTDS/CLOB/exchange from memory, L2 optionally per-window)
         const { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks } = allData;
         const closeMs = new Date(win.window_close_time).getTime();
         const openMs = closeMs - windowDurationMs;
@@ -508,9 +524,16 @@ export async function runParallelBacktest({ windows, allData, config, loadWindow
         const winExchange = sliceByTime(exchangeTicks, openMs, closeMs).filter(
           t => t.symbol?.toLowerCase() === win.symbol?.toLowerCase()
         );
-        const winL2 = l2BookTicks ? sliceByTime(l2BookTicks, openMs, closeMs).filter(
-          t => t.symbol?.toLowerCase().startsWith(win.symbol?.toLowerCase())
-        ) : [];
+
+        // L2: use bulk data if available, otherwise load per-window (hybrid mode)
+        let winL2 = [];
+        if (l2BookTicks) {
+          winL2 = sliceByTime(l2BookTicks, openMs, closeMs).filter(
+            t => t.symbol?.toLowerCase().startsWith(win.symbol?.toLowerCase())
+          );
+        } else if (loadL2ForWindowFn) {
+          winL2 = await loadL2ForWindowFn({ window: win, windowDurationMs });
+        }
         windowData = { rtdsTicks: winRtds, clobSnapshots: winClob, exchangeTicks: winExchange, l2BookTicks: winL2 };
       } else {
         // Mode 2: Load per-window from DB

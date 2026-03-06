@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "totalMs": 250862,
+    "totalRunMs": 1818,
+    "totalLoadMs": 247229,
+    "windowCount": 1212,
+    "strategyCount": 1
+  },
+  "table": [
+    {
+      "strategy": "edge-c-asymmetry",
+      "symbol": "BTC",
+      "trades": 265,
+      "winRate": 100,
+      "totalPnl": 344.38,
+      "sharpe": 0.46,
+      "avgEntry": 0.6073,
+      "dollarPnl": 1.2996,
+      "roc": 64.98,
+      "pf": 0
+    }
+  ]
+}

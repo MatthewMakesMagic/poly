@@ -4,9 +4,11 @@
  * Tracks resting limit orders and simulates fills against L2 orderbook data.
  * Designed for backtesting market-making strategies that post passive quotes.
  *
- * Fill model: Level-aware with volume check.
- *   - On placement, records queue position (volume ahead at price level)
- *   - On each L2 tick, checks if cumulative crossing volume exceeds queue position
+ * Fill model: Queue-aware depth depletion.
+ *   - On placement, records queue position = bid depth at our level * queuePositionFraction
+ *   - On each L2 tick, tracks bid-side depth changes at our price level
+ *   - When depth decreases, orders ahead of us were filled → reduces queueAhead
+ *   - Fills only when queueAhead <= 0 AND opposing side crosses our price
  *   - Uses configurable queuePositionFraction (default 0.5 = assume midway in queue)
  *   - Fills execute at the limit price (no slippage — passive fill)
  */
@@ -21,6 +23,8 @@ export class BacktestOrderBook {
     this.orders = new Map(); // orderId -> Order
     this.nextId = 0;
     this.fills = [];
+    // Carry cumulative depletion credit across cancel/re-place at same level
+    this._volumeMemory = new Map(); // "token:side:price" -> { queueAhead, prevDepth }
   }
 
   /**
@@ -37,6 +41,9 @@ export class BacktestOrderBook {
    */
   placeOrder({ token, side, price, size, timestamp, reason = '' }) {
     const orderId = `lob-${++this.nextId}`;
+    const levelKey = `${token}:${side}:${price.toFixed(4)}`;
+    // Restore queue state from previous order at same level (cancel/re-place)
+    const prior = this._volumeMemory.get(levelKey);
     this.orders.set(orderId, {
       id: orderId,
       token,
@@ -46,9 +53,9 @@ export class BacktestOrderBook {
       timestamp,
       reason,
       status: 'OPEN',
-      cumulativeVolume: 0,
-      queueAhead: 0, // set on first L2 tick
-      queueInitialized: false,
+      queueAhead: prior ? prior.queueAhead : null, // null = needs init on first tick
+      prevDepth: prior ? prior.prevDepth : null,     // previous tick's depth at our level
+      queueInitialized: !!prior,
     });
     return orderId;
   }
@@ -62,6 +69,14 @@ export class BacktestOrderBook {
   cancelOrder(orderId) {
     const order = this.orders.get(orderId);
     if (!order || order.status !== 'OPEN') return false;
+    const levelKey = `${order.token}:${order.side}:${order.price.toFixed(4)}`;
+    // Save queue state for re-placement at same level
+    if (order.queueInitialized) {
+      this._volumeMemory.set(levelKey, {
+        queueAhead: order.queueAhead,
+        prevDepth: order.prevDepth,
+      });
+    }
     order.status = 'CANCELLED';
     this.orders.delete(orderId);
     return true;
@@ -76,13 +91,20 @@ export class BacktestOrderBook {
     for (const [id, order] of this.orders) {
       if (order.status !== 'OPEN') continue;
       if (token && order.token !== token) continue;
+      const levelKey = `${order.token}:${order.side}:${order.price.toFixed(4)}`;
+      if (order.queueInitialized) {
+        this._volumeMemory.set(levelKey, {
+          queueAhead: order.queueAhead,
+          prevDepth: order.prevDepth,
+        });
+      }
       order.status = 'CANCELLED';
       this.orders.delete(id);
     }
   }
 
   /**
-   * Process an L2 tick — check all resting orders for fills.
+   * Process an L2 tick — update queue positions and check for fills.
    *
    * @param {Object} params
    * @param {string} params.token - Token this L2 update is for
@@ -102,12 +124,8 @@ export class BacktestOrderBook {
       if (order.token !== token) continue;
 
       if (order.side === 'bid') {
-        // Resting bid (limit buy) at price P
-        // Fills when asks cross through our level with enough volume
         this._processBidFill(order, bids, asks, timestamp, newFills);
       } else {
-        // Resting ask (limit sell) at price P
-        // Fills when bids cross through our level with enough volume
         this._processAskFill(order, bids, asks, timestamp, newFills);
       }
     }
@@ -122,99 +140,144 @@ export class BacktestOrderBook {
   }
 
   /**
-   * Check if a resting bid should fill.
+   * Get bid-side depth at or above a given price.
+   * For a resting bid at P, this is the volume ahead of us in the queue.
    *
-   * A resting bid at price P fills when sellers cross through our level:
-   *   - There exist asks at or below our price P (someone selling into us)
-   *   - Cumulative volume through our level exceeds our queue position
+   * Assumes bids are sorted descending by price (best bid first).
+   * Early-exits when prices drop below our level.
+   *
+   * @param {Array} bids - [[price, size], ...] sorted descending
+   * @param {number} price - Our resting bid price
+   * @returns {number} Total volume at price levels >= price
    */
-  _processBidFill(order, bids, asks, timestamp, fills) {
-    const P = order.price;
-
-    // Initialize queue position on first tick
-    if (!order.queueInitialized) {
-      // Queue ahead = total bid volume at prices >= P (others ahead of us)
-      let totalAhead = 0;
-      for (const [bidPrice, bidSize] of bids) {
-        if (bidPrice >= P) totalAhead += bidSize;
-      }
-      order.queueAhead = totalAhead * this.queuePositionFraction;
-      order.queueInitialized = true;
+  _bidDepthAtLevel(bids, price) {
+    let depth = 0;
+    for (let i = 0; i < bids.length; i++) {
+      if (bids[i][0] < price) break; // sorted descending — all remaining are below us
+      depth += bids[i][1];
     }
-
-    // Volume crossing through our level: asks at prices <= P
-    let volumeThrough = 0;
-    for (const [askPrice, askSize] of asks) {
-      if (askPrice <= P) volumeThrough += askSize;
-    }
-
-    if (volumeThrough <= 0) return;
-
-    order.cumulativeVolume += volumeThrough;
-
-    // Fill condition: cumulative crossing volume > queue ahead
-    if (order.cumulativeVolume > order.queueAhead) {
-      order.status = 'FILLED';
-      fills.push({
-        orderId: order.id,
-        token: order.token,
-        side: order.side,
-        price: order.price,  // Fill at limit price — passive fill, no slippage
-        size: order.size,
-        timestamp,
-        reason: order.reason,
-        queueAhead: order.queueAhead,
-        cumulativeVolume: order.cumulativeVolume,
-      });
-    }
+    return depth;
   }
 
   /**
-   * Check if a resting ask should fill.
+   * Get ask-side depth at or below a given price.
+   * For a resting ask at P, this is the volume ahead of us in the queue.
    *
-   * A resting ask at price P fills when buyers cross through our level:
-   *   - There exist bids at or above our price P (someone buying into us)
-   *   - Cumulative volume through our level exceeds our queue position
+   * Assumes asks are sorted ascending by price (best ask first).
+   * Early-exits when prices rise above our level.
+   *
+   * @param {Array} asks - [[price, size], ...] sorted ascending
+   * @param {number} price - Our resting ask price
+   * @returns {number} Total volume at price levels <= price
+   */
+  _askDepthAtLevel(asks, price) {
+    let depth = 0;
+    for (let i = 0; i < asks.length; i++) {
+      if (asks[i][0] > price) break; // sorted ascending — all remaining are above us
+      depth += asks[i][1];
+    }
+    return depth;
+  }
+
+  /**
+   * Check if a resting bid should fill using queue-aware depth depletion.
+   *
+   * Model:
+   *   1. queueAhead = bidDepth at our level * queuePositionFraction (on first tick)
+   *   2. Each tick: if bid depth decreased, reduce queueAhead (orders ahead got filled/cancelled)
+   *   3. Fill when queueAhead <= 0 AND asks exist at or below our price
+   */
+  _processBidFill(order, bids, asks, timestamp, fills) {
+    const P = order.price;
+    const currentBidDepth = this._bidDepthAtLevel(bids, P);
+
+    // Initialize queue position on first L2 tick
+    if (!order.queueInitialized) {
+      order.queueAhead = currentBidDepth * this.queuePositionFraction;
+      order.prevDepth = currentBidDepth;
+      order.queueInitialized = true;
+      // Don't fill on the initialization tick — need at least one depletion cycle
+      return;
+    }
+
+    // Track depth depletion: if bid depth decreased, orders ahead of us were consumed
+    if (currentBidDepth < order.prevDepth) {
+      const depleted = order.prevDepth - currentBidDepth;
+      order.queueAhead = Math.max(0, order.queueAhead - depleted);
+    }
+    order.prevDepth = currentBidDepth;
+
+    // Check fill condition: queue cleared AND asks cross to our level
+    if (order.queueAhead > 0) return;
+
+    // Best ask is first element (sorted ascending)
+    const bestAsk = asks.length > 0 ? asks[0][0] : Infinity;
+
+    // No asks at or below our price — no fill
+    if (bestAsk > P) return;
+
+    const fillPrice = P; // Passive fill: maker always gets their limit price
+
+    order.status = 'FILLED';
+    fills.push({
+      orderId: order.id,
+      token: order.token,
+      side: order.side,
+      price: fillPrice,
+      size: order.size,
+      timestamp,
+      reason: order.reason,
+      queueAhead: 0,
+      depletionTicks: order._depletionTicks || 0,
+    });
+  }
+
+  /**
+   * Check if a resting ask should fill using queue-aware depth depletion.
+   *
+   * Mirror of bid logic: tracks ask-side depth at our level.
    */
   _processAskFill(order, bids, asks, timestamp, fills) {
     const P = order.price;
+    const currentAskDepth = this._askDepthAtLevel(asks, P);
 
-    // Initialize queue position on first tick
+    // Initialize queue position on first L2 tick
     if (!order.queueInitialized) {
-      // Queue ahead = total ask volume at prices <= P (others ahead of us)
-      let totalAhead = 0;
-      for (const [askPrice, askSize] of asks) {
-        if (askPrice <= P) totalAhead += askSize;
-      }
-      order.queueAhead = totalAhead * this.queuePositionFraction;
+      order.queueAhead = currentAskDepth * this.queuePositionFraction;
+      order.prevDepth = currentAskDepth;
       order.queueInitialized = true;
+      return;
     }
 
-    // Volume crossing through our level: bids at prices >= P
-    let volumeThrough = 0;
-    for (const [bidPrice, bidSize] of bids) {
-      if (bidPrice >= P) volumeThrough += bidSize;
+    // Track depth depletion
+    if (currentAskDepth < order.prevDepth) {
+      const depleted = order.prevDepth - currentAskDepth;
+      order.queueAhead = Math.max(0, order.queueAhead - depleted);
     }
+    order.prevDepth = currentAskDepth;
 
-    if (volumeThrough <= 0) return;
+    // Check fill condition: queue cleared AND bids cross to our level
+    if (order.queueAhead > 0) return;
 
-    order.cumulativeVolume += volumeThrough;
+    // Best bid is first element (sorted descending)
+    const bestBid = bids.length > 0 ? bids[0][0] : -Infinity;
 
-    // Fill condition: cumulative crossing volume > queue ahead
-    if (order.cumulativeVolume > order.queueAhead) {
-      order.status = 'FILLED';
-      fills.push({
-        orderId: order.id,
-        token: order.token,
-        side: order.side,
-        price: order.price,
-        size: order.size,
-        timestamp,
-        reason: order.reason,
-        queueAhead: order.queueAhead,
-        cumulativeVolume: order.cumulativeVolume,
-      });
-    }
+    if (bestBid < P) return;
+
+    const fillPrice = P; // Passive fill: maker always gets their limit price
+
+    order.status = 'FILLED';
+    fills.push({
+      orderId: order.id,
+      token: order.token,
+      side: order.side,
+      price: fillPrice,
+      size: order.size,
+      timestamp,
+      reason: order.reason,
+      queueAhead: 0,
+      depletionTicks: order._depletionTicks || 0,
+    });
   }
 
   /**
@@ -257,5 +320,6 @@ export class BacktestOrderBook {
     this.orders.clear();
     this.fills = [];
     this.nextId = 0;
+    this._volumeMemory.clear();
   }
 }

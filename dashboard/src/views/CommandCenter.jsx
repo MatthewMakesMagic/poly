@@ -4,6 +4,7 @@ import KillSwitchPanel from '../components/KillSwitchPanel.jsx';
 import StrategiesPanel from '../components/StrategiesPanel.jsx';
 import PositionsPanel from '../components/PositionsPanel.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
+import PassiveMmPanel from '../components/PassiveMmPanel.jsx';
 
 export default function CommandCenter({ state, events, connected }) {
   return (
@@ -23,6 +24,9 @@ export default function CommandCenter({ state, events, connected }) {
           <PositionsPanel state={state} />
         </div>
       </div>
+
+      {/* Passive MM panel */}
+      <PassiveMmPanel state={state} />
 
       {/* Bottom: Activity feed */}
       <ActivityFeed events={events} />

@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "totalMs": 28256,
+    "totalLoadMs": 0,
+    "windowCount": 1212,
+    "strategyCount": 1,
+    "workers": 8
+  },
+  "table": [
+    {
+      "strategy": "mm-bs-spread",
+      "symbol": "BTC",
+      "trades": 828,
+      "winRate": 55.8,
+      "totalPnl": 49.84,
+      "sharpe": 0.56,
+      "avgEntry": 0.557,
+      "dollarPnl": 0.0602,
+      "roc": 3.01,
+      "pf": 1.07
+    }
+  ]
+}

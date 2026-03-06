@@ -44,14 +44,16 @@ export function evaluate(state, config) {
     capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
-  const { strike, chainlink, clobUp, clobDown, window: win } = state;
-  if (!win || !chainlink?.price || strike == null) return [];
+  const { chainlink, clobUp, clobDown, window: win, oraclePriceAtOpen } = state;
+  // Resolution = CL@close >= CL@open, so compare CL to CL@open
+  const clOpen = oraclePriceAtOpen || state.strike;
+  if (!win || !chainlink?.price || clOpen == null) return [];
   if (hasBought) return [];
 
   const timeOk = win.timeToCloseMs != null && win.timeToCloseMs < entryWindowMs;
   if (!timeOk) return [];
 
-  const clAboveStrike = chainlink.price - strike;
+  const clAboveStrike = chainlink.price - clOpen;
 
   // CL clearly above strike => likely UP resolution
   if (clAboveStrike > clThreshold && clobUp && clobUp.bestAsk <= maxEntryPrice) {

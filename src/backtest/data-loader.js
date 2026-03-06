@@ -440,39 +440,64 @@ export async function loadAllData(options) {
 }
 
 /**
- * Load ALL CLOB snapshots for a date range (no window_epoch filter).
+ * Load ALL CLOB snapshots for a date range using keyset pagination.
  * Used by the parallel engine which slices per-window in memory.
  *
  * @param {Object} options
  * @param {string} options.startDate
  * @param {string} options.endDate
  * @param {string} [options.symbolPrefix] - Filter by symbol prefix (e.g. 'btc')
+ * @param {number} [options.batchSize=500000] - Rows per batch
  * @returns {Promise<Object[]>}
  */
 async function loadAllClobSnapshots(options) {
-  const { startDate, endDate, symbolPrefix } = options;
+  const { startDate, endDate, symbolPrefix, batchSize = 500000 } = options;
 
-  if (symbolPrefix) {
-    const sql = `
-      SELECT timestamp, symbol, token_id, best_bid, best_ask,
-             mid_price, spread, bid_size_top, ask_size_top, window_epoch
-      FROM clob_price_snapshots
-      WHERE timestamp >= $1 AND timestamp <= $2
-        AND symbol LIKE $3
-      ORDER BY timestamp ASC
-    `;
-    return persistence.all(sql, [startDate, endDate, `${symbolPrefix.toLowerCase()}%`]);
+  const result = [];
+  let lastId = 0;
+  let hasMore = true;
+
+  log.info('load_all_clob_snapshots_start', { startDate, endDate, symbolPrefix, batchSize });
+
+  while (hasMore) {
+    let sql;
+    let params;
+
+    if (symbolPrefix) {
+      sql = `
+        SELECT id, timestamp, symbol, token_id, best_bid, best_ask,
+               mid_price, spread, bid_size_top, ask_size_top, window_epoch
+        FROM clob_price_snapshots
+        WHERE timestamp >= $1 AND timestamp <= $2
+          AND symbol LIKE $3
+          AND id > $4
+        ORDER BY id ASC LIMIT $5
+      `;
+      params = [startDate, endDate, `${symbolPrefix.toLowerCase()}%`, lastId, batchSize];
+    } else {
+      sql = `
+        SELECT id, timestamp, symbol, token_id, best_bid, best_ask,
+               mid_price, spread, bid_size_top, ask_size_top, window_epoch
+        FROM clob_price_snapshots
+        WHERE timestamp >= $1 AND timestamp <= $2
+          AND id > $3
+        ORDER BY id ASC LIMIT $4
+      `;
+      params = [startDate, endDate, lastId, batchSize];
+    }
+
+    const rows = await persistence.all(sql, params);
+
+    if (rows.length > 0) {
+      for (const row of rows) result.push(row);
+      lastId = rows[rows.length - 1].id;
+    }
+
+    hasMore = rows.length === batchSize;
   }
 
-  const sql = `
-    SELECT timestamp, symbol, token_id, best_bid, best_ask,
-           mid_price, spread, bid_size_top, ask_size_top, window_epoch
-    FROM clob_price_snapshots
-    WHERE timestamp >= $1 AND timestamp <= $2
-    ORDER BY timestamp ASC
-  `;
-
-  return persistence.all(sql, [startDate, endDate]);
+  log.info('load_all_clob_snapshots_complete', { totalRows: result.length });
+  return result;
 }
 
 /**
@@ -497,7 +522,11 @@ export async function loadAllDataForSymbol(options) {
 
   const rtdsPromise = sharedRtds
     ? Promise.resolve(sharedRtds)
-    : loadRtdsTicks({ startDate, endDate, topics: ['crypto_prices_chainlink', 'crypto_prices'] });
+    : loadRtdsTicks({
+        startDate, endDate,
+        topics: ['crypto_prices_chainlink', 'crypto_prices'],
+        symbols: [symbol.toLowerCase()],
+      });
 
   const [rtdsTicks, clobSnapshots, exchangeTicks] = await Promise.all([
     rtdsPromise,

@@ -33,7 +33,12 @@ export const defaults = {
  * @param {Object} config - Merged strategy config
  * @returns {Object[]} Array of signals (empty = no action)
  */
+let hasBought = false;
+
+export function onWindowOpen() { hasBought = false; }
+
 export function evaluate(state, config) {
+  if (hasBought) return [];
   const {
     deficitThreshold = defaults.deficitThreshold,
     nearStrikeThreshold = defaults.nearStrikeThreshold,
@@ -42,25 +47,27 @@ export function evaluate(state, config) {
     capitalPerTrade = defaults.capitalPerTrade,
   } = config;
 
-  const { strike, chainlink, polyRef, clobDown, window: win } = state;
+  const { chainlink, polyRef, clobDown, window: win, oraclePriceAtOpen } = state;
 
-  // Need all data present
-  if (strike == null || !chainlink?.price || !polyRef?.price || !clobDown || !win) {
+  // Need all data present — use CL@open (oraclePriceAtOpen) as reference, not strike
+  const clOpen = oraclePriceAtOpen || state.strike;
+  if (clOpen == null || !chainlink?.price || !polyRef?.price || !clobDown || !win) {
     return [];
   }
 
-  const deficit = strike - chainlink.price;
-  const refNearStrike = Math.abs(polyRef.price - strike) < nearStrikeThreshold;
+  const deficit = clOpen - chainlink.price;
+  const refNearStrike = Math.abs(polyRef.price - clOpen) < nearStrikeThreshold;
   const timeOk = win.timeToCloseMs != null && win.timeToCloseMs < entryWindowMs;
   const downCheap = clobDown.bestAsk < maxDownPrice;
 
   if (refNearStrike && deficit > deficitThreshold && timeOk && downCheap) {
+    hasBought = true;
     const token = `${win.symbol}-down`;
     return [{
       action: 'buy',
       token,
       capitalPerTrade,
-      reason: `edge_c: deficit=$${deficit.toFixed(0)}, ref_gap=$${(polyRef.price - strike).toFixed(0)}`,
+      reason: `edge_c: deficit=$${deficit.toFixed(0)}, ref_gap=$${(polyRef.price - clOpen).toFixed(0)}`,
       confidence: Math.min(deficit / 150, 1),
     }];
   }

@@ -83,6 +83,8 @@ async function discoverStrategies() {
         evaluate: mod.evaluate,
         onWindowOpen: mod.onWindowOpen || null,
         onWindowClose: mod.onWindowClose || null,
+        onPassiveFill: mod.onPassiveFill || null,
+        usesPassiveOrders: mod.usesPassiveOrders || false,
         defaults: mod.defaults || {},
       });
     } catch (err) {
@@ -212,6 +214,9 @@ async function failRun(runId, error) {
 }
 
 async function main() {
+  if (process.env.RAILWAY_ENVIRONMENT) {
+    console.log(`Running on Railway (${process.env.RAILWAY_ENVIRONMENT})`);
+  }
   console.log('=== All Strategies vs Gamma Ground Truth ($2/trade capital-based sizing) ===\n');
   const t0Global = Date.now();
   await initDb();
@@ -254,16 +259,8 @@ async function main() {
   const endDate = new Date(maxTime + 60 * 1000).toISOString();
   console.log(`Date range: ${startDate.slice(0,10)} to ${endDate.slice(0,10)}`);
 
-  // Load RTDS ticks once (shared across all symbols, ~12M rows ~1.2GB)
-  console.log(`\nLoading shared RTDS ticks...`);
-  const t0Rtds = Date.now();
-  const sharedRtds = await loadRtdsTicks({
-    startDate,
-    endDate,
-    topics: ['crypto_prices_chainlink', 'crypto_prices'],
-    batchSize: 500000, // 500K per batch — ~24 queries for 12M rows vs 1200 at default 10K
-  });
-  console.log(`  ${sharedRtds.length} RTDS ticks loaded in ${((Date.now() - t0Rtds) / 1000).toFixed(1)}s`);
+  // RTDS ticks loaded per-symbol below (not all-at-once) to stay within 8GB Railway memory limit
+  const sharedRtds = null;
 
   // ─── Create backtest run in DB ───
   const totalPairs = strategies.length * activeSymbols.filter(s => bySymbol[s]?.length > 0).length;
@@ -292,7 +289,7 @@ async function main() {
     const windows = bySymbol[sym];
     if (!windows.length) continue;
 
-    // Load CLOB + exchange data for this symbol only
+    // Load ALL data for this symbol (RTDS + CLOB + exchange) — keeps peak memory to ~one symbol
     console.log(`\n--- Loading ${sym.toUpperCase()} data ---`);
     const memBefore = process.memoryUsage();
     console.log(`  Memory: heap=${(memBefore.heapUsed/1024/1024).toFixed(0)}MB / ${(memBefore.heapTotal/1024/1024).toFixed(0)}MB, rss=${(memBefore.rss/1024/1024).toFixed(0)}MB`);
@@ -301,9 +298,8 @@ async function main() {
       startDate,
       endDate,
       symbol: sym,
-      sharedRtds,
     });
-    console.log(`  ${sym.toUpperCase()}: ${symData.clobSnapshots.length} clob, ${symData.exchangeTicks.length} exchange [${((Date.now() - t0Load) / 1000).toFixed(1)}s]`);
+    console.log(`  ${sym.toUpperCase()}: ${symData.rtdsTicks.length} rtds, ${symData.clobSnapshots.length} clob, ${symData.exchangeTicks.length} exchange [${((Date.now() - t0Load) / 1000).toFixed(1)}s]`);
 
     // Run ALL strategies on this symbol
     for (const strategy of strategies) {
@@ -367,7 +363,8 @@ async function main() {
       }
     }
 
-    // Free symbol-specific data before loading next symbol
+    // Free ALL symbol data before loading next symbol
+    symData.rtdsTicks = null;
     symData.clobSnapshots = null;
     symData.exchangeTicks = null;
     if (global.gc) global.gc();
@@ -627,6 +624,7 @@ async function main() {
 
   console.log(`\nDone in ${totalSec}s.`);
   await persistence.shutdown().catch(() => {});
+  process.exit(0);
 }
 
 main().catch(async (err) => {

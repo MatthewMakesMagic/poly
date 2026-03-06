@@ -56,6 +56,7 @@ import * as clobPriceLogger from '../clob-price-logger/index.js';
 import * as exchangeFeedCollector from '../exchange-feed-collector/index.js';
 import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
 import * as paperTrader from '../paper-trader/index.js';
+import * as passiveMm from '../passive-mm/index.js';
 import * as startupSafety from '../startup-safety/index.js';
 // Alerting module - Discord webhook alerts
 import * as alerter from '../alerter/index.js';
@@ -135,6 +136,7 @@ const MODULE_MAP = {
   'exchange-feed-collector': exchangeFeedCollector,
   'exchange-trade-collector': exchangeTradeCollector,
   'paper-trader': paperTrader,
+  'passive-mm': passiveMm,
   'startup-safety': startupSafety,
   'alerter': alerter,
   'feed-monitor': feedMonitor,
