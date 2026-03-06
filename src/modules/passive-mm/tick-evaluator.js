@@ -21,7 +21,7 @@
  * @param {Object} opts.log - Logger instance
  * @returns {Object} Tick evaluator with onBookUpdate method
  */
-export function createTickEvaluator({ liveState, orderTracker, strategy, strategyConfig, mode, windowId, log }) {
+export function createTickEvaluator({ liveState, orderTracker, strategy, strategyConfig, mode, windowId, log, onOrderPlaced }) {
   let tickCount = 0;
   let signalCount = 0;
   let lastLogTick = 0;
@@ -48,6 +48,7 @@ export function createTickEvaluator({ liveState, orderTracker, strategy, strateg
         for (const signal of signals) {
           orderTracker.handleSignal(signal, liveState.state, windowId);
           signalCount++;
+          if (onOrderPlaced && signal.action === 'place_limit_buy') onOrderPlaced();
         }
       }
 

@@ -80,6 +80,27 @@ export async function init(cfg = {}) {
   // Ensure DB table exists
   await ensureTable();
 
+  // Backfill payout/pnl for fills broken by case-mismatch bug
+  try {
+    const fixed = await persistence.run(`
+      UPDATE passive_mm_trades SET
+        payout = CASE
+          WHEN UPPER(resolved_direction) = UPPER(side) THEN fill_size
+          ELSE 0
+        END,
+        pnl = CASE
+          WHEN UPPER(resolved_direction) = UPPER(side) THEN fill_size - capital
+          ELSE -capital
+        END
+      WHERE payout = 0 AND resolved_direction IS NOT NULL
+    `);
+    if (fixed?.rowCount > 0) {
+      log.info('backfill_payout_fixed', { rows: fixed.rowCount });
+    }
+  } catch (err) {
+    log.warn('backfill_payout_error', { error: err.message });
+  }
+
   // Load cumulative stats from DB so they survive redeploys
   try {
     const row = await persistence.get(`
@@ -166,6 +187,7 @@ export function getState() {
     config: {
       crypto: config.crypto,
       tradingMode: config.tradingMode,
+      strategyConfig: config.strategyConfig,
     },
   };
 }
@@ -281,6 +303,7 @@ async function startTrackingWindow(windowData) {
     mode: config.tradingMode,
     windowId,
     log,
+    onOrderPlaced: () => { stats.ordersPlaced++; },
   });
 
   const unsubscribes = [];
@@ -401,7 +424,8 @@ async function settleWindow(ws) {
       FROM window_close_events
       WHERE window_id = $1
     `, [windowId]);
-    resolvedDirection = event?.onchain_resolved_direction || event?.resolved_direction || null;
+    const raw = event?.onchain_resolved_direction || event?.resolved_direction || null;
+    resolvedDirection = raw ? raw.toUpperCase() : null;
   } catch (err) {
     log.warn('settlement_query_error', { windowId, error: err.message });
   }
