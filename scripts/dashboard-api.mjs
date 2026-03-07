@@ -1082,7 +1082,7 @@ export async function handleDashboardRequest(req, res) {
   // GET /api/passive-mm/trades - Passive MM trade history
   if (req.method === 'GET' && url === '/api/passive-mm/trades') {
     try {
-      // Summary stats
+      // Summary stats (per variant)
       const summary = await persistence.get(`
         SELECT
           COUNT(DISTINCT window_id) as total_windows,
@@ -1092,10 +1092,23 @@ export async function handleDashboardRequest(req, res) {
         FROM passive_mm_trades
       `);
 
-      // Per-window aggregation
+      // Per-variant summary
+      const variantSummary = await persistence.all(`
+        SELECT
+          COALESCE(variant_name, 'default') as variant_name,
+          COUNT(DISTINCT window_id) as total_windows,
+          COUNT(*) as total_fills,
+          COALESCE(SUM(pnl), 0) as cumulative_pnl
+        FROM passive_mm_trades
+        GROUP BY variant_name
+        ORDER BY variant_name
+      `);
+
+      // Per-window-variant aggregation
       const windows = await persistence.all(`
         SELECT
           window_id,
+          COALESCE(variant_name, 'default') as variant_name,
           COUNT(*) as fills,
           SUM(capital) as total_cost,
           SUM(payout) as total_payout,
@@ -1105,20 +1118,21 @@ export async function handleDashboardRequest(req, res) {
           MAX(filled_at) as last_fill,
           BOOL_OR(is_paired) as is_paired
         FROM passive_mm_trades
-        GROUP BY window_id
+        GROUP BY window_id, variant_name
         ORDER BY MAX(filled_at) DESC
-        LIMIT 100
+        LIMIT 200
       `);
 
       // Recent individual fills
       const recentFills = await persistence.all(`
         SELECT
-          id, window_id, side, token, fill_price, fill_size,
+          id, window_id, COALESCE(variant_name, 'default') as variant_name,
+          side, token, fill_price, fill_size,
           capital, filled_at, resolved_direction, payout, pnl, is_paired,
           trading_mode
         FROM passive_mm_trades
         ORDER BY filled_at DESC
-        LIMIT 50
+        LIMIT 100
       `);
 
       json(res, 200, {
@@ -1128,6 +1142,7 @@ export async function handleDashboardRequest(req, res) {
           pairedWindows: parseInt(summary?.paired_windows) || 0,
           cumulativePnl: parseFloat(summary?.cumulative_pnl) || 0,
         },
+        variantSummary,
         windows,
         recentFills,
       });

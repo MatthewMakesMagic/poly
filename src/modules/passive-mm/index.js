@@ -1,9 +1,13 @@
 /**
- * Passive Market Maker Module
+ * Passive Market Maker Module — Multi-Variant Support
  *
- * Wires the mm-passive-polyref backtest strategy for live paper/live trading.
- * Subscribes to CLOB WS for L2 book updates, feeds them through LiveMarketState,
- * evaluates the strategy on each tick, and manages order lifecycle.
+ * Wires the mm-cs-signal-skew strategy for live paper/live trading.
+ * Supports multiple named strategy variants running simultaneously,
+ * each with independent order tracking, fills, and P&L.
+ *
+ * Subscribes to CLOB WS for L2 book updates, feeds them through
+ * per-variant LiveMarketState instances, evaluates the strategy
+ * on each tick, and manages order lifecycle.
  *
  * Module interface: init(config), getState(), shutdown()
  *
@@ -18,10 +22,11 @@ import { TOPICS } from '../../clients/rtds/types.js';
 import * as windowManager from '../window-manager/index.js';
 import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
 import * as polymarketClient from '../../clients/polymarket/index.js';
-import * as strategy from '../../backtest/strategies/mm-passive-polyref.js';
+import * as strategy from '../../backtest/strategies/mm-cs-signal-skew.js';
 import { createLiveMarketState } from './live-market-state.js';
 import { createOrderTracker } from './order-tracker.js';
 import { createTickEvaluator } from './tick-evaluator.js';
+import { createReconciler } from './reconciler.js';
 
 // ── Module state ──
 
@@ -48,8 +53,13 @@ const DEFAULT_CONFIG = {
   tradingMode: 'PAPER',    // 'PAPER' or 'LIVE'
   scanIntervalMs: 10000,   // scan for new windows every 10s
   settlementDelayMs: 65000, // settle 65s after window close
-  strategyConfig: {},       // override strategy defaults
 };
+
+// Default variants: two signal-skew configs
+const DEFAULT_VARIANTS = [
+  { name: 'skew-002', strategyConfig: { skewPerDollar: 0.002 } },
+  { name: 'skew-005', strategyConfig: { skewPerDollar: 0.005 } },
+];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MODULE INTERFACE
@@ -60,6 +70,7 @@ const DEFAULT_CONFIG = {
  *
  * @param {Object} cfg - Configuration
  * @param {Object} cfg.passiveMm - Module-specific config
+ * @param {Array} cfg.passiveMm.variants - Named strategy variants
  * @returns {Promise<void>}
  */
 export async function init(cfg = {}) {
@@ -69,15 +80,23 @@ export async function init(cfg = {}) {
   log.info('module_init_start');
 
   const mmCfg = cfg.passiveMm || {};
+
+  // Build variant configs: merge strategy defaults with each variant's overrides
+  const rawVariants = mmCfg.variants || DEFAULT_VARIANTS;
+  const variants = rawVariants.map(v => ({
+    name: v.name,
+    strategyConfig: { ...strategy.defaults, ...(v.strategyConfig || {}) },
+  }));
+
   config = {
     crypto: mmCfg.crypto || DEFAULT_CONFIG.crypto,
     tradingMode: mmCfg.tradingMode || DEFAULT_CONFIG.tradingMode,
     scanIntervalMs: mmCfg.scanIntervalMs || DEFAULT_CONFIG.scanIntervalMs,
     settlementDelayMs: mmCfg.settlementDelayMs || DEFAULT_CONFIG.settlementDelayMs,
-    strategyConfig: { ...strategy.defaults, ...(mmCfg.strategyConfig || {}) },
+    variants,
   };
 
-  // Ensure DB table exists
+  // Ensure DB table exists (with variant_name column)
   await ensureTable();
 
   // Backfill payout/pnl for fills broken by case-mismatch bug
@@ -122,6 +141,16 @@ export async function init(cfg = {}) {
     log.warn('stats_load_error', { error: err.message });
   }
 
+  // Crash recovery: cancel any orphaned GTC orders from previous deploy
+  if (config.tradingMode === 'LIVE') {
+    try {
+      await polymarketClient.cancelAll();
+      log.info('startup_cancel_orphaned_orders');
+    } catch (err) {
+      log.warn('startup_cancel_error', { error: err.message });
+    }
+  }
+
   initialized = true;
 
   // Start window scan loop
@@ -140,12 +169,14 @@ export async function init(cfg = {}) {
   log.info('module_initialized', {
     crypto: config.crypto,
     mode: config.tradingMode,
-    strategyConfig: config.strategyConfig,
+    variants: config.variants.map(v => v.name),
+    variantConfigs: config.variants.map(v => ({ name: v.name, ...v.strategyConfig })),
   });
 }
 
 /**
  * Get current module state.
+ * Each variant appears as a separate entry per window for dashboard compatibility.
  *
  * @returns {Object}
  */
@@ -156,28 +187,31 @@ export function getState() {
 
   const windowSummaries = [];
   for (const [windowId, ws] of activeWindows) {
-    const orders = ws.orderTracker.getWindowOrders();
-    const evalStats = ws.tickEvaluator.getStats();
-    windowSummaries.push({
-      windowId,
-      timeToCloseMs: ws.liveState.state?.window?.timeToCloseMs ?? null,
-      ticks: evalStats.tickCount,
-      signals: evalStats.signalCount,
-      resting: orders.restingOrders,
-      fills: orders.fills,
-      upCost: orders.upCost,
-      downCost: orders.downCost,
-      paired: orders.paired,
-      pairEdge: orders.pairEdge,
-      restingOrderDetails: orders.restingOrderDetails || [],
-      fillDetails: (orders.fillDetails || []).map(f => ({
-        side: f.side,
-        price: f.price,
-        size: f.size,
-        capital: f.capital,
-        filledAt: f.filledAt,
-      })),
-    });
+    for (const vi of ws.variants) {
+      const orders = vi.orderTracker.getWindowOrders();
+      const evalStats = vi.tickEvaluator.getStats();
+      windowSummaries.push({
+        windowId,
+        variantName: vi.name,
+        timeToCloseMs: vi.liveState.state?.window?.timeToCloseMs ?? null,
+        ticks: evalStats.tickCount,
+        signals: evalStats.signalCount,
+        resting: orders.restingOrders,
+        fills: orders.fills,
+        upCost: orders.upCost,
+        downCost: orders.downCost,
+        paired: orders.paired,
+        pairEdge: orders.pairEdge,
+        restingOrderDetails: orders.restingOrderDetails || [],
+        fillDetails: (orders.fillDetails || []).map(f => ({
+          side: f.side,
+          price: f.price,
+          size: f.size,
+          capital: f.capital,
+          filledAt: f.filledAt,
+        })),
+      });
+    }
   }
 
   return {
@@ -187,7 +221,7 @@ export function getState() {
     config: {
       crypto: config.crypto,
       tradingMode: config.tradingMode,
-      strategyConfig: config.strategyConfig,
+      variants: config.variants.map(v => v.name),
     },
   };
 }
@@ -211,7 +245,10 @@ export async function shutdown() {
   // Shutdown all active windows
   for (const [windowId, ws] of activeWindows) {
     try {
-      await ws.orderTracker.shutdown();
+      for (const vi of ws.variants) {
+        if (vi.reconciler) vi.reconciler.stop();
+        await vi.orderTracker.shutdown();
+      }
       for (const unsub of ws.unsubscribes) {
         unsub();
       }
@@ -262,7 +299,18 @@ async function scanAndTrack() {
 }
 
 /**
- * Set up tracking for a new window.
+ * Set up tracking for a new window, creating one pipeline per variant.
+ *
+ * Each variant gets its own:
+ *   - LiveMarketState (because state._mm is variant-specific inventory)
+ *   - OrderTracker (independent order map and fills)
+ *   - Reconciler (desired-state latch)
+ *   - TickEvaluator (strategy eval + reconcile trigger)
+ *
+ * Shared across variants:
+ *   - CLOB WS subscription (one per token, callbacks fan out)
+ *   - RTDS subscription (fan out to all liveStates)
+ *   - Window timers (settlement, pre-close cancel)
  *
  * @param {Object} windowData - Window from getActiveWindows()
  */
@@ -273,70 +321,102 @@ async function startTrackingWindow(windowData) {
     tokenUp: windowData.token_id_up?.slice(0, 16),
     tokenDown: windowData.token_id_down?.slice(0, 16),
     timeRemainingMs: windowData.time_remaining_ms,
+    variants: config.variants.map(v => v.name),
   });
 
-  // Create LiveMarketState
-  const liveState = createLiveMarketState({ log });
-  liveState.setWindowContext(windowData);
+  const tokenIds = {
+    up: windowData.token_id_up,
+    down: windowData.token_id_down,
+  };
 
-  // Notify strategy of window open
-  strategy.onWindowOpen(liveState.state);
+  // ── Create one pipeline per variant ──
+  const variantInstances = [];
+  for (const variantCfg of config.variants) {
+    const vLog = child({ module: 'passive-mm', variant: variantCfg.name });
 
-  // Create OrderTracker
-  const orderTracker = createOrderTracker({
-    mode: config.tradingMode,
-    polymarketClient,
-    strategy,
-    tokenIds: {
-      up: windowData.token_id_up,
-      down: windowData.token_id_down,
-    },
-    log,
-  });
+    const liveState = createLiveMarketState({ log: vLog });
+    liveState.setWindowContext(windowData);
+    strategy.onWindowOpen(liveState.state);
 
-  // Create TickEvaluator
-  const tickEvaluator = createTickEvaluator({
-    liveState,
-    orderTracker,
-    strategy,
-    strategyConfig: config.strategyConfig,
-    mode: config.tradingMode,
-    windowId,
-    log,
-    onOrderPlaced: () => { stats.ordersPlaced++; },
-  });
+    const orderTracker = createOrderTracker({
+      mode: config.tradingMode,
+      polymarketClient,
+      tokenIds,
+      liveState,
+      log: vLog,
+      crypto: config.crypto,
+    });
+
+    const reconciler = createReconciler({
+      orderTracker,
+      config: variantCfg.strategyConfig,
+      log: vLog,
+    });
+
+    const tickEvaluator = createTickEvaluator({
+      liveState,
+      reconciler,
+      orderTracker,
+      strategy,
+      strategyConfig: variantCfg.strategyConfig,
+      mode: config.tradingMode,
+      windowId,
+      log: vLog,
+    });
+
+    // LIVE mode: start 250ms reconcile timer per variant
+    if (config.tradingMode === 'LIVE') {
+      reconciler.start(() => liveState.state);
+    }
+
+    variantInstances.push({
+      name: variantCfg.name,
+      strategyConfig: variantCfg.strategyConfig,
+      liveState,
+      orderTracker,
+      reconciler,
+      tickEvaluator,
+    });
+  }
 
   const unsubscribes = [];
   const timers = [];
 
-  // Subscribe CLOB WS to UP token
+  // ── Subscribe CLOB WS — fan out to all variants ──
   if (windowData.token_id_up) {
     clobWs.subscribeToken(windowData.token_id_up, `${config.crypto}-UP`);
-    const unsub = clobWs.subscribe(windowData.token_id_up, () => {
-      const book = clobWs.getBook(windowData.token_id_up);
-      if (book) tickEvaluator.onBookUpdate('up', book);
+    const unsub = clobWs.subscribe(windowData.token_id_up, (event) => {
+      if (event.book) {
+        for (const vi of variantInstances) {
+          vi.tickEvaluator.onBookUpdate('up', event.book);
+        }
+      }
     });
     unsubscribes.push(unsub);
   }
 
-  // Subscribe CLOB WS to DOWN token
   if (windowData.token_id_down) {
     clobWs.subscribeToken(windowData.token_id_down, `${config.crypto}-DOWN`);
-    const unsub = clobWs.subscribe(windowData.token_id_down, () => {
-      const book = clobWs.getBook(windowData.token_id_down);
-      if (book) tickEvaluator.onBookUpdate('down', book);
+    const unsub = clobWs.subscribe(windowData.token_id_down, (event) => {
+      if (event.book) {
+        for (const vi of variantInstances) {
+          vi.tickEvaluator.onBookUpdate('down', event.book);
+        }
+      }
     });
     unsubscribes.push(unsub);
   }
 
-  // Subscribe to RTDS Chainlink for oracle updates
+  // ── Subscribe RTDS — fan out to all variants' liveStates ──
   let rtdsUnsub = null;
   try {
     rtdsUnsub = rtdsClient.subscribe(config.crypto, (tick) => {
-      if (tick.topic === TOPICS.CRYPTO_PRICES_CHAINLINK) {
-        liveState.updateChainlink(tick.price);
-      } else if (tick.topic === TOPICS.CRYPTO_PRICES) {
-        liveState.updatePolyRef(tick.price);
+      for (const vi of variantInstances) {
+        if (tick.topic === TOPICS.CRYPTO_PRICES_CHAINLINK) {
+          vi.liveState.updateChainlink(tick.price);
+        } else if (tick.topic === TOPICS.CRYPTO_PRICES) {
+          vi.liveState.updatePolyRef(tick.price);
+        }
       }
     });
     unsubscribes.push(rtdsUnsub);
@@ -344,23 +424,23 @@ async function startTrackingWindow(windowData) {
     log.debug('rtds_subscribe_skipped', { reason: 'not available' });
   }
 
-  // Feed initial exchange prices
+  // ── Feed initial exchange prices to all variants ──
   try {
     const composite = exchangeTradeCollector.getCompositeVWAP(config.crypto);
     if (composite?.vwap) {
-      liveState.updateExchange('composite', composite.vwap);
+      for (const vi of variantInstances) {
+        vi.liveState.updateExchange('composite', composite.vwap);
+      }
     }
   } catch {
     // Non-critical
   }
 
-  // Store window state
+  // ── Store window state ──
   const windowState = {
     windowId,
     windowData,
-    liveState,
-    orderTracker,
-    tickEvaluator,
+    variants: variantInstances,
     unsubscribes,
     timers,
     settled: false,
@@ -368,7 +448,7 @@ async function startTrackingWindow(windowData) {
   activeWindows.set(windowId, windowState);
   stats.windowsTracked++;
 
-  // Schedule settlement
+  // ── Schedule settlement ──
   const settlementDelay = windowData.time_remaining_ms + config.settlementDelayMs;
   const settlementTimer = setTimeout(() => {
     settleWindow(windowState).catch(err => {
@@ -378,12 +458,17 @@ async function startTrackingWindow(windowData) {
   if (settlementTimer.unref) settlementTimer.unref();
   timers.push(settlementTimer);
 
-  // Schedule pre-close cancel (at T-5s for safety margin)
+  // ── Schedule pre-close cancel (at T-5s) — stop all variants ──
   const cancelDelay = Math.max(0, windowData.time_remaining_ms - 5000);
-  const cancelTimer = setTimeout(() => {
-    orderTracker.cancelAllOrders().catch(err => {
+  const cancelTimer = setTimeout(async () => {
+    try {
+      for (const vi of variantInstances) {
+        vi.reconciler.stop();
+        await vi.orderTracker.cancelAllByOrderId();
+      }
+    } catch (err) {
       if (log) log.warn('pre_close_cancel_error', { windowId, error: err.message });
-    });
+    }
   }, cancelDelay);
   if (cancelTimer.unref) cancelTimer.unref();
   timers.push(cancelTimer);
@@ -394,7 +479,7 @@ async function startTrackingWindow(windowData) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Settle a window: query resolution, calculate P&L, persist.
+ * Settle a window: query resolution, calculate P&L per variant, persist.
  *
  * @param {Object} ws - Window state
  */
@@ -402,15 +487,17 @@ async function settleWindow(ws) {
   if (ws.settled) return;
   ws.settled = true;
 
-  const { windowId, orderTracker, liveState } = ws;
+  const { windowId } = ws;
 
-  // Cancel any remaining orders
-  await orderTracker.cancelAllOrders();
+  // Stop all variant reconcilers and cancel remaining orders
+  for (const vi of ws.variants) {
+    if (vi.reconciler) vi.reconciler.stop();
+    await vi.orderTracker.cancelAllByOrderId();
+  }
 
-  const orders = orderTracker.getWindowOrders();
-
-  // If no fills, just cleanup
-  if (orders.fills === 0) {
+  // Check if any variant has fills
+  const totalFills = ws.variants.reduce((sum, vi) => sum + vi.orderTracker.getWindowOrders().fills, 0);
+  if (totalFills === 0) {
     log.info('window_no_fills', { windowId });
     cleanupWindow(windowId);
     return;
@@ -431,8 +518,14 @@ async function settleWindow(ws) {
   }
 
   if (!resolvedDirection) {
-    // Retry in 30s
-    log.warn('settlement_no_resolution', { windowId, fills: orders.fills });
+    // Retry in 30s, max 10 retries (5 minutes total)
+    ws.settlementRetries = (ws.settlementRetries || 0) + 1;
+    if (ws.settlementRetries > 10) {
+      log.error('settlement_max_retries', { windowId, fills: totalFills, retries: ws.settlementRetries });
+      cleanupWindow(windowId);
+      return;
+    }
+    log.warn('settlement_no_resolution', { windowId, fills: totalFills, retry: ws.settlementRetries });
     const retryTimer = setTimeout(() => {
       ws.settled = false;
       settleWindow(ws).catch(err => {
@@ -445,62 +538,69 @@ async function settleWindow(ws) {
     return;
   }
 
-  // Calculate P&L
-  const isPaired = orders.upTokens > 0 && orders.downTokens > 0;
-  const totalCost = orders.upCost + orders.downCost;
+  // ── Settle each variant independently ──
+  for (const vi of ws.variants) {
+    const orders = vi.orderTracker.getWindowOrders();
+    if (orders.fills === 0) continue;
 
-  let payout = 0;
-  if (resolvedDirection === 'UP') {
-    payout = orders.upTokens * 1.0; // UP tokens pay $1 each
-  } else {
-    payout = orders.downTokens * 1.0; // DOWN tokens pay $1 each
-  }
+    const isPaired = orders.upTokens > 0 && orders.downTokens > 0;
+    const totalCost = orders.upCost + orders.downCost;
 
-  const pnl = payout - totalCost;
-
-  // Update stats
-  stats.fills += orders.fills;
-  if (isPaired) stats.pairedFills++;
-  stats.cumulativePnl += pnl;
-
-  log.info('window_settled', {
-    windowId,
-    resolvedDirection,
-    fills: orders.fills,
-    paired: isPaired,
-    upCost: orders.upCost.toFixed(4),
-    downCost: orders.downCost.toFixed(4),
-    totalCost: totalCost.toFixed(4),
-    payout: payout.toFixed(4),
-    pnl: pnl.toFixed(4),
-    cumulativePnl: stats.cumulativePnl.toFixed(4),
-  });
-
-  // Persist each fill to DB
-  try {
-    for (const fill of orders.fillDetails) {
-      await persistence.run(`
-        INSERT INTO passive_mm_trades (
-          window_id, trading_mode, side, token, fill_price, fill_size,
-          capital, filled_at, resolved_direction, payout, pnl, is_paired
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::numeric / 1000), $9, $10, $11, $12)
-      `, [
-        windowId,
-        config.tradingMode,
-        fill.side,
-        fill.token,
-        fill.price,
-        fill.size,
-        fill.capital,
-        fill.filledAt,
-        resolvedDirection,
-        resolvedDirection === (fill.side === 'up' ? 'UP' : 'DOWN') ? fill.size : 0,
-        resolvedDirection === (fill.side === 'up' ? 'UP' : 'DOWN') ? fill.size - fill.capital : -fill.capital,
-        isPaired,
-      ]);
+    let payout = 0;
+    if (resolvedDirection === 'UP') {
+      payout = orders.upTokens * 1.0;
+    } else {
+      payout = orders.downTokens * 1.0;
     }
-  } catch (err) {
-    log.warn('persist_trades_error', { windowId, error: err.message });
+
+    const pnl = payout - totalCost;
+
+    // Update aggregate stats
+    stats.fills += orders.fills;
+    if (isPaired) stats.pairedFills++;
+    stats.cumulativePnl += pnl;
+
+    log.info('window_settled', {
+      windowId,
+      variant: vi.name,
+      resolvedDirection,
+      fills: orders.fills,
+      paired: isPaired,
+      upCost: orders.upCost.toFixed(4),
+      downCost: orders.downCost.toFixed(4),
+      totalCost: totalCost.toFixed(4),
+      payout: payout.toFixed(4),
+      pnl: pnl.toFixed(4),
+      cumulativePnl: stats.cumulativePnl.toFixed(4),
+    });
+
+    // Persist each fill to DB with variant_name
+    try {
+      for (const fill of orders.fillDetails) {
+        await persistence.run(`
+          INSERT INTO passive_mm_trades (
+            window_id, trading_mode, variant_name, side, token, fill_price, fill_size,
+            capital, filled_at, resolved_direction, payout, pnl, is_paired
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9::numeric / 1000), $10, $11, $12, $13)
+        `, [
+          windowId,
+          config.tradingMode,
+          vi.name,
+          fill.side,
+          fill.token,
+          fill.price,
+          fill.size,
+          fill.capital,
+          fill.filledAt,
+          resolvedDirection,
+          resolvedDirection === (fill.side === 'up' ? 'UP' : 'DOWN') ? fill.size : 0,
+          resolvedDirection === (fill.side === 'up' ? 'UP' : 'DOWN') ? fill.size - fill.capital : -fill.capital,
+          isPaired,
+        ]);
+      }
+    } catch (err) {
+      log.warn('persist_trades_error', { windowId, variant: vi.name, error: err.message });
+    }
   }
 
   cleanupWindow(windowId);
@@ -542,7 +642,7 @@ function cleanupWindow(windowId) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Ensure the passive_mm_trades table exists.
+ * Ensure the passive_mm_trades table exists with variant_name column.
  */
 async function ensureTable() {
   await persistence.run(`
@@ -550,6 +650,7 @@ async function ensureTable() {
       id SERIAL PRIMARY KEY,
       window_id TEXT NOT NULL,
       trading_mode TEXT NOT NULL DEFAULT 'PAPER',
+      variant_name TEXT,
       side TEXT NOT NULL,
       token TEXT NOT NULL,
       fill_price NUMERIC NOT NULL,
@@ -568,4 +669,13 @@ async function ensureTable() {
     CREATE INDEX IF NOT EXISTS idx_pmm_trades_window
     ON passive_mm_trades (window_id)
   `);
+
+  // Add variant_name column if table already existed without it
+  try {
+    await persistence.run(`
+      ALTER TABLE passive_mm_trades ADD COLUMN IF NOT EXISTS variant_name TEXT
+    `);
+  } catch {
+    // Column already exists or DB doesn't support IF NOT EXISTS — safe to ignore
+  }
 }

@@ -236,6 +236,76 @@ export const LIVE_DEFAULTS = {
 };
 
 /**
+ * Declarative desired-state quoting for live engine v2.
+ * Returns the quotes we WANT resting — reconciler diffs vs actual.
+ * No signals, no booleans, no cancel logic. Pure function of state.
+ *
+ * @param {Object} state - MarketState
+ * @param {Object} config - Strategy config
+ * @returns {{ up: { price, size, capital } | null, down: { price, size, capital } | null }}
+ */
+export function getDesiredQuotes(state, config) {
+  const {
+    bidOffset = defaults.bidOffset,
+    pairThreshold = defaults.pairThreshold,
+    maxPerSide = defaults.maxPerSide,
+    capitalPerEntry = defaults.capitalPerEntry,
+    entryWindowMs = defaults.entryWindowMs,
+    exitWindowMs = defaults.exitWindowMs,
+    maxEntryPrice = defaults.maxEntryPrice,
+    minEntryPrice = defaults.minEntryPrice,
+    requoteThreshold = defaults.requoteThreshold,
+  } = config;
+
+  const { clobUp, clobDown, window: win } = state;
+  if (!win || !clobUp || !clobDown) return { up: null, down: null };
+  if (win.timeToCloseMs == null) return { up: null, down: null };
+
+  // Exit window — no resting quotes wanted
+  if (win.timeToCloseMs <= exitWindowMs) return { up: null, down: null };
+
+  // Too early — not in entry window
+  if (win.timeToCloseMs >= entryWindowMs) return { up: null, down: null };
+
+  const mm = initMmState(state);
+
+  // L2 levels for pricing
+  const l2BidsUp = clobUp.levels?.bids;
+  const l2BidsDown = clobDown.levels?.bids;
+  const clobBidUp = (l2BidsUp?.length > 0 ? l2BidsUp[0][0] : null) || clobUp.bestBid;
+  const clobBidDown = (l2BidsDown?.length > 0 ? l2BidsDown[0][0] : null) || clobDown.bestBid;
+  if (!clobBidUp || !clobBidDown || clobBidUp <= 0 || clobBidDown <= 0) return { up: null, down: null };
+
+  // Desired bid prices
+  let bidUp = clobBidUp - bidOffset;
+  let bidDown = clobBidDown - bidOffset;
+
+  // Inventory skew: tighten the side we need
+  if (mm.upTokens > 0 && mm.downTokens === 0) {
+    bidDown = clobBidDown;
+  } else if (mm.downTokens > 0 && mm.upTokens === 0) {
+    bidUp = clobBidUp;
+  }
+
+  // Pair edge check
+  const pairCost = bidUp + bidDown;
+  if (pairCost >= pairThreshold) return { up: null, down: null };
+
+  // Build desired quotes per side (independently)
+  let up = null;
+  let down = null;
+
+  if (bidUp >= minEntryPrice && bidUp <= maxEntryPrice && mm.upCost < maxPerSide) {
+    up = { price: bidUp, size: capitalPerEntry / bidUp, capital: capitalPerEntry };
+  }
+  if (bidDown >= minEntryPrice && bidDown <= maxEntryPrice && mm.downCost < maxPerSide) {
+    down = { price: bidDown, size: capitalPerEntry / bidDown, capital: capitalPerEntry };
+  }
+
+  return { up, down };
+}
+
+/**
  * Called by engine when a passive fill occurs.
  * Updates per-window position tracking on state._mm.
  */

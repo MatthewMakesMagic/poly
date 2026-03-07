@@ -500,6 +500,15 @@ const config = {
     },
   },
 
+  // Passive market maker (multi-variant paper testing)
+  passiveMm: {
+    crypto: 'btc',
+    variants: [
+      { name: 'skew-002', strategyConfig: { skewPerDollar: 0.002 } },
+      { name: 'skew-005', strategyConfig: { skewPerDollar: 0.005 } },
+    ],
+  },
+
   // Backtest configuration
   backtest: {
     tickBatchSize: 10000,

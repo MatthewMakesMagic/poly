@@ -1,368 +1,345 @@
 /**
- * Order Tracker — Order Lifecycle Management
+ * Order Tracker v2 — Order Map + Fill Detection + Inventory
  *
- * Manages resting orders, fill detection (paper + live), and position tracking
- * for the passive market-making module.
+ * Core state model for the passive MM engine. Manages a per-side order map,
+ * detects fills (paper: ask crosses bid, live: poll getOpenOrders), and
+ * maintains inventory synced to both local state and liveState.state._mm.
  *
- * PAPER mode: tracks virtual orders, simulates fills when ask crosses bid.
- * LIVE mode: routes to polymarketClient, polls for fills.
+ * Key differences from v1:
+ *   - Order map keyed by side ('up'/'down'), not array of resting orders
+ *   - Per-order cancel (cancelOrder) instead of cancelAll() sledgehammer
+ *   - recordFill() writes to state._mm directly (no strategy.onPassiveFill)
+ *   - Live fill detection filters by tokenIds to avoid cross-window contamination
  *
  * @module modules/passive-mm/order-tracker
  */
 
 /**
- * Create an order tracker instance for one window.
- *
  * @param {Object} opts
- * @param {'PAPER'|'LIVE'} opts.mode - Trading mode
- * @param {Object} opts.polymarketClient - Polymarket client module (for LIVE)
- * @param {Object} opts.strategy - Strategy module (onPassiveFill)
- * @param {Object} opts.tokenIds - { up: tokenId, down: tokenId }
- * @param {Object} opts.log - Logger instance
- * @returns {Object} Order tracker
+ * @param {'PAPER'|'LIVE'} opts.mode
+ * @param {Object} opts.polymarketClient
+ * @param {Object} opts.tokenIds - { up, down }
+ * @param {Object} opts.liveState - LiveMarketState adapter (for state._mm sync)
+ * @param {Object} opts.log
+ * @param {string} opts.crypto - e.g. 'btc'
+ * @returns {Object}
  */
-export function createOrderTracker({ mode, polymarketClient, strategy, tokenIds, log }) {
-  // Per-window order state
-  let restingOrders = [];    // { id, token, side, price, size, capital, placedAt, orderId? }
-  let fills = [];            // { id, token, side, price, size, capital, filledAt }
-  let upCost = 0;
-  let downCost = 0;
-  let upTokens = 0;
-  let downTokens = 0;
-  let nextOrderId = 1;
-  let fillPollInterval = null;
+export function createOrderTracker({ mode, polymarketClient, tokenIds, liveState, log, crypto }) {
+  // Order map: side -> { orderId, price, size, capital, placedAt }
+  const orderMap = new Map();
 
-  /**
-   * Get the Polymarket token ID for a signal token like 'btc-up'.
-   */
-  function resolveTokenId(signalToken) {
-    if (signalToken.endsWith('-up')) return tokenIds.up;
-    if (signalToken.endsWith('-down')) return tokenIds.down;
-    return null;
+  // Inventory (single source of truth, synced to state._mm after every mutation)
+  let inventory = { upCost: 0, downCost: 0, upTokens: 0, downTokens: 0 };
+
+  // Fill history
+  const fills = [];
+
+  let nextPaperId = 1;
+
+  // ── Helpers ──
+
+  function resolveTokenId(side) {
+    return side === 'up' ? tokenIds.up : tokenIds.down;
   }
 
-  /**
-   * Determine side from signal token.
-   */
-  function resolveSide(signalToken) {
-    return signalToken.endsWith('-up') ? 'up' : 'down';
-  }
-
-  /**
-   * Handle a strategy signal.
-   *
-   * @param {Object} signal - { action, token, price, size, capitalPerTrade, reason }
-   * @param {Object} state - Current MarketState
-   * @param {string} windowId - Window identifier
-   */
-  async function handleSignal(signal, state, windowId) {
-    const { action } = signal;
-
-    if (action === 'place_limit_buy') {
-      await placeLimitBuy(signal, windowId);
-    } else if (action === 'cancel_all') {
-      await cancelAllOrders();
-    } else if (action === 'buy') {
-      await aggressiveBuy(signal, windowId);
+  function syncMmState() {
+    if (!liveState.state._mm) {
+      liveState.state._mm = {
+        upCost: 0, downCost: 0, upTokens: 0, downTokens: 0,
+        // Strategy reads mm.upInv.cost / mm.downInv.cost (initMm shape)
+        upInv: { cost: 0, tokens: 0 },
+        downInv: { cost: 0, tokens: 0 },
+        fills: 0,
+        exchHistory: [],
+        clobUpHistory: [],
+        clobDownHistory: [],
+        lastQuoteMs: 0, lastBidUp: null, lastBidDown: null,
+        quotedUp: false, quotedDown: false,
+      };
     }
+    const mm = liveState.state._mm;
+    // Flat fields (dashboard compat)
+    mm.upCost = inventory.upCost;
+    mm.downCost = inventory.downCost;
+    mm.upTokens = inventory.upTokens;
+    mm.downTokens = inventory.downTokens;
+    // Nested fields (strategy reads mm.upInv.cost for inventory limits)
+    if (!mm.upInv) mm.upInv = { cost: 0, tokens: 0 };
+    if (!mm.downInv) mm.downInv = { cost: 0, tokens: 0 };
+    mm.upInv.cost = inventory.upCost;
+    mm.upInv.tokens = inventory.upTokens;
+    mm.downInv.cost = inventory.downCost;
+    mm.downInv.tokens = inventory.downTokens;
+    mm.fills = fills.length;
   }
 
-  /**
-   * Place a passive limit buy order.
-   */
-  async function placeLimitBuy(signal, windowId) {
-    const { token, price, size, capitalPerTrade, reason } = signal;
-    const side = resolveSide(token);
-    const id = `paper-${nextOrderId++}`;
+  // ── Place Order ──
 
+  async function placeOrder(side, price, size, capital) {
     if (mode === 'PAPER') {
-      restingOrders.push({
-        id,
-        token,
-        side,
-        price,
-        size,
-        capital: capitalPerTrade,
-        placedAt: Date.now(),
-      });
-      log.info('paper_limit_placed', {
-        id, side, price: price.toFixed(4), size: size.toFixed(2), reason,
-      });
-    } else {
-      // LIVE mode
-      const tokenId = resolveTokenId(token);
-      if (!tokenId) {
-        log.warn('live_limit_no_token_id', { token });
-        return;
+      const orderId = `paper-${nextPaperId++}`;
+      orderMap.set(side, { orderId, side, price, size, capital, placedAt: Date.now() });
+      log.info('paper_limit_placed', { orderId, side, price: price.toFixed(4), size: size.toFixed(2) });
+      return orderId;
+    }
+
+    // LIVE mode
+    const tokenId = resolveTokenId(side);
+    if (!tokenId) {
+      log.warn('live_place_no_token_id', { side });
+      return null;
+    }
+    try {
+      const result = await polymarketClient.buy(tokenId, capital, price, 'GTC');
+      const orderId = result?.orderID || result?.order_id || result?.id || null;
+      if (orderId) {
+        orderMap.set(side, { orderId, side, price, size, capital, placedAt: Date.now() });
+        log.info('live_limit_placed', { orderId, side, price: price.toFixed(4) });
       }
-      try {
-        const result = await polymarketClient.buy(tokenId, capitalPerTrade, price, 'GTC');
-        const orderId = result?.orderID || result?.order_id || result?.id || null;
-        restingOrders.push({
-          id,
-          token,
-          side,
-          price,
-          size,
-          capital: capitalPerTrade,
-          placedAt: Date.now(),
-          orderId,
-        });
-        log.info('live_limit_placed', {
-          id, orderId, side, price: price.toFixed(4), reason,
-        });
-        ensureFillPolling();
-      } catch (err) {
-        log.warn('live_limit_failed', { side, price, error: err.message });
-      }
+      return orderId;
+    } catch (err) {
+      log.warn('live_place_failed', { side, price, error: err.message });
+      return null;
     }
   }
 
-  /**
-   * Execute an aggressive (FOK) buy for hedging.
-   */
-  async function aggressiveBuy(signal, windowId) {
-    const { token, capitalPerTrade, reason } = signal;
-    const side = resolveSide(token);
+  // ── Cancel Order ──
 
+  async function cancelOrder(orderId, side) {
     if (mode === 'PAPER') {
-      // Simulate immediate fill at current ask
-      const book = side === 'up'
-        ? { bestAsk: signal.price || 0.50 }
-        : { bestAsk: signal.price || 0.50 };
-      // Strategy already computed price from state, use capital / bestAsk
-      const askPrice = side === 'up'
-        ? (signal.state?.clobUp?.bestAsk || 0.50)
-        : (signal.state?.clobDown?.bestAsk || 0.50);
-      const fillPrice = askPrice;
-      const fillSize = capitalPerTrade / fillPrice;
+      orderMap.delete(side);
+      log.info('paper_order_cancelled', { orderId, side });
+      return true;
+    }
 
-      recordFill({ token, side, price: fillPrice, size: fillSize, capital: capitalPerTrade });
-      log.info('paper_aggressive_fill', {
-        side, price: fillPrice.toFixed(4), size: fillSize.toFixed(2), reason,
-      });
-    } else {
-      const tokenId = resolveTokenId(token);
-      if (!tokenId) return;
-      try {
-        const result = await polymarketClient.buy(tokenId, capitalPerTrade, 0.99, 'FOK');
-        // FOK fills immediately or not at all
-        if (result?.orderID || result?.order_id) {
-          // Poll once to confirm fill
-          const orderId = result.orderID || result.order_id;
-          try {
-            const order = await polymarketClient.getOrder(orderId);
-            if (order && parseFloat(order.size_matched || 0) > 0) {
-              const fillPrice = parseFloat(order.price || capitalPerTrade / parseFloat(order.size_matched));
-              const fillSize = parseFloat(order.size_matched);
-              recordFill({ token, side, price: fillPrice, size: fillSize, capital: capitalPerTrade });
-            }
-          } catch {
-            // Best effort
-          }
-        }
-        log.info('live_aggressive_sent', { side, reason });
-      } catch (err) {
-        log.warn('live_aggressive_failed', { side, error: err.message });
-      }
+    // LIVE mode — per-order cancel
+    try {
+      await polymarketClient.cancelOrder(orderId);
+      orderMap.delete(side);
+      log.info('live_order_cancelled', { orderId, side });
+      return true;
+    } catch (err) {
+      // Cancel failed — could be transient API error (order still resting)
+      // or the order was already filled/matched. Do NOT delete from orderMap —
+      // keep it tracked so the next reconcile cycle retries the cancel, or
+      // checkLiveFills detects it as filled (missing from getOpenOrders).
+      log.warn('live_cancel_failed', { orderId, side, error: err.message });
+      return false;
     }
   }
 
-  /**
-   * Record a fill and notify the strategy.
-   */
-  function recordFill(fill) {
-    fills.push({ ...fill, filledAt: Date.now() });
-    if (fill.side === 'up') {
-      upCost += fill.price * fill.size;
-      upTokens += fill.size;
-    } else {
-      downCost += fill.price * fill.size;
-      downTokens += fill.size;
-    }
-  }
+  // ── Fill Detection ──
 
   /**
-   * Check for paper fills — called on each L2 tick in PAPER mode.
-   * A resting bid is filled when the ask price drops to or below our bid.
+   * Check for fills. Async — PAPER checks ask-crosses-bid (sync),
+   * LIVE polls getOpenOrders and diffs vs orderMap.
    *
    * @param {Object} state - Current MarketState
    */
+  async function checkFills(state) {
+    if (mode === 'PAPER') {
+      checkPaperFills(state);
+    } else if (mode === 'LIVE') {
+      await checkLiveFills();
+    }
+  }
+
   function checkPaperFills(state) {
-    if (restingOrders.length === 0) return;
-
-    const toRemove = [];
-
-    for (let i = 0; i < restingOrders.length; i++) {
-      const order = restingOrders[i];
-      const book = order.side === 'up' ? state.clobUp : state.clobDown;
+    // Snapshot entries before iterating — fills mutate the map
+    const entries = [...orderMap.entries()];
+    for (const [side, order] of entries) {
+      const book = side === 'up' ? state.clobUp : state.clobDown;
       if (!book) continue;
 
-      // Check if best ask has crossed down to our bid
       const bestAsk = book.bestAsk;
       if (bestAsk != null && bestAsk <= order.price) {
-        recordFill({
-          token: order.token,
-          side: order.side,
-          price: order.price,
-          size: order.size,
-          capital: order.capital,
-        });
-
-        // Notify strategy of passive fill
-        if (strategy.onPassiveFill) {
-          strategy.onPassiveFill(
-            { token: order.token, price: order.price, size: order.size },
-            state,
-          );
-        }
+        orderMap.delete(side);
+        recordFill(order.orderId, order);
 
         log.info('paper_passive_fill', {
-          id: order.id,
-          side: order.side,
-          price: order.price.toFixed(4),
-          size: order.size.toFixed(2),
-          bestAsk: bestAsk.toFixed(4),
+          orderId: order.orderId, side, price: order.price.toFixed(4),
+          size: order.size.toFixed(2), bestAsk: bestAsk.toFixed(4),
         });
-
-        toRemove.push(i);
       }
-    }
-
-    // Remove filled orders (reverse order to maintain indices)
-    for (let i = toRemove.length - 1; i >= 0; i--) {
-      restingOrders.splice(toRemove[i], 1);
     }
   }
 
   /**
-   * Start polling for LIVE order fills.
+   * Live fill detection: poll getOpenOrders, diff vs orderMap.
+   * Orders in our tokenIds that are missing from API response are fills.
    */
-  function ensureFillPolling() {
-    if (fillPollInterval || mode !== 'LIVE') return;
+  async function checkLiveFills() {
+    if (orderMap.size === 0) return;
 
-    fillPollInterval = setInterval(async () => {
-      const liveOrders = restingOrders.filter(o => o.orderId);
-      for (const order of liveOrders) {
-        try {
-          const status = await polymarketClient.getOrder(order.orderId);
-          const matched = parseFloat(status?.size_matched || 0);
-          if (matched > 0) {
-            recordFill({
-              token: order.token,
-              side: order.side,
-              price: order.price,
-              size: matched,
-              capital: order.capital,
-            });
+    try {
+      const openOrders = await polymarketClient.getOpenOrders();
+      const openIds = new Set();
 
-            if (strategy.onPassiveFill) {
-              strategy.onPassiveFill(
-                { token: order.token, price: order.price, size: matched },
-                null, // no backtest state in live mode fill polling
-              );
-            }
-
-            log.info('live_passive_fill', {
-              orderId: order.orderId, side: order.side,
-              price: order.price.toFixed(4), matched: matched.toFixed(2),
-            });
-
-            // Remove from resting
-            const idx = restingOrders.indexOf(order);
-            if (idx >= 0) restingOrders.splice(idx, 1);
-          }
-        } catch (err) {
-          log.debug('fill_poll_error', { orderId: order.orderId, error: err.message });
+      // Filter to only our tokenIds
+      for (const order of openOrders) {
+        const tid = order.asset_id || order.token_id;
+        if (tid === tokenIds.up || tid === tokenIds.down) {
+          const oid = order.id || order.orderID || order.order_id;
+          if (oid) openIds.add(oid);
         }
       }
-    }, 5000);
 
-    if (fillPollInterval.unref) fillPollInterval.unref();
-  }
+      // Snapshot entries — fills mutate the map
+      const entries = [...orderMap.entries()];
+      for (const [side, order] of entries) {
+        if (!openIds.has(order.orderId)) {
+          orderMap.delete(side);
+          recordFill(order.orderId, order);
 
-  /**
-   * Cancel all resting orders.
-   */
-  async function cancelAllOrders() {
-    if (mode === 'LIVE' && restingOrders.some(o => o.orderId)) {
-      try {
-        await polymarketClient.cancelAll();
-        log.info('live_orders_cancelled', { count: restingOrders.length });
-      } catch (err) {
-        log.warn('live_cancel_failed', { error: err.message });
+          log.info('live_passive_fill', {
+            orderId: order.orderId, side, price: order.price.toFixed(4),
+            size: order.size.toFixed(2),
+          });
+        }
       }
-    }
-
-    const count = restingOrders.length;
-    restingOrders = [];
-
-    if (count > 0) {
-      log.info('orders_cancelled', { count, mode });
+    } catch (err) {
+      log.debug('live_fill_poll_error', { error: err.message });
     }
   }
 
+  // ── Record Fill ──
+
+  function recordFill(orderId, order) {
+    fills.push({
+      orderId,
+      token: `${crypto}-${order.side}`,
+      side: order.side,
+      price: order.price,
+      size: order.size,
+      capital: order.capital,
+      filledAt: Date.now(),
+    });
+
+    // Use capital for cost tracking (not price * size) — accurate for both
+    // passive fills (capital = price * size by construction) and aggressive
+    // fills (capital is the actual dollar amount spent, regardless of slippage)
+    if (order.side === 'up') {
+      inventory.upCost += order.capital;
+      inventory.upTokens += order.size;
+    } else {
+      inventory.downCost += order.capital;
+      inventory.downTokens += order.size;
+    }
+
+    syncMmState();
+  }
+
+  // ── Aggressive Buy (FOK for hedge) ──
+
+  async function aggressiveBuy(side, capital, state) {
+    const book = side === 'up' ? state.clobUp : state.clobDown;
+    const askPrice = book?.bestAsk || 0.50;
+
+    if (mode === 'PAPER') {
+      const fillSize = capital / askPrice;
+      recordFill(`agg-${nextPaperId++}`, { side, price: askPrice, size: fillSize, capital });
+      log.info('paper_aggressive_fill', { side, price: askPrice.toFixed(4), size: fillSize.toFixed(2) });
+      return;
+    }
+
+    // LIVE
+    const tokenId = resolveTokenId(side);
+    if (!tokenId) return;
+    try {
+      const result = await polymarketClient.buy(tokenId, capital, 0.99, 'FOK');
+      const oid = result?.orderID || result?.order_id;
+      if (oid) {
+        try {
+          const orderDetail = await polymarketClient.getOrder(oid);
+          const matched = parseFloat(orderDetail?.size_matched || 0);
+          if (matched > 0) {
+            const fillPrice = parseFloat(orderDetail.price || capital / matched);
+            // Use actual capital spent (price * size), not the requested amount —
+            // FOK may partially fill, and the actual cost matters for P&L
+            const actualCapital = matched * fillPrice;
+            recordFill(oid, { side, price: fillPrice, size: matched, capital: actualCapital });
+          }
+        } catch { /* best effort */ }
+      }
+      log.info('live_aggressive_sent', { side });
+    } catch (err) {
+      log.warn('live_aggressive_failed', { side, error: err.message });
+    }
+  }
+
+  // ── Cancel All by Order ID (pre-close) ──
+
+  async function cancelAllByOrderId() {
+    // Snapshot entries — cancelOrder mutates the map
+    const entries = [...orderMap.entries()];
+    for (const [side, order] of entries) {
+      await cancelOrder(order.orderId, side);
+    }
+  }
+
+  // ── Getters ──
+
+  function getOrderMap() {
+    return orderMap;
+  }
+
+  function getInventory() {
+    return { ...inventory };
+  }
+
+  function getFills() {
+    return fills;
+  }
+
   /**
-   * Get current window order state.
+   * Dashboard-compatible shape (matches v1 getWindowOrders).
    */
   function getWindowOrders() {
+    const restingOrderDetails = [];
+    for (const [, order] of orderMap) {
+      restingOrderDetails.push({
+        id: order.orderId,
+        side: order.side,
+        price: order.price,
+        size: order.size,
+        capital: order.capital,
+        placedAt: order.placedAt,
+      });
+    }
+
     return {
-      restingOrders: restingOrders.length,
+      restingOrders: orderMap.size,
       fills: fills.length,
-      upCost,
-      downCost,
-      upTokens,
-      downTokens,
-      paired: upTokens > 0 && downTokens > 0,
-      pairEdge: upTokens > 0 && downTokens > 0
-        ? 1.0 - (upCost / upTokens + downCost / downTokens)
+      upCost: inventory.upCost,
+      downCost: inventory.downCost,
+      upTokens: inventory.upTokens,
+      downTokens: inventory.downTokens,
+      paired: inventory.upTokens > 0 && inventory.downTokens > 0,
+      pairEdge: inventory.upTokens > 0 && inventory.downTokens > 0
+        ? 1.0 - (inventory.upCost / inventory.upTokens + inventory.downCost / inventory.downTokens)
         : null,
       fillDetails: fills,
-      restingOrderDetails: restingOrders.map(o => ({
-        id: o.id,
-        side: o.side,
-        price: o.price,
-        size: o.size,
-        capital: o.capital,
-        placedAt: o.placedAt,
-      })),
+      restingOrderDetails,
     };
   }
 
-  /**
-   * Reset for a new window.
-   */
-  function reset() {
-    restingOrders = [];
-    fills = [];
-    upCost = 0;
-    downCost = 0;
-    upTokens = 0;
-    downTokens = 0;
-    nextOrderId = 1;
-    if (fillPollInterval) {
-      clearInterval(fillPollInterval);
-      fillPollInterval = null;
-    }
-  }
+  // ── Shutdown ──
 
-  /**
-   * Shutdown: cancel orders and stop polling.
-   */
   async function shutdown() {
-    await cancelAllOrders();
-    if (fillPollInterval) {
-      clearInterval(fillPollInterval);
-      fillPollInterval = null;
-    }
+    await cancelAllByOrderId();
   }
 
   return {
-    handleSignal,
-    checkPaperFills,
+    placeOrder,
+    cancelOrder,
+    cancelAllByOrderId,
+    checkFills,
+    checkLiveFills,
+    aggressiveBuy,
+    getOrderMap,
+    getInventory,
+    getFills,
     getWindowOrders,
-    reset,
-    cancelAllOrders,
     shutdown,
   };
 }

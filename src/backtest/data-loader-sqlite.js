@@ -500,10 +500,18 @@ export async function loadWindowTickData(options) {
       ORDER BY timestamp ASC
     `).all(openDate, closeDate, `${symbol}%`, windowIdFilter);
 
+    // Build token_id → direction map from CLOB snapshots (which have 'btc-up'/'btc-down' symbols)
+    const tokenDirMap = new Map();
+    for (const snap of clobSnapshots) {
+      if (snap.token_id && !tokenDirMap.has(snap.token_id)) {
+        tokenDirMap.set(snap.token_id, snap.symbol?.toLowerCase().includes('down') ? 'down' : 'up');
+      }
+    }
+
     for (const r of l2BookTicks) {
       parseDates(r, 'timestamp');
-      // Derive direction from symbol column (e.g. 'btc-up' → 'up', 'btc-down' → 'down')
-      r.direction = r.symbol?.toLowerCase().includes('down') ? 'down' : 'up';
+      // Use token_id to determine direction (symbol column is just 'btc', not 'btc-up')
+      r.direction = tokenDirMap.get(r.token_id) || (r.symbol?.toLowerCase().includes('down') ? 'down' : 'up');
       if (r.top_levels && typeof r.top_levels === 'string') {
         try {
           r.top_levels = JSON.parse(r.top_levels);
@@ -536,7 +544,7 @@ export async function loadWindowTickData(options) {
  * Uses window_id index for fast lookups (~30ms per window).
  */
 export function loadL2ForWindow(options) {
-  const { window: win, windowDurationMs = 5 * 60 * 1000 } = options;
+  const { window: win, windowDurationMs = 5 * 60 * 1000, tokenDirMap } = options;
   const closeMs = new Date(win.window_close_time).getTime();
   const openMs = closeMs - windowDurationMs;
   const openDate = new Date(openMs).toISOString();
@@ -549,6 +557,22 @@ export function loadL2ForWindow(options) {
 
   const d = getDb();
   let l2BookTicks = [];
+
+  // Build token_id → direction map from CLOB snapshots if not provided
+  let dirMap = tokenDirMap;
+  if (!dirMap) {
+    dirMap = new Map();
+    try {
+      const snaps = d.prepare(`
+        SELECT DISTINCT token_id, symbol FROM clob_price_snapshots
+        WHERE symbol LIKE ? AND window_epoch = ?
+      `).all(`${symbol}%`, windowOpenEpoch);
+      for (const s of snaps) {
+        dirMap.set(s.token_id, s.symbol?.toLowerCase().includes('down') ? 'down' : 'up');
+      }
+    } catch { /* ignore */ }
+  }
+
   try {
     l2BookTicks = d.prepare(`
       SELECT id, timestamp, token_id, symbol, window_id, event_type,
@@ -563,7 +587,7 @@ export function loadL2ForWindow(options) {
 
     for (const r of l2BookTicks) {
       parseDates(r, 'timestamp');
-      r.direction = r.symbol?.toLowerCase().includes('down') ? 'down' : 'up';
+      r.direction = dirMap.get(r.token_id) || (r.symbol?.toLowerCase().includes('down') ? 'down' : 'up');
       if (r.top_levels && typeof r.top_levels === 'string') {
         try { r.top_levels = JSON.parse(r.top_levels); } catch { r.top_levels = null; }
       }
