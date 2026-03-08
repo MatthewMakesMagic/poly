@@ -598,7 +598,7 @@ export function evaluate(state, config) {
 export function getDesiredQuotes(state, config) {
   const c = { ...defaults, ...config };
   const { clobUp, clobDown, window: win } = state;
-  if (!win || !clobUp || !clobDown) return { up: null, down: null };
+  if (!win || (!clobUp && !clobDown)) return { up: null, down: null };
   if (win.timeToCloseMs == null) return { up: null, down: null };
   if (win.timeToCloseMs <= c.exitWindowMs) return { up: null, down: null };
   if (win.timeToCloseMs >= c.entryWindowMs) return { up: null, down: null };
