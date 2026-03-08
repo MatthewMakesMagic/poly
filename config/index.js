@@ -503,9 +503,28 @@ const config = {
   // Passive market maker (multi-variant paper testing)
   passiveMm: {
     crypto: 'btc',
+    strategy: 'pair-hedge',  // 'signal-skew' or 'pair-hedge'
     variants: [
-      { name: 'skew-002', strategyConfig: { skewPerDollar: 0.002 } },
-      { name: 'skew-005', strategyConfig: { skewPerDollar: 0.005 } },
+      // V1: Blind quoting, no hedge — pure passive pairs
+      { name: 'blind-no-hedge', strategyConfig: {
+        baseOffset: 0.005,
+        aggressiveHedgeMs: 0,   // disable tick-evaluator hedge
+      }},
+      // V2: Blind quoting + force hedge at T-60s
+      { name: 'blind-force-hedge', strategyConfig: {
+        baseOffset: 0.005,
+        aggressiveHedgeMs: 60000, maxHedgePrice: 0.99, minPairEdge: 0,
+      }},
+      // V3: Fair value gate (P>=0.45), no hedge
+      { name: 'gate-no-hedge', strategyConfig: {
+        baseOffset: 0.005, fairValueGate: true, fvGateThreshold: 0.45,
+        aggressiveHedgeMs: 0,
+      }},
+      // V4: Fair value gate + force hedge at T-60s
+      { name: 'gate-force-hedge', strategyConfig: {
+        baseOffset: 0.005, fairValueGate: true, fvGateThreshold: 0.45,
+        aggressiveHedgeMs: 60000, maxHedgePrice: 0.99, minPairEdge: 0,
+      }},
     ],
   },
 

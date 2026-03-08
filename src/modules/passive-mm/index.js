@@ -22,7 +22,8 @@ import { TOPICS } from '../../clients/rtds/types.js';
 import * as windowManager from '../window-manager/index.js';
 import * as exchangeTradeCollector from '../exchange-trade-collector/index.js';
 import * as polymarketClient from '../../clients/polymarket/index.js';
-import * as strategy from '../../backtest/strategies/mm-cs-signal-skew.js';
+import * as signalSkewStrategy from '../../backtest/strategies/mm-cs-signal-skew.js';
+import * as pairHedgeStrategy from '../../backtest/strategies/mm-cs-pair-hedge.js';
 import { createLiveMarketState } from './live-market-state.js';
 import { createOrderTracker } from './order-tracker.js';
 import { createTickEvaluator } from './tick-evaluator.js';
@@ -34,6 +35,7 @@ let log = null;
 let initialized = false;
 let config = null;
 let scanIntervalId = null;
+let strategy = null; // Selected strategy module (signal-skew or pair-hedge)
 
 /** @type {Map<string, WindowState>} */
 let activeWindows = new Map();
@@ -80,6 +82,10 @@ export async function init(cfg = {}) {
   log.info('module_init_start');
 
   const mmCfg = cfg.passiveMm || {};
+
+  // Select strategy module
+  const strategyName = mmCfg.strategy || 'signal-skew';
+  strategy = strategyName === 'pair-hedge' ? pairHedgeStrategy : signalSkewStrategy;
 
   // Build variant configs: merge strategy defaults with each variant's overrides
   const rawVariants = mmCfg.variants || DEFAULT_VARIANTS;
@@ -190,10 +196,11 @@ export function getState() {
     for (const vi of ws.variants) {
       const orders = vi.orderTracker.getWindowOrders();
       const evalStats = vi.tickEvaluator.getStats();
+      const st = vi.liveState.state;
       windowSummaries.push({
         windowId,
         variantName: vi.name,
-        timeToCloseMs: vi.liveState.state?.window?.timeToCloseMs ?? null,
+        timeToCloseMs: st?.window?.timeToCloseMs ?? null,
         ticks: evalStats.tickCount,
         signals: evalStats.signalCount,
         resting: orders.restingOrders,
@@ -210,6 +217,21 @@ export function getState() {
           capital: f.capital,
           filledAt: f.filledAt,
         })),
+        // Debug: market data visibility
+        debug: {
+          tokenUp: ws.windowData?.token_id_up?.slice(0, 16) ?? null,
+          tokenDown: ws.windowData?.token_id_down?.slice(0, 16) ?? null,
+          upBid: st?.clobUp?.bestBid ?? null,
+          upAsk: st?.clobUp?.bestAsk ?? null,
+          downBid: st?.clobDown?.bestBid ?? null,
+          downAsk: st?.clobDown?.bestAsk ?? null,
+          strike: st?.strike ?? null,
+          exchangeMedian: st?.getExchangeMedian?.() ?? null,
+          mm: st?._mm ? {
+            upInvCost: st._mm.upInv?.cost ?? st._mm.upCost ?? 0,
+            downInvCost: st._mm.downInv?.cost ?? st._mm.downCost ?? 0,
+          } : null,
+        },
       });
     }
   }
@@ -269,6 +291,7 @@ export async function shutdown() {
     log = null;
   }
   config = null;
+  strategy = null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

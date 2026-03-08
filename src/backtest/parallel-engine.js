@@ -291,21 +291,28 @@ export function evaluateWindow({
         const execResult = simulator.execute(signal, state, strategyConfig);
 
         if (execResult.filled) {
+          const fillInfo = {
+            token: signal.token,
+            price: execResult.fillPrice,
+            size: execResult.fillSize,
+            timestamp: event.timestamp,
+            reason: signal.reason || '',
+          };
           if (signal.action === 'buy') {
-            simulator.buyToken({
-              token: signal.token,
-              price: execResult.fillPrice,
-              size: execResult.fillSize,
-              timestamp: event.timestamp,
-              reason: signal.reason || '',
-            });
+            simulator.buyToken(fillInfo);
+            if (strategy.onAggressiveFill) {
+              strategy.onAggressiveFill(fillInfo, state);
+            }
           } else if (signal.action === 'sell') {
-            simulator.sellToken({
+            const soldPos = simulator.sellToken({
               token: signal.token,
               price: execResult.fillPrice,
               timestamp: event.timestamp,
               reason: signal.reason || 'strategy_sell',
             });
+            if (soldPos && strategy.onSell) {
+              strategy.onSell({ token: signal.token, price: execResult.fillPrice, size: soldPos.size, timestamp: event.timestamp, reason: signal.reason }, state);
+            }
           }
         }
       }
