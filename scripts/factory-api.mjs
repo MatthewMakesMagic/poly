@@ -25,6 +25,8 @@ import { resolve } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { pathToFileURL } from 'url';
 import { runFactoryBacktestPg } from '../src/factory/cli/backtest-factory.js';
+import { buildTimelines } from '../src/factory/timeline-builder.js';
+import { ensurePgTimelineTable, getPgCacheSummary } from '../src/factory/pg-timeline-store.js';
 
 /**
  * Handle factory API requests.
@@ -55,6 +57,23 @@ export async function handleFactoryRequest(req, res) {
   // --- POST /api/factory/backtest ---
   if (url === '/api/factory/backtest' && req.method === 'POST') {
     return await handleBacktestRun(req, res);
+  }
+
+  // --- POST /api/factory/backfill ---
+  if (url === '/api/factory/backfill' && req.method === 'POST') {
+    return await handleBackfill(req, res);
+  }
+
+  // --- GET /api/factory/cache-status ---
+  if (url === '/api/factory/cache-status' && req.method === 'GET') {
+    try {
+      await ensurePgTimelineTable();
+      const summary = await getPgCacheSummary();
+      json(res, 200, { ok: true, data: summary });
+    } catch (err) {
+      json(res, 500, { ok: false, error: err.message });
+    }
+    return true;
   }
 
   if (req.method !== 'GET') {
@@ -669,4 +688,68 @@ function parseQueryParams(rawUrl) {
 function json(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+}
+
+// =============================================================================
+// POST /api/factory/backfill — build PG timeline cache on Railway
+// =============================================================================
+
+async function handleBackfill(req, res) {
+  try {
+    const body = await readRequestBody(req);
+    const symbol = (body.symbol || 'btc').toLowerCase();
+    const startDate = body.startDate || body.since || '2026-02-10';
+    const rebuild = !!body.rebuild;
+
+    await ensurePgTimelineTable();
+
+    // Get cache state before
+    const before = await getPgCacheSummary();
+
+    // Stream progress — send initial response then update
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' });
+    res.write(JSON.stringify({ status: 'started', symbol, startDate, rebuild }) + '\n');
+
+    const report = await buildTimelines({
+      symbol,
+      rebuild: true,
+      incremental: false,
+      startDate,
+      target: 'pg',
+      onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
+        if (processed % 50 === 0 || processed === total) {
+          try {
+            res.write(JSON.stringify({ status: 'progress', symbol: sym, processed, total, inserted, skipped }) + '\n');
+          } catch { /* connection may close */ }
+        }
+      },
+    });
+
+    // Get cache state after
+    const after = await getPgCacheSummary();
+
+    const result = {
+      status: 'complete',
+      symbol,
+      before: before.find(r => r.symbol === symbol) || { total_windows: 0 },
+      after: after.find(r => r.symbol === symbol) || { total_windows: 0 },
+    };
+
+    if (report.symbols) {
+      result.details = {};
+      for (const [sym, r] of Object.entries(report.symbols)) {
+        result.details[sym] = { inserted: r.inserted, skipped: r.skippedNoGroundTruth + r.skippedNoEvents, errors: r.errors.length, elapsedMs: r.elapsedMs };
+      }
+    } else {
+      result.details = { [symbol]: { inserted: report.inserted, skipped: (report.skippedNoGroundTruth || 0) + (report.skippedNoEvents || 0), errors: (report.errors || []).length, elapsedMs: report.elapsedMs } };
+    }
+
+    res.write(JSON.stringify(result) + '\n');
+    res.end();
+  } catch (err) {
+    try {
+      json(res, 500, { ok: false, error: err.message });
+    } catch { /* headers may already be sent */ }
+  }
+  return true;
 }

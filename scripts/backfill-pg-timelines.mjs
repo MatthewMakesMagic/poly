@@ -54,10 +54,14 @@ async function main() {
     }
 
     // Run the build with PG target
+    // If start-date is provided, disable incremental mode to build from that date
+    const hasStartDate = !!values['start-date'];
     const report = await buildTimelines({
       symbol: values.symbol,
-      rebuild: false,
-      incremental: true,
+      rebuild: hasStartDate,
+      incremental: !hasStartDate,
+      startDate: values['start-date'] || undefined,
+      endDate: values['end-date'] || undefined,
       target: 'pg',
       onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
         if (processed % 50 === 0 || processed === total) {
