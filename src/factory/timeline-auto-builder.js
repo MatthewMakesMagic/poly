@@ -82,7 +82,9 @@ function mergeTimeline({ rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, c
     const ts = toISOString(tick.timestamp);
     const ms = new Date(ts).getTime();
     if (ms < openMs || ms >= closeMs) continue;
-    const source = tick.topic === 'crypto_prices_chainlink' ? 'chainlink' : 'polyRef';
+    const source = tick.topic === 'crypto_prices_chainlink' ? 'chainlink'
+      : tick.topic === 'crypto_prices_pyth' ? 'pyth'
+      : 'polyRef';
     events.push({ source, timestamp: ts, price: parseFloat(tick.price), _ms: ms });
   }
 
@@ -180,9 +182,10 @@ async function loadWindowTickData(symbol, openTime, closeTime) {
       SELECT timestamp, topic, symbol, price, received_at
       FROM rtds_ticks
       WHERE timestamp >= $1 AND timestamp <= $2
-        AND topic IN ('crypto_prices_chainlink', 'crypto_prices')
+        AND symbol = $3
+        AND topic IN ('crypto_prices_chainlink', 'crypto_prices', 'crypto_prices_pyth')
       ORDER BY timestamp ASC
-    `, [openTime, closeTime]),
+    `, [openTime, closeTime, symbol.toLowerCase()]),
 
     persistence.all(`
       SELECT timestamp, symbol, token_id, best_bid, best_ask,

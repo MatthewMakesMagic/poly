@@ -345,14 +345,15 @@ async function loadWindowTickData(symbol, openTime, closeTime, closeMs) {
   const windowEpoch = Math.floor(closeMs / 1000);
 
   const [rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks] = await Promise.all([
-    // Oracle ticks (chainlink + polyRef)
+    // Oracle ticks (chainlink + polyRef + pyth) — filtered by symbol
     persistence.all(`
       SELECT timestamp, topic, symbol, price, received_at
       FROM rtds_ticks
       WHERE timestamp >= $1 AND timestamp <= $2
-        AND topic IN ('crypto_prices_chainlink', 'crypto_prices')
+        AND symbol = $3
+        AND topic IN ('crypto_prices_chainlink', 'crypto_prices', 'crypto_prices_pyth')
       ORDER BY timestamp ASC
-    `, [openTime, closeTime]),
+    `, [openTime, closeTime, symbol.toLowerCase()]),
 
     // CLOB snapshots for this window
     persistence.all(`
@@ -518,14 +519,15 @@ async function loadDayBulkData(symbol, dayStart, dayEnd) {
   // proper indexing or partitioning.
 
   const [rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks] = await Promise.all([
-    // Oracle ticks (chainlink + polyRef)
+    // Oracle ticks (chainlink + polyRef + pyth) — filtered by symbol
     persistence.all(`
       SELECT timestamp, topic, symbol, price, received_at
       FROM rtds_ticks
       WHERE timestamp >= $1 AND timestamp <= $2
-        AND topic IN ('crypto_prices_chainlink', 'crypto_prices')
+        AND symbol = $3
+        AND topic IN ('crypto_prices_chainlink', 'crypto_prices', 'crypto_prices_pyth')
       ORDER BY timestamp ASC
-    `, [dayStart, dayEnd]).then(addMs),
+    `, [dayStart, dayEnd, sym]).then(addMs),
 
     // CLOB snapshots
     persistence.all(`
@@ -731,7 +733,9 @@ export function mergeTimeline({ rtdsTicks, clobSnapshots, exchangeTicks, l2BookT
     const ms = new Date(ts).getTime();
     if (ms < openMs || ms >= closeMs) continue; // bounds check
 
-    const source = tick.topic === 'crypto_prices_chainlink' ? 'chainlink' : 'polyRef';
+    const source = tick.topic === 'crypto_prices_chainlink' ? 'chainlink'
+      : tick.topic === 'crypto_prices_pyth' ? 'pyth'
+      : 'polyRef';
     events.push({
       source,
       timestamp: ts,

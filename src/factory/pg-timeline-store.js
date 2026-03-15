@@ -12,7 +12,7 @@ import persistence from '../persistence/index.js';
 
 // Current schema version — bump when timeline event format changes.
 // Cache reads filter by this version to avoid serving stale cached data.
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2; // Bumped: v1 had BTC oracle data in non-BTC timelines, missing Pyth
 
 /**
  * Ensure the pg_timelines table exists.

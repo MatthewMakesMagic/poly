@@ -355,6 +355,8 @@ export async function loadMergedTimeline(options) {
     let source;
     if (topic === 'crypto_prices_chainlink') {
       source = 'chainlink';
+    } else if (topic === 'crypto_prices_pyth') {
+      source = 'pyth';
     } else if (topic === 'crypto_prices') {
       source = 'polyRef';
     } else {
@@ -420,7 +422,7 @@ export async function loadAllData(options) {
     loadRtdsTicks({
       startDate,
       endDate,
-      topics: ['crypto_prices_chainlink', 'crypto_prices'],
+      topics: ['crypto_prices_chainlink', 'crypto_prices', 'crypto_prices_pyth'],
     }),
     loadAllClobSnapshots({ startDate, endDate }),
     loadExchangeTicks({
@@ -524,7 +526,7 @@ export async function loadAllDataForSymbol(options) {
     ? Promise.resolve(sharedRtds)
     : loadRtdsTicks({
         startDate, endDate,
-        topics: ['crypto_prices_chainlink', 'crypto_prices'],
+        topics: ['crypto_prices_chainlink', 'crypto_prices', 'crypto_prices_pyth'],
         symbols: [symbol.toLowerCase()],
       });
 
@@ -575,9 +577,10 @@ export async function loadWindowTickData(options) {
       SELECT timestamp, topic, symbol, price, received_at
       FROM rtds_ticks
       WHERE timestamp >= $1 AND timestamp <= $2
-        AND topic IN ('crypto_prices_chainlink', 'crypto_prices')
+        AND symbol = $3
+        AND topic IN ('crypto_prices_chainlink', 'crypto_prices', 'crypto_prices_pyth')
       ORDER BY timestamp ASC
-    `, [openDate, closeDate]),
+    `, [openDate, closeDate, symbol.toLowerCase()]),
 
     // CLOB snapshots for this window (filtered by window_epoch to exclude $0.50 data)
     persistence.all(`
