@@ -869,6 +869,39 @@ async function handleBackfillStatus(req, res) {
   return true;
 }
 
+// Sequential backfill queue — only one backfill runs at a time to avoid
+// overwhelming the PG connection pool and causing OOM/crash on Railway.
+const backfillQueue = [];
+let backfillRunning = false;
+
+async function processBackfillQueue() {
+  if (backfillRunning || backfillQueue.length === 0) return;
+  backfillRunning = true;
+
+  while (backfillQueue.length > 0) {
+    const { buildOpts, symbol } = backfillQueue.shift();
+    console.log(`[backfill-queue] Starting ${symbol} (${backfillQueue.length} remaining in queue)`);
+    try {
+      const report = await buildTimelines(buildOpts);
+      const inserted = report.symbols ? Object.values(report.symbols).reduce((s, r) => s + r.inserted, 0) : report.inserted;
+      console.log(`[backfill-queue] Complete: ${symbol} — ${inserted} windows cached`);
+      await logBackfill({
+        symbol, status: 'complete',
+        message: `Inserted ${inserted}, errors: ${report.errors?.length || 0}`,
+        windows_processed: report.processed,
+        windows_total: report.totalWindowsInPg,
+        windows_inserted: inserted,
+      }).catch(() => {});
+    } catch (err) {
+      console.error(`[backfill-queue] Error for ${symbol}: ${err.message}`);
+      await logBackfill({ symbol, status: 'error', error_detail: err.stack || err.message }).catch(() => {});
+    }
+  }
+
+  backfillRunning = false;
+  console.log('[backfill-queue] Queue empty, idle');
+}
+
 async function handleBackfill(req, res) {
   try {
     const raw = await readRequestBody(req);
@@ -927,33 +960,22 @@ async function handleBackfill(req, res) {
       return true;
     }
 
-    // Async mode: fire-and-forget, respond immediately
+    // Async mode: add to sequential queue, respond immediately
+    const queuePos = backfillQueue.length + (backfillRunning ? 1 : 0);
     json(res, 200, {
       ok: true,
-      status: 'started',
+      status: 'queued',
       symbol,
       startDate,
       rebuild,
-      message: 'Backfill running in background. Check GET /api/factory/backfill-status for progress.',
+      queuePosition: queuePos,
+      message: `Backfill queued (position ${queuePos}). Check GET /api/factory/backfill-status for progress.`,
       cacheBefore: before.find(r => r.symbol === symbol) || { total_windows: 0 },
     });
 
-    // Run in background — don't await in the request handler
-    buildTimelines(buildOpts).then(async report => {
-      const inserted = report.symbols ? Object.values(report.symbols).reduce((s, r) => s + r.inserted, 0) : report.inserted;
-      console.log(`[backfill] Complete: ${symbol} — ${inserted} windows cached`);
-      await logBackfill({
-        symbol, status: 'complete',
-        message: `Inserted ${inserted}, errors: ${report.errors?.length || 0}`,
-        windows_processed: report.processed,
-        windows_total: report.totalWindowsInPg,
-        windows_inserted: inserted,
-      }).catch(() => {});
-    }).catch(async err => {
-      console.error(`[backfill] Error: ${err.message}`);
-      console.error(`[backfill] Stack: ${err.stack}`);
-      await logBackfill({ symbol, status: 'error', error_detail: err.stack || err.message }).catch(() => {});
-    });
+    // Add to queue and start processing if idle
+    backfillQueue.push({ buildOpts, symbol });
+    processBackfillQueue(); // Non-blocking — runs sequentially
 
   } catch (err) {
     try {
