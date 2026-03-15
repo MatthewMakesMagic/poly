@@ -27,6 +27,8 @@ import { pathToFileURL } from 'url';
 import { runFactoryBacktestPg, runFactoryBacktestPgCache } from '../src/factory/cli/backtest-factory.js';
 import { buildTimelines } from '../src/factory/timeline-builder.js';
 import { ensurePgTimelineTable, getPgCacheSummary } from '../src/factory/pg-timeline-store.js';
+import { readPgTimelines, listPgWindows } from '../src/factory/pg-timeline-cache.js';
+import { sampleWindows } from '../src/factory/sampler.js';
 
 /**
  * Handle factory API requests.
@@ -57,6 +59,11 @@ export async function handleFactoryRequest(req, res) {
   // --- POST /api/factory/backtest ---
   if (url === '/api/factory/backtest' && req.method === 'POST') {
     return await handleBacktestRun(req, res);
+  }
+
+  // --- POST /api/factory/analyze ---
+  if (url === '/api/factory/analyze' && req.method === 'POST') {
+    return await handleAnalyze(req, res);
   }
 
   // --- POST /api/factory/backfill ---
@@ -630,6 +637,114 @@ function normalizeStrategy(mod, name) {
     defaults: mod.defaults || {},
     sweepGrid: mod.sweepGrid || {},
   };
+}
+
+// =============================================================================
+// ANALYZE ENDPOINT
+// =============================================================================
+
+/**
+ * POST /api/factory/analyze — run server-side analysis on pg_timelines data
+ *
+ * Body: { symbol, sample, seed, analysis }
+ *   symbol: e.g. "sol" (required)
+ *   sample: sample size (default: 200)
+ *   seed: PRNG seed (default: 42)
+ *   analysis: analysis module name (default: "final-60s")
+ */
+async function handleAnalyze(req, res) {
+  const startTime = Date.now();
+  try {
+    const raw = await readRequestBody(req);
+    const body = raw ? JSON.parse(raw) : {};
+
+    const symbol = (body.symbol || '').toLowerCase();
+    if (!symbol) {
+      json(res, 400, { ok: false, error: 'Missing required field: symbol' });
+      return true;
+    }
+
+    const sample = parseInt(body.sample) || 200;
+    const seed = parseInt(body.seed) || 42;
+    const analysisName = body.analysis || 'final-60s';
+
+    // Load the analysis module dynamically
+    let analysisModule;
+    try {
+      analysisModule = await import(`../src/factory/analyses/${analysisName}.js`);
+    } catch (err) {
+      json(res, 400, { ok: false, error: `Unknown analysis module: ${analysisName} — ${err.message}` });
+      return true;
+    }
+
+    if (typeof analysisModule.analyze !== 'function') {
+      json(res, 400, { ok: false, error: `Analysis module '${analysisName}' does not export an analyze() function` });
+      return true;
+    }
+
+    // Step 1: List all windows for this symbol (metadata only, no blobs)
+    await ensurePgTimelineTable();
+    const allWindows = await listPgWindows(symbol);
+
+    if (!allWindows || allWindows.length === 0) {
+      json(res, 200, {
+        ok: true,
+        data: { symbol, windowsAvailable: 0, error: 'No cached windows found for this symbol' },
+        elapsed_ms: Date.now() - startTime,
+      });
+      return true;
+    }
+
+    // Normalize timestamps for sampler compatibility
+    const normalized = allWindows.map(w => ({
+      ...w,
+      window_close_time: w.window_close_time instanceof Date
+        ? w.window_close_time.toISOString()
+        : w.window_close_time,
+      window_open_time: w.window_open_time instanceof Date
+        ? w.window_open_time.toISOString()
+        : w.window_open_time,
+    }));
+
+    // Step 2: Sample windows
+    const sampled = sampleWindows(normalized, { count: sample, seed });
+
+    // Step 3: Batch-load timelines for sampled windows
+    const windowIds = sampled.map(w => w.window_id);
+    const timelinesMap = await readPgTimelines(windowIds);
+
+    // Step 4: Assemble windows with their timelines
+    const windowsWithTimelines = [];
+    for (const winMeta of sampled) {
+      const cached = timelinesMap.get(winMeta.window_id);
+      if (cached) {
+        windowsWithTimelines.push({
+          meta: cached.meta || winMeta,
+          timeline: cached.timeline,
+        });
+      }
+    }
+
+    // Step 5: Run the analysis
+    const result = analysisModule.analyze(windowsWithTimelines, { symbol });
+
+    json(res, 200, {
+      ok: true,
+      data: result,
+      meta: {
+        windowsAvailable: allWindows.length,
+        windowsSampled: sampled.length,
+        windowsLoaded: windowsWithTimelines.length,
+        seed,
+        analysis: analysisName,
+        elapsed_ms: Date.now() - startTime,
+      },
+    });
+    return true;
+  } catch (err) {
+    json(res, 500, { ok: false, error: err.message, stack: err.stack });
+    return true;
+  }
 }
 
 // =============================================================================
