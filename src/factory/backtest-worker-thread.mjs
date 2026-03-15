@@ -32,8 +32,22 @@ let backtestConfig = null;
 /**
  * Load strategy by name using the factory's loadStrategy.
  * This avoids serialization of closures — the worker loads the strategy itself.
+ * Also initializes the persistence layer so the worker can query pg_timelines.
  */
 async function initStrategy(strategyName, config) {
+  // Initialize persistence in the worker thread — each worker needs its own PG connection.
+  // The main thread's persistence.init() does NOT carry over to worker threads.
+  const persistence = (await import('../persistence/index.js')).default;
+  if (!persistence.getState().initialized) {
+    await persistence.init({
+      database: {
+        url: process.env.DATABASE_URL,
+        pool: { min: 1, max: 2 },
+        circuitBreakerPool: { min: 1, max: 1 },
+      },
+    });
+  }
+
   // Dynamic import to avoid top-level initialization issues in workers
   const { loadStrategy } = await import('./index.js');
   strategy = await loadStrategy(strategyName);
