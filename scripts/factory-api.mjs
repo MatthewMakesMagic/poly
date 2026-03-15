@@ -24,7 +24,7 @@ import persistence from '../src/persistence/index.js';
 import { resolve } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { pathToFileURL } from 'url';
-import { runFactoryBacktestPg } from '../src/factory/cli/backtest-factory.js';
+import { runFactoryBacktestPg, runFactoryBacktestPgCache } from '../src/factory/cli/backtest-factory.js';
 import { buildTimelines } from '../src/factory/timeline-builder.js';
 import { ensurePgTimelineTable, getPgCacheSummary } from '../src/factory/pg-timeline-store.js';
 
@@ -550,8 +550,11 @@ async function handleBacktestRun(req, res) {
     const sample = parseInt(params.sample) || 200;
     const seed = parseInt(params.seed) || 42;
     const feeMode = params.feeMode || 'taker';
+    const source = params.source || 'pg-cache'; // Default to fast cached path
 
-    const result = await runFactoryBacktestPg({
+    const backtestFn = source === 'pg-cache' ? runFactoryBacktestPgCache : runFactoryBacktestPg;
+
+    const result = await backtestFn({
       strategy,
       symbol,
       sampleOptions: { count: sample, seed },
