@@ -696,7 +696,8 @@ function json(res, status, data) {
 
 async function handleBackfill(req, res) {
   try {
-    const body = await readRequestBody(req);
+    const raw = await readRequestBody(req);
+    const body = raw ? JSON.parse(raw) : {};
     const symbol = (body.symbol || 'btc').toLowerCase();
     const startDate = body.startDate || body.since || '2026-02-10';
     const rebuild = !!body.rebuild;

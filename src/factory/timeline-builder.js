@@ -141,7 +141,12 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, 
 
   console.log(`[timeline-builder] ${symbol}: building ${newWindows.length} windows (target: ${target})...`);
 
-  // Process windows in batches to manage memory
+  // Use chunked bulk loading for PG target (reduces queries from 5*N to 5*days)
+  if (usePg && !useSqlite) {
+    return buildTimelinesChunked({ symbol, windows: newWindows, report, onProgress, startTime });
+  }
+
+  // Per-window loading path (SQLite target or 'both')
   const BATCH_SIZE = 50;
   const batch = [];
 
@@ -388,20 +393,313 @@ async function loadL2Ticks(symbol, openTime, closeTime) {
 }
 
 /**
- * Load CoinGecko ticks, handling missing table gracefully.
+ * Load CoinGecko ticks from vwap_snapshots (coingecko_price column).
+ * CoinGecko data is stored in vwap_snapshots, not a separate table.
+ * Downsamples to ~1 tick per 10s to match CoinGecko's actual polling frequency.
  */
 async function loadCoingeckoTicks(symbol, openTime, closeTime) {
   try {
     return await persistence.all(`
-      SELECT timestamp, symbol, price
-      FROM coingecko_ticks
+      SELECT DISTINCT ON (date_trunc('minute', timestamp) +
+             (EXTRACT(second FROM timestamp)::int / 10 * 10) * interval '1 second')
+        timestamp, symbol, coingecko_price as price
+      FROM vwap_snapshots
       WHERE timestamp >= $1 AND timestamp <= $2
         AND symbol = $3
-      ORDER BY timestamp ASC
+        AND coingecko_price IS NOT NULL
+      ORDER BY date_trunc('minute', timestamp) +
+               (EXTRACT(second FROM timestamp)::int / 10 * 10) * interval '1 second',
+               timestamp ASC
     `, [openTime, closeTime, symbol.toLowerCase()]);
   } catch {
     return [];
   }
+}
+
+// ─── Chunked Bulk Loading (PG backfill optimization) ───
+
+/**
+ * Binary search for the first index where _ms >= targetMs.
+ * Array must be sorted by _ms ascending.
+ */
+function lowerBound(arr, targetMs) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid]._ms < targetMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Binary search for the first index where _ms > targetMs.
+ */
+function upperBound(arr, targetMs) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid]._ms <= targetMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Slice a sorted array (by _ms) to [startMs, endMs) using binary search.
+ */
+function sliceByMs(sorted, startMs, endMs) {
+  const lo = lowerBound(sorted, startMs);
+  const hi = lowerBound(sorted, endMs);
+  return sorted.slice(lo, hi);
+}
+
+/**
+ * Pre-parse _ms on all rows for binary search.
+ */
+function addMs(rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const ts = rows[i].timestamp;
+    rows[i]._ms = typeof ts === 'object' ? ts.getTime() : new Date(ts).getTime();
+  }
+  return rows;
+}
+
+/**
+ * Group windows by calendar day (UTC).
+ * Returns array of { dayStart, dayEnd, windows } objects.
+ */
+function groupWindowsByDay(windows) {
+  const dayMap = new Map();
+  for (const win of windows) {
+    const closeMs = new Date(toISOString(win.window_close_time)).getTime();
+    const dayKey = new Date(closeMs).toISOString().slice(0, 10); // YYYY-MM-DD
+    if (!dayMap.has(dayKey)) {
+      dayMap.set(dayKey, []);
+    }
+    dayMap.get(dayKey).push(win);
+  }
+
+  const days = [];
+  for (const [dayKey, dayWindows] of dayMap) {
+    // Day range: extend to cover the full window span (15 min before earliest close to latest close)
+    const closeTimes = dayWindows.map(w => new Date(toISOString(w.window_close_time)).getTime());
+    const earliestClose = Math.min(...closeTimes);
+    const latestClose = Math.max(...closeTimes);
+    const dayStart = new Date(earliestClose - WINDOW_DURATION_MS).toISOString();
+    const dayEnd = new Date(latestClose).toISOString();
+    days.push({ dayKey, dayStart, dayEnd, windows: dayWindows });
+  }
+
+  // Sort by dayKey for deterministic processing
+  days.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+  return days;
+}
+
+/**
+ * Load all tick data for a day range in 5 bulk queries.
+ * Returns sorted arrays with pre-parsed _ms fields.
+ */
+async function loadDayBulkData(symbol, dayStart, dayEnd) {
+  const sym = symbol.toLowerCase();
+
+  const [rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks] = await Promise.all([
+    // Oracle ticks (chainlink + polyRef)
+    persistence.all(`
+      SELECT timestamp, topic, symbol, price, received_at
+      FROM rtds_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND topic IN ('crypto_prices_chainlink', 'crypto_prices')
+      ORDER BY timestamp ASC
+    `, [dayStart, dayEnd]).then(addMs),
+
+    // CLOB snapshots
+    persistence.all(`
+      SELECT timestamp, symbol, token_id, best_bid, best_ask,
+             mid_price, spread, bid_size_top, ask_size_top, window_epoch
+      FROM clob_price_snapshots
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol LIKE $3
+      ORDER BY timestamp ASC
+    `, [dayStart, dayEnd, `${sym}%`]).then(addMs),
+
+    // Exchange ticks
+    persistence.all(`
+      SELECT timestamp, exchange, symbol, price, bid, ask
+      FROM exchange_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol = $3
+      ORDER BY timestamp ASC
+    `, [dayStart, dayEnd, sym]).then(addMs),
+
+    // L2 book ticks
+    persistence.all(`
+      SELECT timestamp, token_id, symbol, event_type,
+             best_bid, best_ask, mid_price, spread,
+             bid_depth_1pct, ask_depth_1pct, top_levels
+      FROM l2_book_ticks
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol LIKE $3
+      ORDER BY timestamp ASC
+    `, [dayStart, dayEnd, `${sym}%`]).then(addMs).catch(() => []),
+
+    // CoinGecko ticks from vwap_snapshots
+    persistence.all(`
+      SELECT DISTINCT ON (date_trunc('minute', timestamp) +
+             (EXTRACT(second FROM timestamp)::int / 10 * 10) * interval '1 second')
+        timestamp, symbol, coingecko_price as price
+      FROM vwap_snapshots
+      WHERE timestamp >= $1 AND timestamp <= $2
+        AND symbol = $3
+        AND coingecko_price IS NOT NULL
+      ORDER BY date_trunc('minute', timestamp) +
+               (EXTRACT(second FROM timestamp)::int / 10 * 10) * interval '1 second',
+               timestamp ASC
+    `, [dayStart, dayEnd, sym]).then(addMs).catch(() => []),
+  ]);
+
+  return { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks };
+}
+
+/**
+ * Build timelines using chunked day-based bulk loading.
+ * Loads ALL tick data for one day at a time (5 bulk queries per day),
+ * then slices per-window using binary search.
+ *
+ * Reduces total queries from 5*N_windows to 5*N_days.
+ * Memory stays bounded because only one day of data is held at a time.
+ */
+async function buildTimelinesChunked({ symbol, windows, report, onProgress, startTime }) {
+  const days = groupWindowsByDay(windows);
+
+  console.log(`[timeline-builder] ${symbol}: chunked mode — ${days.length} days, ${windows.length} windows`);
+
+  const FLUSH_SIZE = 50;
+  const batch = [];
+
+  for (const day of days) {
+    const { dayKey, dayStart, dayEnd, windows: dayWindows } = day;
+
+    // Load all data for this day in 5 bulk queries
+    const bulkData = await loadDayBulkData(symbol, dayStart, dayEnd);
+
+    console.log(
+      `[timeline-builder] ${symbol} ${dayKey}: loaded ${bulkData.rtdsTicks.length} rtds, ` +
+      `${bulkData.clobSnapshots.length} clob, ${bulkData.exchangeTicks.length} exchange, ` +
+      `${bulkData.l2BookTicks.length} l2, ${bulkData.coingeckoTicks.length} coingecko`
+    );
+
+    // Process each window in this day by slicing the bulk data
+    for (const win of dayWindows) {
+      report.processed++;
+
+      try {
+        const groundTruth = resolveGroundTruth(win);
+        if (!groundTruth) {
+          report.skippedNoGroundTruth++;
+          continue;
+        }
+
+        const closeTime = toISOString(win.window_close_time);
+        const closeMs = new Date(closeTime).getTime();
+        const openMs = closeMs - WINDOW_DURATION_MS;
+        const openTime = new Date(openMs).toISOString();
+        const windowId = makeWindowId(symbol, closeTime);
+
+        // Slice bulk data for this window using binary search
+        const rtdsTicks = sliceByMs(bulkData.rtdsTicks, openMs, closeMs);
+        const clobSnapshots = sliceByMs(bulkData.clobSnapshots, openMs, closeMs);
+        const exchangeTicks = sliceByMs(bulkData.exchangeTicks, openMs, closeMs);
+        const l2BookTicks = sliceByMs(bulkData.l2BookTicks, openMs, closeMs);
+        const coingeckoTicks = sliceByMs(bulkData.coingeckoTicks, openMs, closeMs);
+
+        // Build merged timeline
+        const timeline = mergeTimeline({
+          rtdsTicks,
+          clobSnapshots,
+          exchangeTicks,
+          l2BookTicks,
+          coingeckoTicks,
+          openMs,
+          closeMs,
+        });
+
+        // Validate
+        const quality = validateWindow({
+          timeline,
+          rtdsCount: rtdsTicks.length,
+          clobCount: clobSnapshots.length,
+          exchangeCount: exchangeTicks.length,
+          l2Count: l2BookTicks.length,
+          coingeckoCount: coingeckoTicks.length,
+          openMs,
+          closeMs,
+          symbol,
+        });
+
+        if (timeline.length === 0) {
+          report.skippedNoEvents++;
+          continue;
+        }
+
+        const blob = pack(timeline);
+
+        batch.push({
+          window_id: windowId,
+          symbol,
+          window_close_time: closeTime,
+          window_open_time: openTime,
+          ground_truth: groundTruth,
+          strike_price: win.strike_price != null ? parseFloat(win.strike_price) : null,
+          oracle_price_at_open: win.oracle_price_at_open != null ? parseFloat(win.oracle_price_at_open) : null,
+          chainlink_price_at_close: win.chainlink_price_at_close != null ? parseFloat(win.chainlink_price_at_close) : null,
+          timeline: blob,
+          event_count: timeline.length,
+          data_quality: JSON.stringify(quality),
+          built_at: new Date().toISOString(),
+        });
+
+        // Flush batch to PG
+        if (batch.length >= FLUSH_SIZE) {
+          await insertPgTimelines(batch);
+          report.inserted += batch.length;
+          batch.length = 0;
+        }
+
+        if (onProgress) {
+          onProgress({
+            symbol,
+            processed: report.processed,
+            total: windows.length,
+            inserted: report.inserted,
+            skipped: report.skippedNoGroundTruth + report.skippedNoEvents,
+          });
+        }
+      } catch (err) {
+        report.errors.push({
+          windowId: makeWindowId(symbol, win.window_close_time),
+          error: err.message,
+        });
+      }
+    }
+
+    // Let GC reclaim the day's bulk data
+  }
+
+  // Flush remaining
+  if (batch.length > 0) {
+    await insertPgTimelines(batch);
+    report.inserted += batch.length;
+  }
+
+  report.elapsedMs = Date.now() - startTime;
+  console.log(
+    `[timeline-builder] ${symbol}: done (chunked). ` +
+    `Inserted ${report.inserted}, skipped ${report.skippedNoGroundTruth} (no truth) + ${report.skippedNoEvents} (no events). ` +
+    `${days.length} day-chunks, took ${(report.elapsedMs / 1000).toFixed(1)}s`
+  );
+
+  return report;
 }
 
 /**
