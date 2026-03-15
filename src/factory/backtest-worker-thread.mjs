@@ -214,15 +214,9 @@ parentPort.on('message', async (msg) => {
     }
 
     case 'shutdown': {
-      // Gracefully close PG connection pool before exiting
-      try {
-        const persistence = (await import('../persistence/index.js')).default;
-        if (persistence.getState().initialized) {
-          await persistence.shutdown();
-        }
-      } catch {
-        // Best-effort cleanup — don't block exit
-      }
+      // Just exit — process.exit() closes all connections.
+      // NEVER call persistence.shutdown() from a worker thread —
+      // if module isolation fails, it kills the main thread's pool.
       process.exit(0);
     }
 
