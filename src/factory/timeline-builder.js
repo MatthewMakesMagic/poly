@@ -43,13 +43,13 @@ const WINDOW_DURATION_MS = 15 * 60 * 1000;
  * @returns {Promise<Object>} Build report
  */
 export async function buildTimelines(options) {
-  const { symbol, rebuild = false, incremental = true, onProgress, target = 'sqlite' } = options;
+  const { symbol, rebuild = false, incremental = true, onProgress, target = 'sqlite', startDate } = options;
 
   if (symbol === 'all') {
     return buildAllSymbols(options);
   }
 
-  return buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, target });
+  return buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, target, startDate });
 }
 
 /**
@@ -82,7 +82,7 @@ async function getAvailableSymbols() {
 /**
  * Core pipeline: build timelines for a single symbol.
  */
-async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, target = 'sqlite' }) {
+async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, target = 'sqlite', startDate }) {
   const startTime = Date.now();
   const usePg = target === 'pg' || target === 'both';
   const useSqlite = target === 'sqlite' || target === 'both';
@@ -109,6 +109,15 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, 
     if (afterTime) {
       console.log(`[timeline-builder] Incremental: building windows after ${afterTime} for ${symbol}`);
     }
+  }
+
+  // If startDate is provided, use it as a floor for afterTime
+  if (startDate) {
+    const startDateIso = new Date(startDate).toISOString();
+    if (!afterTime || startDateIso > afterTime) {
+      afterTime = startDateIso;
+    }
+    console.log(`[timeline-builder] startDate filter: loading windows after ${afterTime} for ${symbol}`);
   }
 
   const windows = await loadWindowsFromPg(symbol, afterTime);
@@ -141,12 +150,11 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, 
 
   console.log(`[timeline-builder] ${symbol}: building ${newWindows.length} windows (target: ${target})...`);
 
-  // Use chunked bulk loading for PG target (reduces queries from 5*N to 5*days)
-  if (usePg && !useSqlite) {
-    return buildTimelinesChunked({ symbol, windows: newWindows, report, onProgress, startTime });
-  }
+  // NOTE: chunked bulk loading (buildTimelinesChunked) is disabled — day-level queries
+  // on clob_price_snapshots exceed statement_timeout on large tables. Per-window queries
+  // (15-min ranges) are fast and reliable.
 
-  // Per-window loading path (SQLite target or 'both')
+  // Per-window loading path (works for all targets: sqlite, pg, both)
   const BATCH_SIZE = 50;
   const batch = [];
 
@@ -502,6 +510,10 @@ function groupWindowsByDay(windows) {
  */
 async function loadDayBulkData(symbol, dayStart, dayEnd) {
   const sym = symbol.toLowerCase();
+
+  // NOTE: Day-level bulk loading is currently unused because clob_price_snapshots
+  // queries exceed statement_timeout on large tables. Kept for future use with
+  // proper indexing or partitioning.
 
   const [rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks, coingeckoTicks] = await Promise.all([
     // Oracle ticks (chainlink + polyRef)

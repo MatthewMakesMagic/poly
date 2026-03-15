@@ -64,6 +64,11 @@ export async function handleFactoryRequest(req, res) {
     return await handleBackfill(req, res);
   }
 
+  // --- GET /api/factory/backfill-status ---
+  if (url === '/api/factory/backfill-status' && req.method === 'GET') {
+    return await handleBackfillStatus(req, res);
+  }
+
   // --- GET /api/factory/cache-status ---
   if (url === '/api/factory/cache-status' && req.method === 'GET') {
     try {
@@ -694,6 +699,52 @@ function json(res, status, data) {
 // POST /api/factory/backfill — build PG timeline cache on Railway
 // =============================================================================
 
+/**
+ * Ensure the backfill_log table exists for tracking backfill progress and errors.
+ */
+async function ensureBackfillLogTable() {
+  await persistence.exec(`
+    CREATE TABLE IF NOT EXISTS backfill_log (
+      id SERIAL PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      windows_processed INTEGER DEFAULT 0,
+      windows_total INTEGER DEFAULT 0,
+      windows_inserted INTEGER DEFAULT 0,
+      error_detail TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+}
+
+/**
+ * Insert a backfill log entry.
+ */
+async function logBackfill({ symbol, status, message, windows_processed, windows_total, windows_inserted, error_detail }) {
+  await persistence.run(
+    `INSERT INTO backfill_log (symbol, status, message, windows_processed, windows_total, windows_inserted, error_detail)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [symbol, status, message || null, windows_processed || 0, windows_total || 0, windows_inserted || 0, error_detail || null]
+  );
+}
+
+/**
+ * GET /api/factory/backfill-status — recent backfill log entries
+ */
+async function handleBackfillStatus(req, res) {
+  try {
+    await ensureBackfillLogTable();
+    const rows = await persistence.all(
+      `SELECT * FROM backfill_log ORDER BY created_at DESC LIMIT 50`
+    );
+    json(res, 200, { ok: true, data: rows });
+  } catch (err) {
+    json(res, 500, { ok: false, error: err.message });
+  }
+  return true;
+}
+
 async function handleBackfill(req, res) {
   try {
     const raw = await readRequestBody(req);
@@ -701,38 +752,83 @@ async function handleBackfill(req, res) {
     const symbol = (body.symbol || 'btc').toLowerCase();
     const startDate = body.startDate || body.since || '2026-02-10';
     const rebuild = !!body.rebuild;
+    const sync = !!body.sync;
 
     await ensurePgTimelineTable();
+    await ensureBackfillLogTable();
     const before = await getPgCacheSummary();
 
-    // Fire-and-forget: start backfill in background, respond immediately
+    // Log start
+    await logBackfill({ symbol, status: 'started', message: `rebuild=${rebuild} startDate=${startDate} sync=${sync}` });
+
+    const buildOpts = {
+      symbol,
+      rebuild,
+      incremental: !rebuild,
+      startDate,
+      target: 'pg',
+      onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
+        if (processed % 100 === 0 || processed === total) {
+          console.log(`[backfill] ${sym}: ${processed}/${total} (${inserted} inserted, ${skipped} skipped)`);
+          // Log progress periodically (every 200 windows or at completion)
+          if (processed % 200 === 0 || processed === total) {
+            logBackfill({ symbol: sym, status: 'progress', windows_processed: processed, windows_total: total, windows_inserted: inserted }).catch(() => {});
+          }
+        }
+      },
+    };
+
+    // Sync mode: await the result and return full report (for debugging)
+    if (sync) {
+      try {
+        const report = await buildTimelines(buildOpts);
+        await logBackfill({
+          symbol, status: 'complete',
+          message: `Inserted ${report.inserted}, errors: ${report.errors?.length || 0}`,
+          windows_processed: report.processed,
+          windows_total: report.totalWindowsInPg,
+          windows_inserted: report.inserted,
+        });
+        json(res, 200, {
+          ok: true,
+          status: 'complete',
+          symbol,
+          report,
+          cacheBefore: before.find(r => r.symbol === symbol) || { total_windows: 0 },
+        });
+      } catch (err) {
+        await logBackfill({ symbol, status: 'error', error_detail: err.stack || err.message }).catch(() => {});
+        json(res, 500, { ok: false, error: err.message, stack: err.stack });
+      }
+      return true;
+    }
+
+    // Async mode: fire-and-forget, respond immediately
     json(res, 200, {
       ok: true,
       status: 'started',
       symbol,
       startDate,
       rebuild,
-      message: 'Backfill running in background. Check GET /api/factory/cache-status for progress.',
+      message: 'Backfill running in background. Check GET /api/factory/backfill-status for progress.',
       cacheBefore: before.find(r => r.symbol === symbol) || { total_windows: 0 },
     });
 
     // Run in background — don't await in the request handler
-    buildTimelines({
-      symbol,
-      rebuild,
-      incremental: !rebuild,
-      startDate: rebuild ? startDate : undefined,
-      target: 'pg',
-      onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
-        if (processed % 100 === 0 || processed === total) {
-          console.log(`[backfill] ${sym}: ${processed}/${total} (${inserted} inserted, ${skipped} skipped)`);
-        }
-      },
-    }).then(report => {
+    buildTimelines(buildOpts).then(async report => {
       const inserted = report.symbols ? Object.values(report.symbols).reduce((s, r) => s + r.inserted, 0) : report.inserted;
       console.log(`[backfill] Complete: ${symbol} — ${inserted} windows cached`);
-    }).catch(err => {
+      await logBackfill({
+        symbol, status: 'complete',
+        message: `Inserted ${inserted}, errors: ${report.errors?.length || 0}`,
+        windows_processed: report.processed,
+        windows_total: report.totalWindowsInPg,
+        windows_inserted: inserted,
+      }).catch(() => {});
+    }).catch(async err => {
       console.error(`[backfill] Error: ${err.message}`);
+      console.error(`[backfill] Stack: ${err.stack}`);
+      await logBackfill({ symbol, status: 'error', error_detail: err.stack || err.message }).catch(() => {});
     });
 
   } catch (err) {
