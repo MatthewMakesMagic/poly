@@ -873,16 +873,23 @@ async function handleBackfillStatus(req, res) {
 // overwhelming the PG connection pool and causing OOM/crash on Railway.
 const backfillQueue = [];
 let backfillRunning = false;
+let backfillShutdown = false;
+
+// Cancel all in-flight backfills on process shutdown to prevent
+// "Cannot use a pool after calling end on the pool" error floods.
+process.on('SIGTERM', () => { backfillShutdown = true; backfillQueue.length = 0; });
+process.on('SIGINT', () => { backfillShutdown = true; backfillQueue.length = 0; });
 
 async function processBackfillQueue() {
   if (backfillRunning || backfillQueue.length === 0) return;
   backfillRunning = true;
 
-  while (backfillQueue.length > 0) {
+  while (backfillQueue.length > 0 && !backfillShutdown) {
     const { buildOpts, symbol } = backfillQueue.shift();
     console.log(`[backfill-queue] Starting ${symbol} (${backfillQueue.length} remaining in queue)`);
     try {
       const report = await buildTimelines(buildOpts);
+      if (backfillShutdown) break;
       const inserted = report.symbols ? Object.values(report.symbols).reduce((s, r) => s + r.inserted, 0) : report.inserted;
       console.log(`[backfill-queue] Complete: ${symbol} — ${inserted} windows cached`);
       await logBackfill({
@@ -893,13 +900,20 @@ async function processBackfillQueue() {
         windows_inserted: inserted,
       }).catch(() => {});
     } catch (err) {
+      // Suppress pool-ended errors during shutdown — these are expected
+      if (backfillShutdown || err.message?.includes('pool after calling end')) {
+        console.log(`[backfill-queue] ${symbol} interrupted by shutdown`);
+        break;
+      }
       console.error(`[backfill-queue] Error for ${symbol}: ${err.message}`);
       await logBackfill({ symbol, status: 'error', error_detail: err.stack || err.message }).catch(() => {});
     }
   }
 
   backfillRunning = false;
-  console.log('[backfill-queue] Queue empty, idle');
+  if (!backfillShutdown) {
+    console.log('[backfill-queue] Queue empty, idle');
+  }
 }
 
 async function handleBackfill(req, res) {
