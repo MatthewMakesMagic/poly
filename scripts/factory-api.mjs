@@ -699,6 +699,7 @@ async function handleBackfill(req, res) {
     const body = await readRequestBody(req);
     const symbol = (body.symbol || 'btc').toLowerCase();
     const startDate = body.startDate || body.since || '2026-02-10';
+    const rebuild = !!body.rebuild;
 
     await ensurePgTimelineTable();
     const before = await getPgCacheSummary();
