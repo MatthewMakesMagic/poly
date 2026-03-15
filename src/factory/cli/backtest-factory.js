@@ -12,6 +12,7 @@
 import { evaluateWindow } from '../../backtest/parallel-engine.js';
 import { loadTimeline, loadWindowsForSymbol } from '../timeline-loader.js';
 import { sampleWindows, splitWindows } from '../sampler.js';
+import { analyzeStrategySources, trimTimeline } from '../timeline-trimmer.js';
 import {
   calculateSharpeRatio,
   calculateSortinoRatio,
@@ -349,8 +350,13 @@ export async function runFactoryBacktest({
     paramSets = [{ ...defaults, ...configOverrides }];
   }
 
+  // Analyze which data sources the strategy needs (for timeline trimming)
+  const sources = analyzeStrategySources(strategy);
+
   // Evaluate all param combinations
   const variants = [];
+  let trimStats = { totalEvents: 0, keptEvents: 0 };
+
   for (const params of paramSets) {
     const windowResults = [];
 
@@ -358,7 +364,12 @@ export async function runFactoryBacktest({
       const loaded = loadTimeline(win.window_id);
       if (!loaded) continue;
 
-      const { window: winMeta, timeline } = loaded;
+      const { window: winMeta, timeline: rawTimeline } = loaded;
+
+      // Trim timeline to only include events the strategy needs
+      const timeline = trimTimeline(rawTimeline, sources);
+      trimStats.totalEvents += rawTimeline.length;
+      trimStats.keptEvents += timeline.length;
 
       // Map window metadata to the format evaluateWindow expects
       const windowEvent = {
@@ -413,6 +424,15 @@ export async function runFactoryBacktest({
 
   // Rank variants by Sharpe
   variants.sort((a, b) => b.metrics.sharpe - a.metrics.sharpe);
+
+  // Log timeline trimming stats
+  if (trimStats.totalEvents > 0) {
+    const removed = trimStats.totalEvents - trimStats.keptEvents;
+    const pct = ((removed / trimStats.totalEvents) * 100).toFixed(1);
+    console.log(
+      `[trimmer] Removed ${removed}/${trimStats.totalEvents} events (${pct}% reduction) for strategy ${strategy.name}`
+    );
+  }
 
   // Baseline comparison
   let baseline = null;
@@ -813,6 +833,8 @@ export async function runFactoryBacktestPgCache({
   sweepGrid = null,
   includeBaseline = true,
   configOverrides = {},
+  parallel = true,
+  poolSize,
 }) {
   const { loadTimelinePg, loadWindowsForSymbolPg } = await import('../timeline-loader.js');
 
@@ -856,13 +878,6 @@ export async function runFactoryBacktestPgCache({
     stratify: sampleOptions.stratify || 'weekly',
   });
 
-  // Load all timelines from PG cache
-  const cachedTimelines = new Map();
-  for (const win of sampledWindows) {
-    const loaded = await loadTimelinePg(win.window_id);
-    if (loaded) cachedTimelines.set(win.window_id, { timeline: loaded.timeline, meta: loaded.window });
-  }
-
   // Determine sweep grid
   const grid = sweepGrid || strategy.sweepGrid || {};
   const defaults = strategy.defaults || {};
@@ -873,6 +888,114 @@ export async function runFactoryBacktestPgCache({
     paramSets = sweepCombos.map(combo => ({ ...defaults, ...configOverrides, ...combo }));
   } else {
     paramSets = [{ ...defaults, ...configOverrides }];
+  }
+
+  // ─── Parallel Path (worker threads) ───
+  // Workers load timelines from PG themselves — no timeline pre-loading on main thread.
+  // Each worker loads the strategy once, then evaluates multiple windows.
+  if (parallel && sampledWindows.length >= 4) {
+    const { createParallelEvaluator } = await import('../parallel-evaluator.js');
+
+    const workerConfig = {
+      initialCapital,
+      spreadBuffer,
+      tradingFee,
+      windowDurationMs,
+      feeMode: feeModeInput || 'taker',
+    };
+
+    const evaluator = await createParallelEvaluator({
+      strategyName: strategy.name,
+      config: workerConfig,
+      poolSize,
+    });
+
+    try {
+      const variants = [];
+
+      for (const params of paramSets) {
+        const rawResults = await evaluator.evaluateWindows(sampledWindows, {
+          strategyParams: params,
+        });
+
+        // Filter out skipped windows
+        const windowResults = rawResults.filter(r => !r.skipped);
+
+        windowResults.sort((a, b) =>
+          new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
+        );
+
+        const metrics = computeMetrics(windowResults, initialCapital);
+        const regime = computeRegimeBreakdown(windowResults, initialCapital);
+        const returns = windowReturns(windowResults, initialCapital);
+        const ci = bootstrapSharpeCI(returns, 1000, sampleOptions.seed || 42);
+
+        const allFills = windowResults.flatMap(wr => wr.fillResults || []);
+        const fillQuality = aggregateFillMetrics(allFills);
+
+        variants.push({
+          params,
+          metrics,
+          regime,
+          sharpeCi: ci,
+          windowCount: windowResults.length,
+          windowResults,
+          fillQuality,
+        });
+      }
+
+      variants.sort((a, b) => b.metrics.sharpe - a.metrics.sharpe);
+
+      // Baseline uses sequential path — it's a single strategy, fast enough
+      let baseline = null;
+      if (includeBaseline) {
+        baseline = await _evaluateBaselineSequential(
+          sampledWindows, loadTimelinePg, sampleOptions,
+          { initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode },
+        );
+      }
+
+      let paramImportance = null;
+      if (variants.length > 1 && Object.keys(grid).length > 0) {
+        paramImportance = computeParamImportance(variants, grid);
+      }
+
+      const wallClockMs = Date.now() - startTime;
+
+      return {
+        strategy: strategy.name,
+        symbol,
+        source: 'pg-cache-parallel',
+        sampleSize: sampledWindows.length,
+        totalWindows: allCachedWindows.length,
+        seed: sampleOptions.seed || 42,
+        feeMode,
+        poolSize: evaluator.poolSize,
+        variants: variants.map(v => ({
+          params: v.params,
+          metrics: v.metrics,
+          regime: v.regime,
+          sharpeCi: v.sharpeCi,
+          windowCount: v.windowCount,
+          fillQuality: v.fillQuality,
+        })),
+        baseline,
+        paramImportance,
+        wallClockMs,
+      };
+    } finally {
+      await evaluator.destroy();
+    }
+  }
+
+  // ─── Sequential Fallback Path ───
+  // Used when parallel=false or when window count is too small to benefit.
+
+  // Load all timelines from PG cache
+  const cachedTimelines = new Map();
+  for (const win of sampledWindows) {
+    const loaded = await loadTimelinePg(win.window_id);
+    if (loaded) cachedTimelines.set(win.window_id, { timeline: loaded.timeline, meta: loaded.window });
   }
 
   // Evaluate all param combinations — pure CPU, no DB queries
@@ -886,7 +1009,6 @@ export async function runFactoryBacktestPgCache({
 
       const { timeline, meta } = cached;
 
-      // Map cached metadata to evaluateWindow format
       const windowEvent = {
         window_close_time: meta.window_close_time,
         symbol: meta.symbol,
@@ -940,43 +1062,11 @@ export async function runFactoryBacktestPgCache({
   // Baseline comparison (pure CPU — timelines already loaded)
   let baseline = null;
   if (includeBaseline) {
-    const baselineStrategy = createBaselineStrategy(sampleOptions.seed || 42);
-    const baselineResults = [];
-
-    for (const win of sampledWindows) {
-      const cached = cachedTimelines.get(win.window_id);
-      if (!cached) continue;
-
-      const { timeline, meta } = cached;
-      const windowEvent = {
-        window_close_time: meta.window_close_time,
-        symbol: meta.symbol,
-        strike_price: meta.strike_price,
-        oracle_price_at_open: meta.oracle_price_at_open,
-        chainlink_price_at_close: meta.chainlink_price_at_close,
-        resolved_direction: meta.ground_truth,
-        gamma_resolved_direction: meta.ground_truth,
-      };
-
-      const result = evaluateWindow({
-        window: windowEvent,
-        timeline,
-        strategy: baselineStrategy,
-        strategyConfig: baselineStrategy.defaults,
-        initialCapital,
-        spreadBuffer,
-        tradingFee,
-        windowDurationMs,
-        feeMode,
-      });
-
-      baselineResults.push(result);
-    }
-
-    baselineResults.sort((a, b) =>
-      new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
+    baseline = await _evaluateBaselineSequential(
+      sampledWindows, loadTimelinePg, sampleOptions,
+      { initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode },
+      cachedTimelines,
     );
-    baseline = computeMetrics(baselineResults, initialCapital);
   }
 
   let paramImportance = null;
@@ -1006,6 +1096,70 @@ export async function runFactoryBacktestPgCache({
     paramImportance,
     wallClockMs,
   };
+}
+
+/**
+ * Evaluate the baseline-random strategy sequentially.
+ * Extracted to avoid duplicating baseline logic between parallel and sequential paths.
+ *
+ * @param {Object[]} sampledWindows - Sampled windows
+ * @param {Function} loadTimelinePg - PG timeline loader
+ * @param {Object} sampleOptions - Sample options (for seed)
+ * @param {Object} evalConfig - { initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode }
+ * @param {Map} [cachedTimelines] - Pre-loaded timelines (optional, for sequential path)
+ * @returns {Promise<Object>} Baseline metrics
+ */
+async function _evaluateBaselineSequential(
+  sampledWindows, loadTimelinePg, sampleOptions, evalConfig, cachedTimelines,
+) {
+  const { initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode } = evalConfig;
+  const baselineStrategy = createBaselineStrategy(sampleOptions.seed || 42);
+  const baselineResults = [];
+
+  for (const win of sampledWindows) {
+    let timeline, meta;
+
+    if (cachedTimelines) {
+      const cached = cachedTimelines.get(win.window_id);
+      if (!cached) continue;
+      timeline = cached.timeline;
+      meta = cached.meta;
+    } else {
+      const loaded = await loadTimelinePg(win.window_id);
+      if (!loaded) continue;
+      timeline = loaded.timeline;
+      meta = loaded.window;
+    }
+
+    const windowEvent = {
+      window_close_time: meta.window_close_time,
+      symbol: meta.symbol,
+      strike_price: meta.strike_price,
+      oracle_price_at_open: meta.oracle_price_at_open,
+      chainlink_price_at_close: meta.chainlink_price_at_close,
+      resolved_direction: meta.ground_truth,
+      gamma_resolved_direction: meta.ground_truth,
+    };
+
+    const result = evaluateWindow({
+      window: windowEvent,
+      timeline,
+      strategy: baselineStrategy,
+      strategyConfig: baselineStrategy.defaults,
+      initialCapital,
+      spreadBuffer,
+      tradingFee,
+      windowDurationMs,
+      feeMode,
+    });
+
+    baselineResults.push(result);
+  }
+
+  baselineResults.sort((a, b) =>
+    new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
+  );
+  return computeMetrics(baselineResults, initialCapital);
 }
 
 /**

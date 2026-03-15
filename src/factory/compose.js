@@ -126,6 +126,7 @@ export function composeFromDefinition(definition, sweepGrid, defaults) {
     onWindowOpen,
     defaults: strategyDefaults,
     sweepGrid: strategySweepGrid,
+    _definition: definition,  // Retained for timeline trimmer source analysis
   };
 }
 
