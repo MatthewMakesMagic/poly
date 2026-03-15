@@ -11,7 +11,7 @@
 
 import { evaluateWindow } from '../../backtest/parallel-engine.js';
 import { loadTimeline, loadWindowsForSymbol } from '../timeline-loader.js';
-import { sampleWindows } from '../sampler.js';
+import { sampleWindows, splitWindows } from '../sampler.js';
 import {
   calculateSharpeRatio,
   calculateSortinoRatio,
@@ -110,8 +110,20 @@ export function computeMetrics(windowResults, initialCapital = 100) {
   }
 
   const returns = windowReturns(windowResults, initialCapital);
-  const sharpe = calculateSharpeRatio(returns, 0, 252);
-  const sortino = calculateSortinoRatio(returns, 0, 252);
+
+  // Raw Sharpe (unannualized): mean/stddev, no sqrt(N) scaling.
+  // This is the PRIMARY ranking metric per adversarial review.
+  // Annualized Sharpe uses actual window frequency (e.g., 35,040 for 15-min windows in 24/7 crypto).
+  const sharpeRaw = calculateSharpeRatio(returns, 0, 1);
+  const sortinoRaw = calculateSortinoRatio(returns, 0, 1);
+
+  // Compute actual annualization factor from window duration
+  // periodsPerYear = (365.25 * 24 * 60) / windowDurationMinutes
+  const windowDurationMinutes = 15;
+  const periodsPerYear = (365.25 * 24 * 60) / windowDurationMinutes;
+  const sharpeAnnualized = calculateSharpeRatio(returns, 0, periodsPerYear);
+  const sortinoAnnualized = calculateSortinoRatio(returns, 0, periodsPerYear);
+
   const pf = calculateProfitFactor(allTrades);
   const { maxDrawdownPct } = calculateMaxDrawdown(equityCurve);
   const expectancy = calculateExpectancy(allTrades);
@@ -122,13 +134,20 @@ export function computeMetrics(windowResults, initialCapital = 100) {
     : 0;
   const edgePerTrade = winRate - avgEntry;
 
+  // Minimum trade count warning (adversarial review recommendation 4)
+  const lowTradeCount = totalTrades < 30;
+
   return {
-    sharpe,
-    sortino,
+    sharpe: sharpeRaw,
+    sharpeAnnualized,
+    sharpeNote: 'Raw Sharpe (no annualization) is the primary ranking metric. Annualized assumes continuous 24/7 i.i.d. returns.',
+    sortino: sortinoRaw,
+    sortinoAnnualized,
     profitFactor: pf,
     maxDrawdown: maxDrawdownPct,
     winRate,
     trades: totalTrades,
+    lowTradeCount,
     expectancy,
     edgePerTrade,
     totalPnl,
@@ -214,7 +233,8 @@ export function bootstrapSharpeCI(returns, resamples = 1000, seed = 42) {
     for (let j = 0; j < n; j++) {
       sample[j] = returns[Math.floor(rng() * n)];
     }
-    bootstrapSharpes.push(calculateSharpeRatio(sample, 0, 252));
+    // Use raw (unannualized) Sharpe for bootstrap CI — consistent with primary metric
+    bootstrapSharpes.push(calculateSharpeRatio(sample, 0, 1));
   }
 
   bootstrapSharpes.sort((a, b) => a - b);
@@ -282,6 +302,8 @@ export async function runFactoryBacktest({
   sweepGrid = null,
   includeBaseline = true,
   configOverrides = {},
+  holdout = false,
+  holdoutRatio = 0.3,
 }) {
   const startTime = Date.now();
   const {
@@ -440,6 +462,58 @@ export async function runFactoryBacktest({
     paramImportance = computeParamImportance(variants, grid);
   }
 
+  // Out-of-sample holdout evaluation (adversarial review Story 12.3)
+  let holdoutResult = null;
+  if (holdout && variants.length > 0) {
+    const { train, test } = splitWindows(sampledWindows, { trainRatio: 1 - holdoutRatio });
+    const bestParams = variants[0].params;
+
+    const evalWindowSet = (windowSet) => {
+      const results = [];
+      for (const win of windowSet) {
+        const loaded = loadTimeline(win.window_id);
+        if (!loaded) continue;
+        const { window: winMeta, timeline } = loaded;
+        const windowEvent = {
+          window_close_time: winMeta.window_close_time,
+          symbol: winMeta.symbol,
+          strike_price: winMeta.strike_price,
+          oracle_price_at_open: winMeta.oracle_price_at_open,
+          chainlink_price_at_close: winMeta.chainlink_price_at_close,
+          resolved_direction: winMeta.ground_truth,
+          gamma_resolved_direction: winMeta.ground_truth,
+        };
+        results.push(evaluateWindow({
+          window: windowEvent, timeline, strategy,
+          strategyConfig: bestParams, initialCapital, spreadBuffer,
+          tradingFee, windowDurationMs, feeMode,
+        }));
+      }
+      results.sort((a, b) =>
+        new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
+      );
+      return results;
+    };
+
+    const trainResults = evalWindowSet(train);
+    const testResults = evalWindowSet(test);
+    const trainMetrics = computeMetrics(trainResults, initialCapital);
+    const testMetrics = computeMetrics(testResults, initialCapital);
+    const testReturns = windowReturns(testResults, initialCapital);
+    const testCi = bootstrapSharpeCI(testReturns, 1000, sampleOptions.seed || 42);
+
+    holdoutResult = {
+      bestParams,
+      trainRatio: 1 - holdoutRatio,
+      trainWindows: train.length,
+      testWindows: test.length,
+      inSample: trainMetrics,
+      outOfSample: testMetrics,
+      outOfSampleCi: testCi,
+      overfitWarning: testMetrics.sharpe < trainMetrics.sharpe * 0.5,
+    };
+  }
+
   const wallClockMs = Date.now() - startTime;
 
   return {
@@ -459,7 +533,37 @@ export async function runFactoryBacktest({
     })),
     baseline,
     paramImportance,
+    holdout: holdoutResult,
     wallClockMs,
+  };
+}
+
+// ─── Concurrency Limiter ───
+
+/**
+ * Simple concurrency limiter (p-limit pattern).
+ * @param {number} concurrency - Max concurrent tasks
+ * @returns {function} Limiter function: limit(fn) => Promise
+ */
+function createLimiter(concurrency) {
+  let active = 0;
+  const queue = [];
+
+  function next() {
+    if (active >= concurrency || queue.length === 0) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    fn().then(resolve, reject).finally(() => {
+      active--;
+      next();
+    });
+  }
+
+  return function limit(fn) {
+    return new Promise((resolve, reject) => {
+      queue.push({ fn, resolve, reject });
+      next();
+    });
   };
 }
 
@@ -468,9 +572,11 @@ export async function runFactoryBacktest({
 /**
  * Run a factory backtest loading data directly from PostgreSQL.
  * Same interface as runFactoryBacktest but bypasses SQLite cache.
+ * Uses concurrency-limited parallel execution for PG queries (default: 10 concurrent).
  * Ideal for Railway where the backtester is next to the database (<1ms latency).
  *
  * @param {Object} params - Same as runFactoryBacktest
+ * @param {number} [params.pgConcurrency=10] - Max concurrent PG queries
  * @returns {Object} Full backtest results (identical format)
  */
 export async function runFactoryBacktestPg({
@@ -481,6 +587,9 @@ export async function runFactoryBacktestPg({
   sweepGrid = null,
   includeBaseline = true,
   configOverrides = {},
+  holdout = false,
+  holdoutRatio = 0.3,
+  pgConcurrency = 10,
 }) {
   const startTime = Date.now();
   const {
@@ -493,6 +602,7 @@ export async function runFactoryBacktestPg({
   } = config;
 
   const feeMode = parseFeeMode(feeModeInput || FeeMode.TAKER_ONLY);
+  const limit = createLimiter(pgConcurrency);
 
   // Load windows from PostgreSQL (window_close_events table)
   // Use a wide date range to get all available windows
@@ -535,23 +645,260 @@ export async function runFactoryBacktestPg({
     paramSets = [{ ...defaults, ...configOverrides }];
   }
 
-  // Evaluate all param combinations
+  // Evaluate all param combinations with concurrency-limited parallel PG queries
+  const variants = [];
+  for (const params of paramSets) {
+    const windowResultPromises = sampledWindows.map(win =>
+      limit(async () => {
+        const windowData = await loadWindowTickData({
+          window: win,
+          windowDurationMs,
+        });
+
+        const timeline = buildWindowTimelinePg(windowData);
+
+        return evaluateWindow({
+          window: win,
+          timeline,
+          strategy,
+          strategyConfig: params,
+          initialCapital,
+          spreadBuffer,
+          tradingFee,
+          windowDurationMs,
+          feeMode,
+        });
+      })
+    );
+
+    const windowResults = await Promise.all(windowResultPromises);
+
+    windowResults.sort((a, b) =>
+      new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
+    );
+
+    const metrics = computeMetrics(windowResults, initialCapital);
+    const regime = computeRegimeBreakdown(windowResults, initialCapital);
+    const returns = windowReturns(windowResults, initialCapital);
+    const ci = bootstrapSharpeCI(returns, 1000, sampleOptions.seed || 42);
+
+    const allFills = windowResults.flatMap(wr => wr.fillResults || []);
+    const fillQuality = aggregateFillMetrics(allFills);
+
+    variants.push({
+      params,
+      metrics,
+      regime,
+      sharpeCi: ci,
+      windowCount: windowResults.length,
+      windowResults,
+      fillQuality,
+    });
+  }
+
+  variants.sort((a, b) => b.metrics.sharpe - a.metrics.sharpe);
+
+  // Baseline comparison (concurrent)
+  let baseline = null;
+  if (includeBaseline) {
+    const baselineStrategy = createBaselineStrategy(sampleOptions.seed || 42);
+    const baselinePromises = sampledWindows.map(win =>
+      limit(async () => {
+        const windowData = await loadWindowTickData({ window: win, windowDurationMs });
+        const timeline = buildWindowTimelinePg(windowData);
+        return evaluateWindow({
+          window: win, timeline, strategy: baselineStrategy,
+          strategyConfig: baselineStrategy.defaults,
+          initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode,
+        });
+      })
+    );
+    const baselineResults = await Promise.all(baselinePromises);
+    baselineResults.sort((a, b) =>
+      new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
+    );
+    baseline = computeMetrics(baselineResults, initialCapital);
+  }
+
+  let paramImportance = null;
+  if (variants.length > 1 && Object.keys(grid).length > 0) {
+    paramImportance = computeParamImportance(variants, grid);
+  }
+
+  // Out-of-sample holdout evaluation (adversarial review Story 12.3)
+  // Concurrency-limited parallel PG queries
+  let holdoutResult = null;
+  if (holdout && variants.length > 0) {
+    const { train, test } = splitWindows(sampledWindows, { trainRatio: 1 - holdoutRatio });
+    const bestParams = variants[0].params;
+
+    const testResultPromises = test.map(win =>
+      limit(async () => {
+        const windowData = await loadWindowTickData({ window: win, windowDurationMs });
+        const timeline = buildWindowTimelinePg(windowData);
+        return evaluateWindow({
+          window: win, timeline, strategy, strategyConfig: bestParams,
+          initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode,
+        });
+      })
+    );
+    const testResults = await Promise.all(testResultPromises);
+    testResults.sort((a, b) => new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime());
+
+    const trainResultPromises = train.map(win =>
+      limit(async () => {
+        const windowData = await loadWindowTickData({ window: win, windowDurationMs });
+        const timeline = buildWindowTimelinePg(windowData);
+        return evaluateWindow({
+          window: win, timeline, strategy, strategyConfig: bestParams,
+          initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode,
+        });
+      })
+    );
+    const trainResults = await Promise.all(trainResultPromises);
+
+    const trainMetrics = computeMetrics(trainResults, initialCapital);
+    const testMetrics = computeMetrics(testResults, initialCapital);
+    const testReturns = windowReturns(testResults, initialCapital);
+    const testCi = bootstrapSharpeCI(testReturns, 1000, sampleOptions.seed || 42);
+    holdoutResult = {
+      bestParams, trainRatio: 1 - holdoutRatio,
+      trainWindows: train.length, testWindows: test.length,
+      inSample: trainMetrics, outOfSample: testMetrics,
+      outOfSampleCi: testCi,
+      overfitWarning: testMetrics.sharpe < trainMetrics.sharpe * 0.5,
+    };
+  }
+
+  const wallClockMs = Date.now() - startTime;
+
+  return {
+    strategy: strategy.name,
+    symbol,
+    source: 'pg',
+    sampleSize: sampledWindows.length,
+    totalWindows: allWindows.length,
+    seed: sampleOptions.seed || 42,
+    feeMode,
+    variants: variants.map(v => ({
+      params: v.params,
+      metrics: v.metrics,
+      regime: v.regime,
+      sharpeCi: v.sharpeCi,
+      windowCount: v.windowCount,
+      fillQuality: v.fillQuality,
+    })),
+    baseline,
+    paramImportance,
+    holdout: holdoutResult,
+    wallClockMs,
+  };
+}
+
+// ─── PG-Cache Engine ───
+
+/**
+ * Run a factory backtest from pre-computed pg_timelines BYTEA blobs.
+ * FASTEST path: one row fetch per window, deserialize msgpack, pure CPU evaluation.
+ * No tick-level PG queries — timeline is pre-built and cached as a binary blob.
+ *
+ * @param {Object} params - Same as runFactoryBacktest
+ * @returns {Object} Full backtest results (identical format)
+ */
+export async function runFactoryBacktestPgCache({
+  strategy,
+  symbol,
+  sampleOptions = {},
+  config = {},
+  sweepGrid = null,
+  includeBaseline = true,
+  configOverrides = {},
+}) {
+  const { loadTimelinePg, loadWindowsForSymbolPg } = await import('../timeline-loader.js');
+
+  const startTime = Date.now();
+  const {
+    initialCapital = 100,
+    spreadBuffer = 0.005,
+    tradingFee = 0,
+    windowDurationMs = 5 * 60 * 1000,
+    maxSweepCombinations = 500,
+    feeMode: feeModeInput,
+  } = config;
+
+  const feeMode = parseFeeMode(feeModeInput || FeeMode.TAKER_ONLY);
+
+  // List all cached windows for this symbol (metadata only, no blob)
+  const allCachedWindows = await loadWindowsForSymbolPg(symbol.toLowerCase(), {
+    startDate: sampleOptions.startDate,
+    endDate: sampleOptions.endDate,
+  });
+
+  if (allCachedWindows.length === 0) {
+    throw new Error(
+      `No cached timelines found for symbol '${symbol}' in pg_timelines table. ` +
+      `Build timelines first or use --source=pg.`
+    );
+  }
+
+  // Map to the format sampleWindows expects
+  const windowsMapped = allCachedWindows.map(w => ({
+    ...w,
+    window_close_time: w.window_close_time instanceof Date
+      ? w.window_close_time.toISOString()
+      : w.window_close_time,
+  }));
+
+  // Sample windows
+  const sampledWindows = sampleWindows(windowsMapped, {
+    count: sampleOptions.count || 200,
+    seed: sampleOptions.seed || 42,
+    stratify: sampleOptions.stratify || 'weekly',
+  });
+
+  // Load all timelines from PG cache
+  const cachedTimelines = new Map();
+  for (const win of sampledWindows) {
+    const loaded = await loadTimelinePg(win.window_id);
+    if (loaded) cachedTimelines.set(win.window_id, { timeline: loaded.timeline, meta: loaded.window });
+  }
+
+  // Determine sweep grid
+  const grid = sweepGrid || strategy.sweepGrid || {};
+  const defaults = strategy.defaults || {};
+  let paramSets;
+
+  if (Object.keys(grid).length > 0) {
+    const sweepCombos = generateParamCombinations(grid, { maxCombinations: maxSweepCombinations });
+    paramSets = sweepCombos.map(combo => ({ ...defaults, ...configOverrides, ...combo }));
+  } else {
+    paramSets = [{ ...defaults, ...configOverrides }];
+  }
+
+  // Evaluate all param combinations — pure CPU, no DB queries
   const variants = [];
   for (const params of paramSets) {
     const windowResults = [];
 
     for (const win of sampledWindows) {
-      // Load tick data per-window from PG
-      const windowData = await loadWindowTickData({
-        window: win,
-        windowDurationMs,
-      });
+      const cached = cachedTimelines.get(win.window_id);
+      if (!cached) continue;
 
-      // Build timeline using the same mechanism as parallel-engine
-      const timeline = buildWindowTimelinePg(windowData);
+      const { timeline, meta } = cached;
+
+      // Map cached metadata to evaluateWindow format
+      const windowEvent = {
+        window_close_time: meta.window_close_time,
+        symbol: meta.symbol,
+        strike_price: meta.strike_price,
+        oracle_price_at_open: meta.oracle_price_at_open,
+        chainlink_price_at_close: meta.chainlink_price_at_close,
+        resolved_direction: meta.ground_truth,
+        gamma_resolved_direction: meta.ground_truth,
+      };
 
       const result = evaluateWindow({
-        window: win,
+        window: windowEvent,
         timeline,
         strategy,
         strategyConfig: params,
@@ -590,21 +937,29 @@ export async function runFactoryBacktestPg({
 
   variants.sort((a, b) => b.metrics.sharpe - a.metrics.sharpe);
 
-  // Baseline comparison
+  // Baseline comparison (pure CPU — timelines already loaded)
   let baseline = null;
   if (includeBaseline) {
     const baselineStrategy = createBaselineStrategy(sampleOptions.seed || 42);
     const baselineResults = [];
 
     for (const win of sampledWindows) {
-      const windowData = await loadWindowTickData({
-        window: win,
-        windowDurationMs,
-      });
-      const timeline = buildWindowTimelinePg(windowData);
+      const cached = cachedTimelines.get(win.window_id);
+      if (!cached) continue;
+
+      const { timeline, meta } = cached;
+      const windowEvent = {
+        window_close_time: meta.window_close_time,
+        symbol: meta.symbol,
+        strike_price: meta.strike_price,
+        oracle_price_at_open: meta.oracle_price_at_open,
+        chainlink_price_at_close: meta.chainlink_price_at_close,
+        resolved_direction: meta.ground_truth,
+        gamma_resolved_direction: meta.ground_truth,
+      };
 
       const result = evaluateWindow({
-        window: win,
+        window: windowEvent,
         timeline,
         strategy: baselineStrategy,
         strategyConfig: baselineStrategy.defaults,
@@ -634,9 +989,9 @@ export async function runFactoryBacktestPg({
   return {
     strategy: strategy.name,
     symbol,
-    source: 'pg',
+    source: 'pg-cache',
     sampleSize: sampledWindows.length,
-    totalWindows: allWindows.length,
+    totalWindows: allCachedWindows.length,
     seed: sampleOptions.seed || 42,
     feeMode,
     variants: variants.map(v => ({
@@ -656,39 +1011,61 @@ export async function runFactoryBacktestPg({
 /**
  * Build a merged timeline from PG-loaded window data.
  * Matches the format expected by evaluateWindow / MarketState.processEvent.
+ * Pre-computes _ms on each event to avoid repeated Date parsing in hot paths.
  */
 function buildWindowTimelinePg(windowData) {
-  const { rtdsTicks, clobSnapshots, exchangeTicks } = windowData;
+  const { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks } = windowData;
   const timeline = [];
 
   for (const tick of rtdsTicks) {
     const topic = tick.topic;
     let source;
-    if (topic === 'crypto_prices_chainlink') {
-      source = 'chainlink';
-    } else if (topic === 'crypto_prices') {
-      source = 'polyRef';
-    } else {
-      source = `rtds_${topic}`;
-    }
-    timeline.push({ ...tick, source });
+    if (topic === 'crypto_prices_chainlink') source = 'chainlink';
+    else if (topic === 'crypto_prices') source = 'polyRef';
+    else source = `rtds_${topic}`;
+    const _ms = new Date(tick.timestamp).getTime();
+    timeline.push({ ...tick, source, _ms });
   }
 
   for (const snap of clobSnapshots) {
     const isDown = snap.symbol?.toLowerCase().includes('down');
     const source = isDown ? 'clobDown' : 'clobUp';
-    timeline.push({ ...snap, source });
+    const _ms = new Date(snap.timestamp).getTime();
+    timeline.push({ ...snap, source, _ms });
   }
 
   for (const tick of exchangeTicks) {
-    timeline.push({ ...tick, source: `exchange_${tick.exchange}` });
+    const _ms = new Date(tick.timestamp).getTime();
+    timeline.push({ ...tick, source: `exchange_${tick.exchange}`, _ms });
   }
 
-  timeline.sort((a, b) => {
-    const tA = new Date(a.timestamp).getTime();
-    const tB = new Date(b.timestamp).getTime();
-    return tA - tB;
-  });
+  // L2 book ticks -> l2Up or l2Down (matching timeline-builder.js pattern)
+  if (l2BookTicks && l2BookTicks.length > 0) {
+    // Build token_id -> direction map from CLOB snapshots
+    const tokenDirMap = new Map();
+    for (const snap of clobSnapshots) {
+      if (snap.token_id && !tokenDirMap.has(snap.token_id)) {
+        tokenDirMap.set(snap.token_id, snap.symbol?.toLowerCase().includes('down') ? 'down' : 'up');
+      }
+    }
+    for (const tick of l2BookTicks) {
+      const direction = tokenDirMap.get(tick.token_id) ||
+        (tick.symbol?.toLowerCase().includes('down') ? 'down' : 'up');
+      const source = direction === 'down' ? 'l2Down' : 'l2Up';
+      const _ms = new Date(tick.timestamp).getTime();
+      timeline.push({
+        source, timestamp: tick.timestamp,
+        best_bid: parseFloat(tick.best_bid), best_ask: parseFloat(tick.best_ask),
+        mid_price: parseFloat(tick.mid_price), spread: parseFloat(tick.spread || 0),
+        bid_depth_1pct: parseFloat(tick.bid_depth_1pct || 0),
+        ask_depth_1pct: parseFloat(tick.ask_depth_1pct || 0),
+        top_levels: tick.top_levels || null, _ms,
+      });
+    }
+  }
+
+  // Sort by pre-computed _ms (avoids Date parsing in comparator)
+  timeline.sort((a, b) => a._ms - b._ms);
 
   return timeline;
 }

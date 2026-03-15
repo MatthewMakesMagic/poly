@@ -21,6 +21,12 @@ import {
   getExistingWindowIds,
   getDb,
 } from './timeline-store.js';
+import {
+  insertPgTimelines,
+  insertPgTimelineIfNotExists,
+  getLatestPgWindowTime,
+  ensurePgTimelineTable,
+} from './pg-timeline-store.js';
 import { validateWindow } from './timeline-validator.js';
 
 // Window duration: 15 minutes
@@ -37,13 +43,13 @@ const WINDOW_DURATION_MS = 15 * 60 * 1000;
  * @returns {Promise<Object>} Build report
  */
 export async function buildTimelines(options) {
-  const { symbol, rebuild = false, incremental = true, onProgress } = options;
+  const { symbol, rebuild = false, incremental = true, onProgress, target = 'sqlite' } = options;
 
   if (symbol === 'all') {
     return buildAllSymbols(options);
   }
 
-  return buildSymbolTimelines({ symbol, rebuild, incremental, onProgress });
+  return buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, target });
 }
 
 /**
@@ -76,19 +82,30 @@ async function getAvailableSymbols() {
 /**
  * Core pipeline: build timelines for a single symbol.
  */
-async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress }) {
+async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, target = 'sqlite' }) {
   const startTime = Date.now();
+  const usePg = target === 'pg' || target === 'both';
+  const useSqlite = target === 'sqlite' || target === 'both';
 
-  // Handle rebuild: drop existing timelines for this symbol
-  if (rebuild) {
+  // Handle rebuild: drop existing timelines for this symbol (SQLite only)
+  if (rebuild && useSqlite) {
     const deleted = deleteSymbolTimelines(symbol);
     console.log(`[timeline-builder] Rebuilt: deleted ${deleted} existing windows for ${symbol}`);
+  }
+
+  // Ensure PG table exists if targeting PG
+  if (usePg) {
+    await ensurePgTimelineTable();
   }
 
   // Get windows from PostgreSQL
   let afterTime = null;
   if (incremental && !rebuild) {
-    afterTime = getLatestWindowTime(symbol);
+    if (usePg) {
+      afterTime = await getLatestPgWindowTime(symbol);
+    } else {
+      afterTime = getLatestWindowTime(symbol);
+    }
     if (afterTime) {
       console.log(`[timeline-builder] Incremental: building windows after ${afterTime} for ${symbol}`);
     }
@@ -97,7 +114,7 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress }
   const windows = await loadWindowsFromPg(symbol, afterTime);
 
   // Filter out windows already in cache (for safety)
-  const existingIds = rebuild ? new Set() : getExistingWindowIds(symbol);
+  const existingIds = (rebuild || !useSqlite) ? new Set() : getExistingWindowIds(symbol);
   const newWindows = windows.filter(w => {
     const windowId = makeWindowId(symbol, w.window_close_time);
     return !existingIds.has(windowId);
@@ -105,6 +122,7 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress }
 
   const report = {
     symbol,
+    target,
     totalWindowsInPg: windows.length,
     alreadyCached: windows.length - newWindows.length,
     processed: 0,
@@ -121,7 +139,7 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress }
     return report;
   }
 
-  console.log(`[timeline-builder] ${symbol}: building ${newWindows.length} windows...`);
+  console.log(`[timeline-builder] ${symbol}: building ${newWindows.length} windows (target: ${target})...`);
 
   // Process windows in batches to manage memory
   const BATCH_SIZE = 50;
@@ -148,7 +166,8 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress }
 
       // Flush batch
       if (batch.length >= BATCH_SIZE) {
-        insertTimelines(batch);
+        if (useSqlite) insertTimelines(batch);
+        if (usePg) await insertPgTimelines(batch);
         report.inserted += batch.length;
         batch.length = 0;
       }
@@ -172,7 +191,8 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress }
 
   // Flush remaining
   if (batch.length > 0) {
-    insertTimelines(batch);
+    if (useSqlite) insertTimelines(batch);
+    if (usePg) await insertPgTimelines(batch);
     report.inserted += batch.length;
   }
 
@@ -228,7 +248,7 @@ async function loadWindowsFromPg(symbol, afterTime) {
  * Build a single window's timeline.
  * Returns a row ready for SQLite insertion, or null if no ground truth.
  */
-async function buildSingleWindow(symbol, windowEvent) {
+export async function buildSingleWindow(symbol, windowEvent) {
   // Determine ground truth
   const groundTruth = resolveGroundTruth(windowEvent);
   if (!groundTruth) {

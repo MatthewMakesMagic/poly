@@ -135,3 +135,45 @@ export function sampleWindows(windows, options = {}) {
 
   return sampled;
 }
+
+/**
+ * Split windows into chronological train/test sets for out-of-sample holdout.
+ *
+ * Sorts windows by window_close_time, then assigns the first `trainRatio`
+ * fraction to train and the remainder to test. This is a strict time-based
+ * split (NOT random) to avoid look-ahead bias.
+ *
+ * @param {Object[]} windows - Window metadata array (must have window_close_time)
+ * @param {Object} [options]
+ * @param {number} [options.trainRatio=0.7] - Fraction of windows for training (0..1)
+ * @param {number} [options.seed] - Unused, accepted for API consistency with sampleWindows
+ * @returns {{ train: Object[], test: Object[], splitDate: string }}
+ */
+export function splitWindows(windows, options = {}) {
+  const { trainRatio = 0.7 } = options;
+
+  if (!windows || windows.length === 0) {
+    return { train: [], test: [], splitDate: '' };
+  }
+
+  if (trainRatio <= 0 || trainRatio >= 1) {
+    throw new Error(`trainRatio must be in (0, 1), got ${trainRatio}`);
+  }
+
+  // Sort chronologically by window_close_time
+  const sorted = [...windows].sort((a, b) =>
+    a.window_close_time.localeCompare(b.window_close_time)
+  );
+
+  const splitIndex = Math.floor(sorted.length * trainRatio);
+  // Ensure at least 1 window in each set when possible
+  const effectiveSplit = Math.max(1, Math.min(splitIndex, sorted.length - 1));
+
+  const train = sorted.slice(0, effectiveSplit);
+  const test = sorted.slice(effectiveSplit);
+
+  // splitDate = close time of last training window (the boundary)
+  const splitDate = train[train.length - 1].window_close_time;
+
+  return { train, test, splitDate };
+}

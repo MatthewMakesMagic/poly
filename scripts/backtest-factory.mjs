@@ -16,7 +16,7 @@
  *   --spread=<N>        Spread buffer (default: 0.005)
  *   --fee=<N>           Trading fee (default: 0)
  *   --fee-mode=<m>      Fee mode: taker, maker, zero (default: taker)
- *   --source=<s>        Data source: pg or cache (default: cache, or pg if RAILWAY_ENVIRONMENT is set)
+ *   --source=<s>        Data source: pg, cache, or pg-cache (default: cache, pg on Railway, pg-cache auto-detected)
  *   --json              Output raw JSON (for piping)
  *   --no-baseline       Skip baseline comparison
  *   --output=<path>     Write results to file
@@ -26,7 +26,7 @@
 import { resolve } from 'path';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { pathToFileURL } from 'url';
-import { runFactoryBacktest, runFactoryBacktestPg } from '../src/factory/cli/backtest-factory.js';
+import { runFactoryBacktest, runFactoryBacktestPg, runFactoryBacktestPgCache } from '../src/factory/cli/backtest-factory.js';
 import { getDb, closeDb } from '../src/factory/timeline-store.js';
 import { renderResultsTable, renderComparisonTable } from '../src/factory/cli/output-formatter.js';
 
@@ -46,6 +46,8 @@ function parseArgs() {
     source: process.env.RAILWAY_ENVIRONMENT ? 'pg' : 'cache',
     json: false,
     baseline: true,
+    holdout: false,
+    holdoutRatio: 0.3,
     output: null,
     help: false,
   };
@@ -54,6 +56,7 @@ function parseArgs() {
     if (arg === '--help' || arg === '-h') { opts.help = true; continue; }
     if (arg === '--json') { opts.json = true; continue; }
     if (arg === '--no-baseline') { opts.baseline = false; continue; }
+    if (arg === '--holdout') { opts.holdout = true; continue; }
 
     const match = arg.match(/^--([a-z-]+)=(.+)$/);
     if (match) {
@@ -69,6 +72,7 @@ function parseArgs() {
         case 'output': opts.output = value; break;
         case 'fee-mode': opts.feeMode = value; break;
         case 'source': opts.source = value.toLowerCase(); break;
+        case 'holdout-ratio': opts.holdoutRatio = parseFloat(value); break;
       }
     }
   }
@@ -153,7 +157,7 @@ Options:
   --spread=<N>        Spread buffer (default: 0.005)
   --fee=<N>           Trading fee (default: 0)
   --fee-mode=<m>      Fee mode: taker, maker, zero (default: taker)
-  --source=<s>        Data source: pg or cache (default: cache, pg on Railway)
+  --source=<s>        Data source: pg, cache, or pg-cache (default: cache, pg on Railway, pg-cache auto-detected)
   --json              Output raw JSON
   --no-baseline       Skip baseline comparison
   --output=<path>     Write results to file
@@ -166,15 +170,38 @@ Options:
     process.exit(1);
   }
 
-  const usePg = opts.source === 'pg';
+  let source = opts.source;
 
   try {
-    if (usePg) {
-      // PG source: init persistence (PostgreSQL)
+    if (source === 'pg' || source === 'pg-cache') {
+      // PG-based sources: init persistence (PostgreSQL)
       const config = (await import('../config/index.js')).default;
       const persistence = (await import('../src/persistence/index.js')).default;
       await persistence.init(config);
-      console.log(`Data source: PostgreSQL (${process.env.RAILWAY_ENVIRONMENT ? 'Railway' : 'remote'})`);
+
+      // Auto-detect pg-cache on Railway: if RAILWAY_ENVIRONMENT is set AND pg_timelines has data
+      if (source === 'pg' && process.env.RAILWAY_ENVIRONMENT) {
+        try {
+          const { getPgCacheSummary, ensurePgTimelineTable } = await import('../src/factory/pg-timeline-store.js');
+          await ensurePgTimelineTable();
+          const summary = await getPgCacheSummary();
+          const totalWindows = summary.reduce((s, r) => s + Number(r.total_windows), 0);
+          if (totalWindows > 0) {
+            source = 'pg-cache';
+            console.log(`Data source: pg-cache (auto-detected, ${totalWindows} cached timelines)`);
+          } else {
+            console.log(`Data source: PostgreSQL (${process.env.RAILWAY_ENVIRONMENT ? 'Railway' : 'remote'})`);
+          }
+        } catch {
+          console.log(`Data source: PostgreSQL (${process.env.RAILWAY_ENVIRONMENT ? 'Railway' : 'remote'})`);
+        }
+      } else if (source === 'pg-cache') {
+        const { ensurePgTimelineTable } = await import('../src/factory/pg-timeline-store.js');
+        await ensurePgTimelineTable();
+        console.log('Data source: pg-cache (pre-computed BYTEA timelines)');
+      } else {
+        console.log(`Data source: PostgreSQL (${process.env.RAILWAY_ENVIRONMENT ? 'Railway' : 'remote'})`);
+      }
     } else {
       // Cache source: init SQLite (read-only)
       getDb({ readonly: true });
@@ -184,7 +211,11 @@ Options:
     const strategy = await loadStrategy(opts.strategy);
     const symbols = opts.symbol.split(',').map(s => s.trim()).filter(Boolean);
 
-    const backtestFn = usePg ? runFactoryBacktestPg : runFactoryBacktest;
+    const backtestFn = source === 'pg-cache'
+      ? runFactoryBacktestPgCache
+      : source === 'pg'
+        ? runFactoryBacktestPg
+        : runFactoryBacktest;
 
     const allResults = [];
 
@@ -203,6 +234,8 @@ Options:
           feeMode: opts.feeMode,
         },
         includeBaseline: opts.baseline,
+        holdout: opts.holdout,
+        holdoutRatio: opts.holdoutRatio,
       });
 
       allResults.push(result);
@@ -231,7 +264,7 @@ Options:
     if (process.env.DEBUG) console.error(err.stack);
     process.exit(1);
   } finally {
-    if (!usePg) {
+    if (source === 'cache') {
       closeDb();
     }
   }

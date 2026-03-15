@@ -569,7 +569,7 @@ export async function loadWindowTickData(options) {
   // window_epoch in clob_price_snapshots is the window CLOSE time epoch
   const windowEpoch = Math.floor(closeMs / 1000);
 
-  const [rtdsTicks, clobSnapshots, exchangeTicks] = await Promise.all([
+  const [rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks] = await Promise.all([
     // Oracle ticks for this window
     persistence.all(`
       SELECT timestamp, topic, symbol, price, received_at
@@ -598,9 +598,17 @@ export async function loadWindowTickData(options) {
         AND symbol = $3
       ORDER BY timestamp ASC
     `, [openDate, closeDate, symbol]),
+
+    // L2 book ticks for this window (depth/liquidity data)
+    persistence.all(`
+      SELECT timestamp, symbol, side, top_levels, bid_depth_1pct, ask_depth_1pct
+      FROM l2_book_ticks
+      WHERE symbol = $1 AND timestamp >= $2 AND timestamp < $3
+      ORDER BY timestamp
+    `, [symbol, openDate, closeDate]).catch(() => []),
   ]);
 
-  return { rtdsTicks, clobSnapshots, exchangeTicks };
+  return { rtdsTicks, clobSnapshots, exchangeTicks, l2BookTicks };
 }
 
 /**

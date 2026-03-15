@@ -865,6 +865,17 @@ async function persistWindowCloseEvent(capture) {
       surprise: consensus.isSurprise,
     });
 
+    // Auto-build PG timeline cache (fire-and-forget, non-blocking)
+    // Uses ON CONFLICT DO NOTHING for race condition safety (adversarial review)
+    if (capture.resolvedDirection) {
+      autoBuildPgTimeline(capture).catch(err => {
+        log.warn('auto_build_pg_timeline_failed', {
+          window_id: capture.windowId,
+          error: err.message,
+        });
+      });
+    }
+
     // NOTE: Don't cleanup here — the on-chain resolution check will cleanup
     // after it completes (or times out). If no conditionId is available,
     // scheduleOnchainResolutionCheck handles cleanup immediately.
@@ -987,6 +998,58 @@ function ensureInitialized() {
       WindowCloseEventRecorderErrorCodes.NOT_INITIALIZED,
       'Window close event recorder not initialized. Call init() first.'
     );
+  }
+}
+
+// ─── Auto-Build PG Timeline Cache ───
+
+/**
+ * Auto-build a timeline for a freshly resolved window and cache it in pg_timelines.
+ * Fire-and-forget: failures are logged but never block window-close-event recording.
+ * Uses ON CONFLICT DO NOTHING for race condition safety.
+ *
+ * @param {Object} capture - Window capture state
+ */
+async function autoBuildPgTimeline(capture) {
+  try {
+    // Lazy imports to avoid circular dependencies and startup overhead
+    const { buildSingleWindowForPgCache } = await import('../../factory/timeline-builder.js');
+    const { insertPgTimelineIfNotExists, ensurePgTimelineTable } = await import('../../factory/pg-timeline-store.js');
+
+    await ensurePgTimelineTable();
+
+    const closeTimeISO = new Date(capture.closeTimeMs).toISOString();
+    const windowEvent = {
+      window_close_time: closeTimeISO,
+      symbol: capture.symbol,
+      strike_price: capture.strikePrice,
+      oracle_price_at_open: capture.oracleOpenPrice,
+      chainlink_price_at_close: capture.feedPricesAtClose?.chainlink,
+      resolved_direction: capture.resolvedDirection,
+      onchain_resolved_direction: capture.onchainResolvedDirection,
+    };
+
+    // Build the timeline using the same code path as build-timelines
+    const { buildSingleWindow, makeWindowId } = await import('../../factory/timeline-builder.js');
+    const row = await buildSingleWindow(capture.symbol, windowEvent);
+
+    if (row && row.event_count > 0) {
+      await insertPgTimelineIfNotExists(row);
+      if (log) {
+        log.info('auto_build_pg_timeline_success', {
+          window_id: row.window_id,
+          event_count: row.event_count,
+        });
+      }
+    }
+  } catch (err) {
+    // Non-blocking — just log and continue
+    if (log) {
+      log.warn('auto_build_pg_timeline_error', {
+        window_id: capture.windowId,
+        error: err.message,
+      });
+    }
   }
 }
 

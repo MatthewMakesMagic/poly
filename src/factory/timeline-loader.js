@@ -10,6 +10,7 @@
 
 import { unpack } from 'msgpackr';
 import { getDb, getWindowsForSymbol as storeGetWindows } from './timeline-store.js';
+import { getPgTimeline, getPgWindowsForSymbol } from './pg-timeline-store.js';
 
 /**
  * Load a single timeline by window ID.
@@ -101,4 +102,63 @@ export function loadTimelines(windowIds) {
   }
 
   return results;
+}
+
+// ─── PG Timeline Cache Read Path ───
+
+/**
+ * Load a single timeline from PG cache by window ID.
+ * Returns the same shape as loadTimeline() for drop-in compatibility.
+ *
+ * @param {string} windowId
+ * @returns {Promise<{ window: Object, timeline: Object[], quality: Object|null, source: string } | null>}
+ */
+export async function loadTimelinePg(windowId) {
+  const row = await getPgTimeline(windowId);
+  if (!row) return null;
+
+  // PG returns timeline as Buffer (BYTEA) — unpack with MessagePack
+  const timeline = unpack(row.timeline);
+  const quality = row.data_quality || null;
+
+  const window = {
+    window_id: row.window_id,
+    symbol: row.symbol,
+    window_close_time: row.window_close_time instanceof Date
+      ? row.window_close_time.toISOString()
+      : row.window_close_time,
+    window_open_time: row.window_open_time instanceof Date
+      ? row.window_open_time.toISOString()
+      : row.window_open_time,
+    ground_truth: row.ground_truth,
+    strike_price: row.strike_price,
+    oracle_price_at_open: row.oracle_price_at_open,
+    chainlink_price_at_close: row.chainlink_price_at_close,
+    event_count: row.event_count,
+    built_at: row.built_at,
+  };
+
+  return { window, timeline, quality, source: 'pg_cache' };
+}
+
+/**
+ * Load window metadata for a symbol from PG cache.
+ * Same interface as loadWindowsForSymbol but reads from pg_timelines.
+ *
+ * @param {string} symbol
+ * @param {Object} [options]
+ * @returns {Promise<Object[]>}
+ */
+export async function loadWindowsForSymbolPg(symbol, options = {}) {
+  const rows = await getPgWindowsForSymbol(symbol, options);
+  // Normalize timestamps to ISO strings
+  return rows.map(r => ({
+    ...r,
+    window_close_time: r.window_close_time instanceof Date
+      ? r.window_close_time.toISOString()
+      : r.window_close_time,
+    window_open_time: r.window_open_time instanceof Date
+      ? r.window_open_time.toISOString()
+      : r.window_open_time,
+  }));
 }

@@ -289,7 +289,7 @@ const config = {
     // Pool configuration
     pool: {
       min: 2,
-      max: 10,
+      max: 20,
       idleTimeoutMs: 30000,
       connectionTimeoutMs: 15000, // Increased for Supabase (Singapore region)
     },
@@ -482,7 +482,7 @@ const config = {
   paperTrader: {
     snapshotIntervalMs: 5000,
     feeRate: 0.02,
-    cryptos: ['btc', 'eth'],
+    cryptos: ['btc', 'eth', 'sol', 'xrp'],
     // Signal evaluation times (seconds before window close)
     signalTimesBeforeCloseSec: [60, 90, 120],
     // Single unfiltered variation for live engine validation

@@ -23,8 +23,10 @@ function pad(str, len, align = 'left') {
 export function renderResultsTable(result) {
   const { strategy, symbol, sampleSize, totalWindows, variants, baseline, wallClockMs, paramImportance } = result;
 
+  const sourceLabel = result.source ? ` | source: ${result.source}` : '';
   console.log('\n' + '='.repeat(100));
-  console.log(`FACTORY BACKTEST: ${strategy} | ${symbol.toUpperCase()} | ${sampleSize}/${totalWindows} windows | ${wallClockMs}ms`);
+  console.log(`FACTORY BACKTEST: ${strategy} | ${symbol.toUpperCase()} | ${sampleSize}/${totalWindows} windows | ${wallClockMs}ms${sourceLabel}`);
+  console.log('NOTE: Sharpe is RAW (unannualized). Use for relative ranking, not absolute benchmarks.');
   console.log('='.repeat(100));
 
   if (variants.length === 0) {
@@ -35,13 +37,13 @@ export function renderResultsTable(result) {
   // Header
   const cols = [
     { label: '#', width: 4, align: 'right' },
-    { label: 'Sharpe', width: 8, align: 'right' },
+    { label: 'Sharpe(raw)', width: 11, align: 'right' },
     { label: 'PF', width: 7, align: 'right' },
     { label: 'WinRate', width: 8, align: 'right' },
     { label: 'Trades', width: 7, align: 'right' },
     { label: 'PnL', width: 10, align: 'right' },
     { label: 'MaxDD', width: 8, align: 'right' },
-    { label: 'Sortino', width: 8, align: 'right' },
+    { label: 'Sortino(raw)', width: 12, align: 'right' },
     { label: 'Edge/Tr', width: 8, align: 'right' },
     { label: 'CI95', width: 16, align: 'right' },
     { label: 'Params', width: 30, align: 'left' },
@@ -61,13 +63,13 @@ export function renderResultsTable(result) {
 
     const row = [
       pad(i + 1, 4, 'right'),
-      pad(round(m.sharpe, 2), 8, 'right'),
+      pad(round(m.sharpe, 2), 11, 'right'),
       pad(round(m.profitFactor, 2), 7, 'right'),
       pad((round(m.winRate * 100, 1) + '%'), 8, 'right'),
       pad(m.trades, 7, 'right'),
       pad('$' + round(m.totalPnl, 2), 10, 'right'),
       pad((round(m.maxDrawdown * 100, 1) + '%'), 8, 'right'),
-      pad(round(m.sortino, 2), 8, 'right'),
+      pad(round(m.sortino, 2), 12, 'right'),
       pad(round(m.edgePerTrade, 4), 8, 'right'),
       pad(`[${round(ci.ci95Lower, 2)}, ${round(ci.ci95Upper, 2)}]`, 16, 'right'),
       pad(paramStr.slice(0, 30), 30, 'left'),
@@ -80,13 +82,13 @@ export function renderResultsTable(result) {
     console.log('-'.repeat(header.length));
     const row = [
       pad('B', 4, 'right'),
-      pad(round(baseline.sharpe, 2), 8, 'right'),
+      pad(round(baseline.sharpe, 2), 11, 'right'),
       pad(round(baseline.profitFactor, 2), 7, 'right'),
       pad((round(baseline.winRate * 100, 1) + '%'), 8, 'right'),
       pad(baseline.trades, 7, 'right'),
       pad('$' + round(baseline.totalPnl, 2), 10, 'right'),
       pad((round(baseline.maxDrawdown * 100, 1) + '%'), 8, 'right'),
-      pad(round(baseline.sortino, 2), 8, 'right'),
+      pad(round(baseline.sortino, 2), 12, 'right'),
       pad(round(baseline.edgePerTrade, 4), 8, 'right'),
       pad('', 16, 'right'),
       pad('baseline-random', 30, 'left'),
@@ -125,7 +127,7 @@ export function renderComparisonTable(results) {
 
   const header = [
     pad('Symbol', 8),
-    pad('Sharpe', 8, 'right'),
+    pad('Sharpe(raw)', 11, 'right'),
     pad('PF', 7, 'right'),
     pad('WinRate', 8, 'right'),
     pad('Trades', 7, 'right'),
@@ -141,7 +143,7 @@ export function renderComparisonTable(results) {
     const m = best.metrics;
     const row = [
       pad(r.symbol.toUpperCase(), 8),
-      pad(round(m.sharpe, 2), 8, 'right'),
+      pad(round(m.sharpe, 2), 11, 'right'),
       pad(round(m.profitFactor, 2), 7, 'right'),
       pad((round(m.winRate * 100, 1) + '%'), 8, 'right'),
       pad(m.trades, 7, 'right'),

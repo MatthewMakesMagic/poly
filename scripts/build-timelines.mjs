@@ -23,6 +23,7 @@ const { values } = parseArgs({
     symbol: { type: 'string', default: '' },
     rebuild: { type: 'boolean', default: false },
     report: { type: 'boolean', default: false },
+    target: { type: 'string', default: process.env.RAILWAY_ENVIRONMENT ? 'pg' : 'sqlite' },
   },
   strict: false,
 });
@@ -52,6 +53,7 @@ async function main() {
     await runBuild({
       symbol: values.symbol,
       rebuild: values.rebuild,
+      target: values.target,
     });
   } catch (err) {
     console.error('\n[build-timelines] Fatal error:', err.message);

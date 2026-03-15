@@ -9,8 +9,11 @@
  * @typedef {Object} PerformanceMetrics
  * @property {number} totalReturn - Total return percentage
  * @property {number} annualizedReturn - Annualized return percentage
- * @property {number} sharpeRatio - Sharpe ratio (annualized)
- * @property {number} sortinoRatio - Sortino ratio (downside risk)
+ * @property {number} sharpeRatio - Raw Sharpe ratio (unannualized mean/stddev, PRIMARY ranking metric)
+ * @property {number} sharpeAnnualized - Annualized Sharpe: raw * sqrt(tradesPerYear)
+ * @property {string} sharpeNote - Explanation of Sharpe fields
+ * @property {number} sortinoRatio - Raw Sortino ratio (unannualized)
+ * @property {number} sortinoAnnualized - Annualized Sortino
  * @property {number} maxDrawdown - Maximum drawdown percentage
  * @property {number} calmarRatio - Calmar ratio (return/max drawdown)
  * @property {number} winRate - Win rate percentage
@@ -22,14 +25,20 @@
  */
 
 /**
- * Calculate annualized Sharpe ratio
+ * Calculate Sharpe ratio.
+ *
+ * When periodsPerYear = 1 (default), returns the RAW (unannualized) Sharpe:
+ *   mean(excess returns) / stddev(returns)
+ *
+ * For annualized Sharpe, pass the correct observation frequency
+ * (e.g., 35040 for 15-min windows in 24/7 crypto, 252 for daily equity).
  *
  * @param {number[]} returns - Array of periodic returns
  * @param {number} [riskFreeRate=0] - Risk-free rate (annualized)
- * @param {number} [periodsPerYear=252] - Trading periods per year
+ * @param {number} [periodsPerYear=1] - Trading periods per year (1 = raw/unannualized)
  * @returns {number} Sharpe ratio
  */
-export function calculateSharpeRatio(returns, riskFreeRate = 0, periodsPerYear = 252) {
+export function calculateSharpeRatio(returns, riskFreeRate = 0, periodsPerYear = 1) {
   if (!returns || returns.length < 2) {
     return 0;
   }
@@ -47,14 +56,16 @@ export function calculateSharpeRatio(returns, riskFreeRate = 0, periodsPerYear =
 }
 
 /**
- * Calculate Sortino ratio (uses only downside deviation)
+ * Calculate Sortino ratio (uses only downside deviation).
+ *
+ * When periodsPerYear = 1 (default), returns the RAW (unannualized) Sortino.
  *
  * @param {number[]} returns - Array of periodic returns
  * @param {number} [targetReturn=0] - Target return (MAR)
- * @param {number} [periodsPerYear=252] - Trading periods per year
+ * @param {number} [periodsPerYear=1] - Trading periods per year (1 = raw/unannualized)
  * @returns {number} Sortino ratio
  */
-export function calculateSortinoRatio(returns, targetReturn = 0, periodsPerYear = 252) {
+export function calculateSortinoRatio(returns, targetReturn = 0, periodsPerYear = 1) {
   if (!returns || returns.length < 2) {
     return 0;
   }
@@ -247,9 +258,15 @@ export function calculateMetrics(backtest) {
   // Calculate drawdown
   const drawdownResult = calculateMaxDrawdown(equityCurve);
 
-  // Sharpe and Sortino (using trade-level returns)
-  const sharpeRatio = calculateSharpeRatio(returns);
-  const sortinoRatio = calculateSortinoRatio(returns);
+  // Raw Sharpe and Sortino (unannualized — primary ranking metric)
+  const sharpeRatio = calculateSharpeRatio(returns);        // periodsPerYear=1 by default
+  const sortinoRatio = calculateSortinoRatio(returns);      // periodsPerYear=1 by default
+
+  // Annualized Sharpe: estimate tradesPerYear from actual observation frequency
+  // tradesPerYear = observations / yearsInPeriod
+  const tradesPerYear = returns.length / yearsInPeriod;
+  const sharpeAnnualized = sharpeRatio * Math.sqrt(tradesPerYear);
+  const sortinoAnnualized = sortinoRatio * Math.sqrt(tradesPerYear);
 
   // Calmar ratio
   const calmarRatio = drawdownResult.maxDrawdownPct > 0
@@ -272,7 +289,10 @@ export function calculateMetrics(backtest) {
     totalReturn,
     annualizedReturn,
     sharpeRatio,
+    sharpeAnnualized,
+    sharpeNote: 'sharpeRatio is raw (unannualized mean/stddev). sharpeAnnualized = raw * sqrt(tradesPerYear).',
     sortinoRatio,
+    sortinoAnnualized,
     maxDrawdown: drawdownResult.maxDrawdownPct,
     calmarRatio,
     winRate,

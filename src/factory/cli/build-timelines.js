@@ -24,17 +24,19 @@ import { getDb, closeDb, getCacheSummary, getWindowsForSymbol } from '../timelin
  * @returns {Promise<Object>} Build report
  */
 export async function runBuild(options) {
-  const { symbol, rebuild = false } = options;
+  const { symbol, rebuild = false, target = 'sqlite' } = options;
 
   console.log(`\n=== Timeline Builder ===`);
   console.log(`Symbol: ${symbol}`);
   console.log(`Mode: ${rebuild ? 'REBUILD (full)' : 'incremental'}`);
+  console.log(`Target: ${target}`);
   console.log('');
 
   const report = await buildTimelines({
     symbol,
     rebuild,
     incremental: !rebuild,
+    target,
     onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
       if (processed % 100 === 0 || processed === total) {
         process.stdout.write(
