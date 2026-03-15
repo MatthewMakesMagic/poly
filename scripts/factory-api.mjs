@@ -709,9 +709,15 @@ async function handleAnalyze(req, res) {
     // Step 2: Sample windows
     const sampled = sampleWindows(normalized, { count: sample, seed });
 
-    // Step 3: Batch-load timelines for sampled windows
+    // Step 3: Batch-load timelines in chunks to avoid PG statement timeout
     const windowIds = sampled.map(w => w.window_id);
-    const timelinesMap = await readPgTimelines(windowIds);
+    const CHUNK_SIZE = 25; // ~25 windows at a time to stay under timeout
+    const timelinesMap = new Map();
+    for (let i = 0; i < windowIds.length; i += CHUNK_SIZE) {
+      const chunk = windowIds.slice(i, i + CHUNK_SIZE);
+      const chunkMap = await readPgTimelines(chunk);
+      for (const [k, v] of chunkMap) timelinesMap.set(k, v);
+    }
 
     // Step 4: Assemble windows with their timelines
     const windowsWithTimelines = [];

@@ -57,7 +57,7 @@ export function analyze(windows, options = {}) {
     const clPriceAtClose = clAtClose.price;
     const clPriceAtT60 = clAtT60 ? clAtT60.price : clPriceAtClose;
     const strikePrice = meta.strike_price;
-    const resolution = meta.ground_truth; // 'UP' or 'DOWN'
+    const resolution = (meta.ground_truth || '').toUpperCase(); // normalize to 'UP' or 'DOWN'
 
     // CL deficit: how far below strike (negative = below = DOWN likely)
     const clDeficit = clPriceAtClose - strikePrice;
