@@ -212,11 +212,16 @@ async function loadWindowTickData(symbol, openTime, closeTime) {
     `, [openTime, closeTime, `${symbol.toLowerCase()}%`]).catch(() => []),
 
     persistence.all(`
-      SELECT timestamp, symbol, price
-      FROM coingecko_ticks
+      SELECT DISTINCT ON (date_trunc('minute', timestamp) +
+             (EXTRACT(second FROM timestamp)::int / 10 * 10) * interval '1 second')
+        timestamp, symbol, coingecko_price as price
+      FROM vwap_snapshots
       WHERE timestamp >= $1 AND timestamp <= $2
         AND symbol = $3
-      ORDER BY timestamp ASC
+        AND coingecko_price IS NOT NULL
+      ORDER BY date_trunc('minute', timestamp) +
+               (EXTRACT(second FROM timestamp)::int / 10 * 10) * interval '1 second',
+               timestamp ASC
     `, [openTime, closeTime, symbol.toLowerCase()]).catch(() => []),
   ]);
 
