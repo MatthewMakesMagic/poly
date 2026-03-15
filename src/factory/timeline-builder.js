@@ -25,6 +25,7 @@ import {
   insertPgTimelines,
   insertPgTimelineIfNotExists,
   getLatestPgWindowTime,
+  getExistingPgWindowIds,
   ensurePgTimelineTable,
 } from './pg-timeline-store.js';
 import { validateWindow } from './timeline-validator.js';
@@ -98,36 +99,37 @@ async function buildSymbolTimelines({ symbol, rebuild, incremental, onProgress, 
     await ensurePgTimelineTable();
   }
 
-  // Get windows from PostgreSQL
+  // Get ALL windows from PostgreSQL (with optional startDate filter)
   let afterTime = null;
-  if (incremental && !rebuild) {
-    if (usePg) {
-      afterTime = await getLatestPgWindowTime(symbol);
-    } else {
-      afterTime = getLatestWindowTime(symbol);
-    }
-    if (afterTime) {
-      console.log(`[timeline-builder] Incremental: building windows after ${afterTime} for ${symbol}`);
-    }
-  }
-
-  // If startDate is provided, use it as a floor for afterTime
   if (startDate) {
-    const startDateIso = new Date(startDate).toISOString();
-    if (!afterTime || startDateIso > afterTime) {
-      afterTime = startDateIso;
-    }
-    console.log(`[timeline-builder] startDate filter: loading windows after ${afterTime} for ${symbol}`);
+    afterTime = new Date(startDate).toISOString();
+    console.log(`[timeline-builder] Loading windows after ${afterTime} for ${symbol}`);
   }
 
   const windows = await loadWindowsFromPg(symbol, afterTime);
 
-  // Filter out windows already in cache (for safety)
-  const existingIds = (rebuild || !useSqlite) ? new Set() : getExistingWindowIds(symbol);
+  // Get existing cached window IDs to find gaps
+  let existingIds;
+  if (rebuild) {
+    existingIds = new Set();
+    console.log(`[timeline-builder] Rebuild mode: will overwrite all windows for ${symbol}`);
+  } else if (usePg) {
+    existingIds = await getExistingPgWindowIds(symbol);
+    console.log(`[timeline-builder] Found ${existingIds.size} cached windows for ${symbol}, checking for gaps`);
+  } else if (useSqlite) {
+    existingIds = getExistingWindowIds(symbol);
+    console.log(`[timeline-builder] Found ${existingIds.size} cached windows for ${symbol}`);
+  } else {
+    existingIds = new Set();
+  }
+
+  // Filter to only uncached windows (gap-filling)
   const newWindows = windows.filter(w => {
     const windowId = makeWindowId(symbol, w.window_close_time);
     return !existingIds.has(windowId);
   });
+
+  console.log(`[timeline-builder] ${symbol}: ${windows.length} total windows, ${existingIds.size} cached, ${newWindows.length} to build`);
 
   const report = {
     symbol,

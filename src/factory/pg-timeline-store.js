@@ -174,6 +174,18 @@ export async function getPgWindowsForSymbol(symbol, options = {}) {
  * @param {string} symbol
  * @returns {Promise<string|null>}
  */
+/**
+ * Get all cached window IDs for a symbol.
+ * Used to find gaps — compare against window_close_events to find missing windows.
+ */
+export async function getExistingPgWindowIds(symbol) {
+  const rows = await persistence.all(`
+    SELECT window_id FROM pg_timelines
+    WHERE symbol = $1 AND schema_version = $2
+  `, [symbol, CURRENT_SCHEMA_VERSION]);
+  return new Set(rows.map(r => r.window_id));
+}
+
 export async function getLatestPgWindowTime(symbol) {
   const row = await persistence.get(`
     SELECT MAX(window_close_time) as latest
