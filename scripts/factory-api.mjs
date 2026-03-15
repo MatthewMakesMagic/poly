@@ -699,53 +699,39 @@ async function handleBackfill(req, res) {
     const body = await readRequestBody(req);
     const symbol = (body.symbol || 'btc').toLowerCase();
     const startDate = body.startDate || body.since || '2026-02-10';
-    const rebuild = !!body.rebuild;
 
     await ensurePgTimelineTable();
-
-    // Get cache state before
     const before = await getPgCacheSummary();
 
-    // Stream progress — send initial response then update
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' });
-    res.write(JSON.stringify({ status: 'started', symbol, startDate, rebuild }) + '\n');
+    // Fire-and-forget: start backfill in background, respond immediately
+    json(res, 200, {
+      ok: true,
+      status: 'started',
+      symbol,
+      startDate,
+      message: 'Backfill running in background. Check GET /api/factory/cache-status for progress.',
+      cacheBefore: before.find(r => r.symbol === symbol) || { total_windows: 0 },
+    });
 
-    const report = await buildTimelines({
+    // Run in background — don't await in the request handler
+    buildTimelines({
       symbol,
       rebuild: true,
       incremental: false,
       startDate,
       target: 'pg',
       onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
-        if (processed % 50 === 0 || processed === total) {
-          try {
-            res.write(JSON.stringify({ status: 'progress', symbol: sym, processed, total, inserted, skipped }) + '\n');
-          } catch { /* connection may close */ }
+        if (processed % 100 === 0 || processed === total) {
+          console.log(`[backfill] ${sym}: ${processed}/${total} (${inserted} inserted, ${skipped} skipped)`);
         }
       },
+    }).then(report => {
+      const inserted = report.symbols ? Object.values(report.symbols).reduce((s, r) => s + r.inserted, 0) : report.inserted;
+      console.log(`[backfill] Complete: ${symbol} — ${inserted} windows cached`);
+    }).catch(err => {
+      console.error(`[backfill] Error: ${err.message}`);
     });
 
-    // Get cache state after
-    const after = await getPgCacheSummary();
-
-    const result = {
-      status: 'complete',
-      symbol,
-      before: before.find(r => r.symbol === symbol) || { total_windows: 0 },
-      after: after.find(r => r.symbol === symbol) || { total_windows: 0 },
-    };
-
-    if (report.symbols) {
-      result.details = {};
-      for (const [sym, r] of Object.entries(report.symbols)) {
-        result.details[sym] = { inserted: r.inserted, skipped: r.skippedNoGroundTruth + r.skippedNoEvents, errors: r.errors.length, elapsedMs: r.elapsedMs };
-      }
-    } else {
-      result.details = { [symbol]: { inserted: report.inserted, skipped: (report.skippedNoGroundTruth || 0) + (report.skippedNoEvents || 0), errors: (report.errors || []).length, elapsedMs: report.elapsedMs } };
-    }
-
-    res.write(JSON.stringify(result) + '\n');
-    res.end();
   } catch (err) {
     try {
       json(res, 500, { ok: false, error: err.message });
