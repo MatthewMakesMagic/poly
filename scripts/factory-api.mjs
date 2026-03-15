@@ -709,6 +709,7 @@ async function handleBackfill(req, res) {
       status: 'started',
       symbol,
       startDate,
+      rebuild,
       message: 'Backfill running in background. Check GET /api/factory/cache-status for progress.',
       cacheBefore: before.find(r => r.symbol === symbol) || { total_windows: 0 },
     });
@@ -716,9 +717,9 @@ async function handleBackfill(req, res) {
     // Run in background — don't await in the request handler
     buildTimelines({
       symbol,
-      rebuild: true,
-      incremental: false,
-      startDate,
+      rebuild,
+      incremental: !rebuild,
+      startDate: rebuild ? startDate : undefined,
       target: 'pg',
       onProgress: ({ symbol: sym, processed, total, inserted, skipped }) => {
         if (processed % 100 === 0 || processed === total) {
