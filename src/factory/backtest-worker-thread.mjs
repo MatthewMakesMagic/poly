@@ -36,14 +36,17 @@ let backtestConfig = null;
  */
 async function initStrategy(strategyName, config) {
   // Initialize persistence in the worker thread — each worker needs its own PG connection.
-  // The main thread's persistence.init() does NOT carry over to worker threads.
+  // The main thread's persistence.init() does NOT carry over to worker threads
+  // (worker_threads have isolated module state).
+  // Use initConnectionOnly() to skip schema/migration checks — workers only need read access.
   const persistence = (await import('../persistence/index.js')).default;
   if (!persistence.getState().initialized) {
-    await persistence.init({
+    await persistence.initConnectionOnly({
       database: {
         url: process.env.DATABASE_URL,
-        pool: { min: 1, max: 2 },
-        circuitBreakerPool: { min: 1, max: 1 },
+        pool: { min: 1, max: 2, connectionTimeoutMs: 30000 },
+        circuitBreakerPool: { min: 1, max: 1, connectionTimeoutMs: 30000 },
+        queryTimeoutMs: 30000,
       },
     });
   }
@@ -211,6 +214,15 @@ parentPort.on('message', async (msg) => {
     }
 
     case 'shutdown': {
+      // Gracefully close PG connection pool before exiting
+      try {
+        const persistence = (await import('../persistence/index.js')).default;
+        if (persistence.getState().initialized) {
+          await persistence.shutdown();
+        }
+      } catch {
+        // Best-effort cleanup — don't block exit
+      }
       process.exit(0);
     }
 

@@ -89,6 +89,32 @@ async function init(config) {
 }
 
 /**
+ * Initialize only the database connection (no schema/migrations).
+ * Use this in worker threads that only need read access to existing tables.
+ * Avoids the overhead of schema checks and 46+ migration lookups per worker.
+ *
+ * @param {Object} config - Same as init()
+ * @returns {Promise<void>}
+ */
+async function initConnectionOnly(config) {
+  if (initialized) {
+    return;
+  }
+
+  const dbConfig = config?.database;
+  if (!dbConfig?.url) {
+    throw new PersistenceError(
+      ErrorCodes.DB_CONNECTION_FAILED,
+      'DATABASE_URL not configured.',
+      {}
+    );
+  }
+
+  await database.open(dbConfig);
+  initialized = true;
+}
+
+/**
  * Get current module state
  *
  * @returns {{ initialized: boolean, connected: boolean, poolConfig: Object|null }}
@@ -251,6 +277,7 @@ async function cbQuery(sql, params = []) {
 // Export as default module with standard interface
 export default {
   init,
+  initConnectionOnly,
   getState,
   shutdown,
   run,
@@ -263,4 +290,4 @@ export default {
 };
 
 // Also export individual functions for convenience
-export { init, getState, shutdown, run, runReturningId, get, all, exec, transaction, cbQuery };
+export { init, initConnectionOnly, getState, shutdown, run, runReturningId, get, all, exec, transaction, cbQuery };
