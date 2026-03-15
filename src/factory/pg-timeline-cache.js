@@ -74,7 +74,7 @@ export async function readPgTimelines(windowIds) {
   if (windowIds.length === 0) return new Map();
 
   const rows = await persistence.all(
-    `SELECT * FROM pg_timelines WHERE window_id = ANY($1) AND schema_version = 1`,
+    `SELECT * FROM pg_timelines WHERE window_id = ANY($1) AND schema_version = 2`,
     [windowIds]
   );
 
