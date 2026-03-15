@@ -711,7 +711,7 @@ async function handleAnalyze(req, res) {
 
     // Step 3: Batch-load timelines in chunks to avoid PG statement timeout
     const windowIds = sampled.map(w => w.window_id);
-    const CHUNK_SIZE = 25; // ~25 windows at a time to stay under timeout
+    const CHUNK_SIZE = 10; // ~10 windows at a time to stay under PG statement timeout
     const timelinesMap = new Map();
     for (let i = 0; i < windowIds.length; i += CHUNK_SIZE) {
       const chunk = windowIds.slice(i, i + CHUNK_SIZE);
