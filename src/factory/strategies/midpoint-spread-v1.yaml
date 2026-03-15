@@ -1,0 +1,29 @@
+name: midpoint-spread-v1
+description: "Pure midpoint market making near p=0.50. Buys both UP and DOWN tokens when prices are near 0.50, capturing spread. Revenue from spread capture + maker rebates. Zero unmatched exposure at resolution."
+version: 1
+hypothesis: "Near p=0.50 (both tokens ~$0.50), spread capture is maximized because both sides are cheap. Buying both UP and DOWN at ~0.50 guarantees $1 payout minus cost, and if bought below 0.50, the spread is profit."
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: 0.02
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.55
+      side: up
+  - type: min-data
+    params:
+      minTicks: 30
+  - type: cooldown
+    params:
+      cooldownMs: 5000
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: { sweep: [2, 3, 5] }

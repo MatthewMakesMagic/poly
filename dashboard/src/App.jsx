@@ -8,6 +8,8 @@ import TradeHistory from './views/TradeHistory.jsx';
 
 const StrategyLab = lazy(() => import('./views/StrategyLab.jsx'));
 const BacktestReview = lazy(() => import('./views/BacktestReview.jsx'));
+const FactoryDashboard = lazy(() => import('./views/FactoryDashboard.jsx'));
+const DataCoverage = lazy(() => import('./views/DataCoverage.jsx'));
 
 const VIEWS = [
   { key: 'command', label: 'Command Center', icon: '\u25C9' },
@@ -16,6 +18,8 @@ const VIEWS = [
   { key: 'trades', label: 'History', icon: '\u2630' },
   { key: 'lab', label: 'Strategy Lab', icon: '\u2B21' },
   { key: 'backtest', label: 'Backtest', icon: '\u29D6' },
+  { key: 'factory', label: 'Factory', icon: '\u2699' },
+  { key: 'coverage', label: 'Coverage', icon: '\u25A6' },
 ];
 
 export default function App() {
@@ -67,6 +71,16 @@ export default function App() {
         {activeView === 'backtest' && (
           <Suspense fallback={<div className="glass p-12 text-center"><p className="text-xs text-white/30 animate-pulse">Loading Backtest Review...</p></div>}>
             <BacktestReview />
+          </Suspense>
+        )}
+        {activeView === 'factory' && (
+          <Suspense fallback={<div className="glass p-12 text-center"><p className="text-xs text-white/30 animate-pulse">Loading Factory Dashboard...</p></div>}>
+            <FactoryDashboard />
+          </Suspense>
+        )}
+        {activeView === 'coverage' && (
+          <Suspense fallback={<div className="glass p-12 text-center"><p className="text-xs text-white/30 animate-pulse">Loading Data Coverage...</p></div>}>
+            <DataCoverage />
           </Suspense>
         )}
       </main>

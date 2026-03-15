@@ -20,6 +20,8 @@ import { createSimulator } from './simulator.js';
 import { BacktestOrderBook } from './orderbook.js';
 import { loadWindowTickData } from './data-loader.js';
 import { child } from '../modules/logger/index.js';
+import { simulateMarketFill } from '../factory/fill-simulator.js';
+import { FeeMode, calculateTakerFee } from '../factory/fee-model.js';
 
 const log = child({ module: 'backtest:parallel-engine' });
 
@@ -166,8 +168,9 @@ function buildWindowTimeline(windowData) {
  * @param {Object} params.strategyConfig - Strategy parameters
  * @param {number} params.initialCapital - Starting capital
  * @param {number} params.spreadBuffer - Spread buffer for execution
- * @param {number} params.tradingFee - Fee per trade
+ * @param {number} params.tradingFee - Fee per trade (legacy, use feeMode instead)
  * @param {number} params.windowDurationMs - Window duration in ms
+ * @param {string} [params.feeMode] - Fee mode: 'taker' (default), 'maker', 'zero'
  * @returns {Object} Window result
  */
 export function evaluateWindow({
@@ -179,9 +182,15 @@ export function evaluateWindow({
   spreadBuffer = 0.005,
   tradingFee = 0,
   windowDurationMs = 5 * 60 * 1000,
+  feeMode,
 }) {
+  // Resolve fee mode: explicit feeMode param takes priority, then tradingFee for backward compat
+  const effectiveFeeMode = feeMode || (tradingFee > 0 ? null : FeeMode.TAKER_ONLY);
   const state = createMarketState();
-  const simulator = createSimulator({ initialCapital, spreadBuffer, tradingFee });
+  // When using the new fee model, set tradingFee=0 on the simulator (fees applied at fill time)
+  const simTradingFee = effectiveFeeMode ? 0 : tradingFee;
+  const simulator = createSimulator({ initialCapital, spreadBuffer, tradingFee: simTradingFee });
+  const fillResults = []; // track all fill simulation results for quality metrics
 
   // Create orderbook only if strategy uses passive orders
   const usePassive = strategy.usesPassiveOrders === true;
@@ -285,33 +294,85 @@ export function evaluateWindow({
           }
         }
 
-        // Handle aggressive buy/sell signals (existing behavior)
+        // Handle aggressive buy/sell signals
         if (!signal.token) continue;
 
-        const execResult = simulator.execute(signal, state, strategyConfig);
+        if (effectiveFeeMode && signal.action === 'buy') {
+          // L2 book-walking fill path with fee model
+          const isDown = signal.token.toLowerCase().includes('down');
+          const clobData = isDown ? state.clobDown : state.clobUp;
 
-        if (execResult.filled) {
-          const fillInfo = {
-            token: signal.token,
-            price: execResult.fillPrice,
-            size: execResult.fillSize,
-            timestamp: event.timestamp,
-            reason: signal.reason || '',
-          };
-          if (signal.action === 'buy') {
+          if (!clobData || !clobData.bestAsk) continue;
+
+          const dollars = signal.capitalPerTrade || (signal.size ? signal.size * (clobData.bestAsk + spreadBuffer) : 2);
+          const fillResult = simulateMarketFill(clobData, dollars, {
+            feeMode: effectiveFeeMode,
+            spreadBuffer,
+          });
+
+          fillResults.push(fillResult);
+
+          if (fillResult.success) {
+            const cost = fillResult.netCost;
+            if (cost > simulator.capital) continue; // insufficient capital
+
+            // Adjust fill price to include fee in cost basis.
+            // This ensures PnL = payout - (price * size) correctly reflects fees.
+            // effectivePrice = netCost / totalShares
+            const effectivePrice = fillResult.netCost / fillResult.totalShares;
+            const fillInfo = {
+              token: signal.token,
+              price: effectivePrice,
+              size: fillResult.totalShares,
+              timestamp: event.timestamp,
+              reason: signal.reason || '',
+            };
             simulator.buyToken(fillInfo);
             if (strategy.onAggressiveFill) {
-              strategy.onAggressiveFill(fillInfo, state);
+              strategy.onAggressiveFill({ ...fillInfo, fillResult }, state);
             }
-          } else if (signal.action === 'sell') {
-            const soldPos = simulator.sellToken({
+          }
+        } else {
+          // Legacy execution path (no feeMode) or sell signals
+          const execResult = simulator.execute(signal, state, strategyConfig);
+
+          if (execResult.filled) {
+            const fillInfo = {
               token: signal.token,
               price: execResult.fillPrice,
+              size: execResult.fillSize,
               timestamp: event.timestamp,
-              reason: signal.reason || 'strategy_sell',
-            });
-            if (soldPos && strategy.onSell) {
-              strategy.onSell({ token: signal.token, price: execResult.fillPrice, size: soldPos.size, timestamp: event.timestamp, reason: signal.reason }, state);
+              reason: signal.reason || '',
+            };
+            if (signal.action === 'buy') {
+              // Adjust fill price to include taker fee in cost basis
+              let adjustedPrice = execResult.fillPrice;
+              if (effectiveFeeMode && effectiveFeeMode !== FeeMode.ZERO) {
+                const fee = calculateTakerFee(execResult.fillPrice, execResult.fillSize);
+                // effectivePrice = (fillPrice * fillSize + feeDollars) / fillSize
+                adjustedPrice = execResult.fillPrice + fee.feeDollars / execResult.fillSize;
+              }
+              fillInfo.price = adjustedPrice;
+              simulator.buyToken(fillInfo);
+              if (strategy.onAggressiveFill) {
+                strategy.onAggressiveFill(fillInfo, state);
+              }
+            } else if (signal.action === 'sell') {
+              // Adjust sell price to reflect taker fee (lower effective sell price)
+              let adjustedSellPrice = execResult.fillPrice;
+              if (effectiveFeeMode && effectiveFeeMode !== FeeMode.ZERO) {
+                const fee = calculateTakerFee(execResult.fillPrice, signal.size || 1);
+                adjustedSellPrice = execResult.fillPrice - fee.feeDollars / (signal.size || 1);
+              }
+              const soldPos = simulator.sellToken({
+                token: signal.token,
+                price: adjustedSellPrice,
+                timestamp: event.timestamp,
+                reason: signal.reason || 'strategy_sell',
+              });
+              if (soldPos && strategy.onSell) {
+                strategy.onSell({ token: signal.token, price: adjustedSellPrice, size: soldPos.size, timestamp: event.timestamp, reason: signal.reason }, state);
+              }
             }
           }
         }
@@ -363,6 +424,8 @@ export function evaluateWindow({
     capitalAfter: stats.finalCapital,
     winRate: stats.winRate,
     equityCurve: simulator.getEquityCurve(),
+    fillResults,
+    feeMode: effectiveFeeMode,
   };
 }
 

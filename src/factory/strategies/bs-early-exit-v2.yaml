@@ -1,0 +1,29 @@
+name: bs-early-exit-v2
+description: "BS fair value with lower edge threshold and time-gated entry. Tests whether looser entry criteria with time gating improves results by being more selective about when to enter."
+version: 1
+hypothesis: "Lower BS edge threshold (3c-8c) captures more opportunities, but time-window filter limits entry to final 3 min where signal should be more reliable."
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: { sweep: [0.03, 0.05, 0.08] }
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.65
+  - type: time-window
+    params:
+      entryWindowMs: 180000
+  - type: min-data
+    params:
+      minTicks: 50
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 3

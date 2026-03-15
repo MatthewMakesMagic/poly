@@ -1,0 +1,112 @@
+[
+  {
+    "run_id": 1,
+    "manifest_name": "sweep-deficit-asymmetry",
+    "status": "completed",
+    "started_at": "2026-03-10T08:00:00.000Z",
+    "completed_at": "2026-03-10T08:45:22.000Z",
+    "wall_clock_ms": 2722000,
+    "total_runs": 24,
+    "completed_runs": 24,
+    "summary": {
+      "bestSharpe": 1.82,
+      "bestStrategy": "deficit-asymmetry-v1",
+      "bestSymbol": "btc",
+      "totalTrades": 1842,
+      "ranking": [
+        { "strategy": "deficit-asymmetry-v1", "symbol": "btc", "sharpe": 1.82 },
+        { "strategy": "deficit-asymmetry-v1", "symbol": "eth", "sharpe": 1.45 },
+        { "strategy": "deficit-asymmetry-v2", "symbol": "btc", "sharpe": 1.31 }
+      ]
+    },
+    "error_message": null
+  },
+  {
+    "run_id": 2,
+    "manifest_name": "sweep-momentum-reversion",
+    "status": "completed",
+    "started_at": "2026-03-11T14:00:00.000Z",
+    "completed_at": "2026-03-11T14:32:10.000Z",
+    "wall_clock_ms": 1930000,
+    "total_runs": 16,
+    "completed_runs": 16,
+    "summary": {
+      "bestSharpe": 1.55,
+      "bestStrategy": "momentum-reversion-v1",
+      "bestSymbol": "eth",
+      "totalTrades": 1204,
+      "ranking": [
+        { "strategy": "momentum-reversion-v1", "symbol": "eth", "sharpe": 1.55 },
+        { "strategy": "momentum-reversion-v1", "symbol": "btc", "sharpe": 1.22 }
+      ]
+    },
+    "error_message": null
+  },
+  {
+    "run_id": 3,
+    "manifest_name": "sweep-vwap-contrarian-v3",
+    "status": "running",
+    "started_at": "2026-03-14T10:00:00.000Z",
+    "completed_at": null,
+    "wall_clock_ms": null,
+    "total_runs": 32,
+    "completed_runs": 18,
+    "summary": null,
+    "error_message": null
+  },
+  {
+    "run_id": 4,
+    "manifest_name": "sweep-spread-capture",
+    "status": "failed",
+    "started_at": "2026-03-09T16:00:00.000Z",
+    "completed_at": "2026-03-09T16:02:45.000Z",
+    "wall_clock_ms": 165000,
+    "total_runs": 8,
+    "completed_runs": 2,
+    "summary": null,
+    "error_message": "Timeline cache missing for SOL — no cached windows found in date range 2026-02-01 to 2026-03-01"
+  },
+  {
+    "run_id": 5,
+    "manifest_name": "sweep-oracle-edge-variants",
+    "status": "completed",
+    "started_at": "2026-03-08T09:00:00.000Z",
+    "completed_at": "2026-03-08T10:15:33.000Z",
+    "wall_clock_ms": 4533000,
+    "total_runs": 48,
+    "completed_runs": 48,
+    "summary": {
+      "bestSharpe": 2.10,
+      "bestStrategy": "oracle-edge-adaptive-v2",
+      "bestSymbol": "btc",
+      "totalTrades": 3680,
+      "ranking": [
+        { "strategy": "oracle-edge-adaptive-v2", "symbol": "btc", "sharpe": 2.10 },
+        { "strategy": "oracle-edge-adaptive-v1", "symbol": "btc", "sharpe": 1.78 },
+        { "strategy": "oracle-edge-adaptive-v2", "symbol": "eth", "sharpe": 1.65 }
+      ]
+    },
+    "error_message": null
+  },
+  {
+    "run_id": 6,
+    "manifest_name": "crossover-gen2-batch",
+    "status": "completed",
+    "started_at": "2026-03-12T20:00:00.000Z",
+    "completed_at": "2026-03-12T21:05:18.000Z",
+    "wall_clock_ms": 3918000,
+    "total_runs": 36,
+    "completed_runs": 36,
+    "summary": {
+      "bestSharpe": 1.95,
+      "bestStrategy": "deficit-momentum-crossover-v1",
+      "bestSymbol": "btc",
+      "totalTrades": 2910,
+      "ranking": [
+        { "strategy": "deficit-momentum-crossover-v1", "symbol": "btc", "sharpe": 1.95 },
+        { "strategy": "deficit-momentum-crossover-v1", "symbol": "eth", "sharpe": 1.62 }
+      ]
+    },
+    "error_message": null
+  }
+]

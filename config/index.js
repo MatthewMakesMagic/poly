@@ -528,6 +528,15 @@ const config = {
     ],
   },
 
+  // Strategy Factory configuration (Story 2.7)
+  factory: {
+    strategiesDir: './src/factory/strategies/',
+    blocksDir: './src/factory/',
+    defaultSampleSize: 200,
+    maxSweepCombinations: 500,
+    defaultSeed: 42,
+  },
+
   // Backtest configuration
   backtest: {
     tickBatchSize: 10000,

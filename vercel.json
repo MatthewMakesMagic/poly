@@ -3,6 +3,8 @@
   "buildCommand": "echo 'No build needed'",
   "outputDirectory": "src/dashboard/public",
   "rewrites": [
+    { "source": "/api/factory/:path*", "destination": "https://poly-api.up.railway.app/api/factory/:path*" },
+    { "source": "/api/:path*", "destination": "https://poly-api.up.railway.app/api/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

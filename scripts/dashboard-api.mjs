@@ -15,6 +15,7 @@ import * as orchestrator from '../src/modules/orchestrator/index.js';
 import persistence from '../src/persistence/index.js';
 import * as runtimeControls from '../src/modules/runtime-controls/index.js';
 import * as circuitBreaker from '../src/modules/circuit-breaker/index.js';
+import { handleFactoryRequest } from './factory-api.mjs';
 
 let wss = null;
 let log = null;
@@ -274,6 +275,11 @@ export async function handleDashboardRequest(req, res) {
     res.writeHead(204);
     res.end();
     return true;
+  }
+
+  // Delegate /api/factory/* to factory API module
+  if (req.url?.startsWith('/api/factory')) {
+    return await handleFactoryRequest(req, res);
   }
 
   const url = req.url?.split('?')[0];

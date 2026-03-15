@@ -1,0 +1,29 @@
+name: deficit-momentum-v1
+description: "Combines chainlink deficit with momentum signal. When CL deficit confirms a structural DOWN bias AND price momentum is also moving DOWN, the signal is doubly confirmed. Two independent signals agreeing reduces false positives."
+version: 1
+hypothesis: "Chainlink deficit shows structural bias. Momentum confirms the market is moving in the same direction. Requiring both reduces false signals from temporary CL glitches or transient momentum."
+
+signals:
+  - type: chainlink-deficit
+    params:
+      threshold: { sweep: [50, 80, 120] }
+  - type: momentum
+    params:
+      threshold: { sweep: [15, 25, 40] }
+
+combine: all-of
+
+filters:
+  - type: time-window
+    params:
+      entryWindowMs: { sweep: [120000, 300000] }
+  - type: max-price
+    params:
+      maxPrice: 0.65
+      side: down
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 3

@@ -1,0 +1,33 @@
+name: consensus-reversion-v1
+description: "Combines exchange consensus for directional conviction with mean-reversion timing. When exchanges agree on direction (consensus) but the market has recently overshot (mean-reversion), enter the consensus direction at a discount. The mean-reversion component acts as a timing mechanism."
+version: 1
+hypothesis: "Exchange consensus identifies the correct direction. Mean-reversion identifies when the market has temporarily overshot, providing a better entry point. The combination should yield higher win rate than consensus alone."
+
+signals:
+  - type: exchange-consensus
+    params:
+      threshold: { sweep: [30, 50, 80] }
+      minExchanges: 2
+  - type: mean-reversion
+    params:
+      lookback: 20
+      deviationThreshold: { sweep: [20, 30, 50] }
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.60
+  - type: min-data
+    params:
+      minTicks: 40
+  - type: once-per-window
+
+sizer:
+  type: volatility-scaled
+  params:
+    baseCapital: 3
+    maxCapital: 8
+    minCapital: 1
+    targetVol: 50

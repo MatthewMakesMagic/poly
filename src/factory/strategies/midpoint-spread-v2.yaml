@@ -1,0 +1,29 @@
+name: midpoint-spread-v2
+description: "Wider-spread midpoint market making. Only enters when both UP and DOWN are <= 0.48, giving a wider spread buffer. Uses exchange consensus for mild directional bias."
+version: 1
+hypothesis: "Wider spread entry gives more room for error. Only trading when both tokens are cheap (sum < 1.0) captures spread with margin of safety."
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: { sweep: [0.03, 0.05, 0.08] }
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: { sweep: [0.48, 0.45, 0.42] }
+      side: up
+  - type: min-data
+    params:
+      minTicks: 30
+  - type: cooldown
+    params:
+      cooldownMs: 5000
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 3

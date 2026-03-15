@@ -1,0 +1,29 @@
+name: edge-c-asymmetry
+description: "Exploits the structural ~$80 gap between Chainlink (settlement oracle) and exchange prices. Buys DOWN when polyRef is near strike but Chainlink is significantly below, since settlement uses the lower CL value."
+version: 1
+hypothesis: "Chainlink structural lag creates persistent DOWN edge near settlement windows."
+
+signals:
+  - type: chainlink-deficit
+    params:
+      threshold: 80
+  - type: ref-near-strike
+    params:
+      threshold: 100
+
+combine: all-of
+
+filters:
+  - type: time-window
+    params:
+      entryWindowMs: 120000
+  - type: max-price
+    params:
+      maxPrice: 0.65
+      side: down
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 2

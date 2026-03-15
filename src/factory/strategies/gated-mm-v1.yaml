@@ -1,0 +1,28 @@
+name: gated-mm-v1
+description: "Gated market making: only make markets when BS model has conviction (>= 3c edge). The gate-no-hedge variant lost only $0.05/trade on 9,086 trades in paper -- close to breakeven WITHOUT counting rebates."
+version: 1
+hypothesis: "Most of the time, market making bleeds from adverse selection. By only making markets when the BS model has directional conviction, we avoid the worst adverse selection periods. The rebate income then covers the small remaining losses."
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: { sweep: [0.03, 0.05, 0.08] }
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.60
+  - type: min-data
+    params:
+      minTicks: 30
+  - type: cooldown
+    params:
+      cooldownMs: { sweep: [3000, 5000, 10000] }
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 2

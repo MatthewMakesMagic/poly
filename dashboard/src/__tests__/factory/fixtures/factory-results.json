@@ -1,0 +1,406 @@
+[
+  {
+    "id": 1, "run_id": 1, "strategy_name": "deficit-asymmetry-v1", "strategy_source": "yaml", "symbol": "btc",
+    "config": { "entryThreshold": 0.08, "exitThreshold": 0.04, "lookbackWindows": 5, "asymmetryWeight": 0.6 },
+    "sample_size": 200, "sample_seed": 42,
+    "metrics": {
+      "sharpe": 1.82, "sortino": 2.15, "profitFactor": 2.31, "maxDrawdown": 0.065,
+      "winRate": 0.62, "trades": 142, "expectancy": 0.32, "edgePerTrade": 0.045, "totalPnl": 45.20,
+      "regime": {
+        "firstHalf": { "sharpe": 1.90, "trades": 71, "winRate": 0.63 },
+        "secondHalf": { "sharpe": 1.74, "trades": 71, "winRate": 0.61 },
+        "timeOfDay": [
+          { "bucket": "0-3min", "trades": 28, "winRate": 0.64, "pnl": 12.5 },
+          { "bucket": "3-6min", "trades": 35, "winRate": 0.60, "pnl": 10.2 },
+          { "bucket": "6-9min", "trades": 42, "winRate": 0.62, "pnl": 13.8 },
+          { "bucket": "9-12min", "trades": 22, "winRate": 0.59, "pnl": 5.1 },
+          { "bucket": "12-15min", "trades": 15, "winRate": 0.67, "pnl": 3.6 }
+        ],
+        "dayOfWeek": [
+          { "day": "Mon", "trades": 22, "sharpe": 2.10 },
+          { "day": "Tue", "trades": 20, "sharpe": 1.50 },
+          { "day": "Wed", "trades": 21, "sharpe": 1.90 },
+          { "day": "Thu", "trades": 24, "sharpe": 1.80 },
+          { "day": "Fri", "trades": 23, "sharpe": 1.70 },
+          { "day": "Sat", "trades": 18, "sharpe": 1.60 },
+          { "day": "Sun", "trades": 14, "sharpe": 2.30 }
+        ]
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 1.20, "upper": 2.44, "level": 0.95 },
+        "winRate": { "lower": 0.55, "upper": 0.69, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 12400, "created_at": "2026-03-10T08:12:00.000Z"
+  },
+  {
+    "id": 2, "run_id": 1, "strategy_name": "deficit-asymmetry-v1", "strategy_source": "yaml", "symbol": "eth",
+    "config": { "entryThreshold": 0.08, "exitThreshold": 0.04, "lookbackWindows": 5, "asymmetryWeight": 0.6 },
+    "sample_size": 200, "sample_seed": 42,
+    "metrics": {
+      "sharpe": 1.45, "sortino": 1.72, "profitFactor": 1.88, "maxDrawdown": 0.092,
+      "winRate": 0.58, "trades": 138, "expectancy": 0.22, "edgePerTrade": 0.032, "totalPnl": 30.36,
+      "regime": {
+        "firstHalf": { "sharpe": 1.50, "trades": 69, "winRate": 0.59 },
+        "secondHalf": { "sharpe": 1.40, "trades": 69, "winRate": 0.57 },
+        "timeOfDay": [
+          { "bucket": "0-3min", "trades": 26, "winRate": 0.58, "pnl": 8.2 },
+          { "bucket": "3-6min", "trades": 32, "winRate": 0.56, "pnl": 6.8 },
+          { "bucket": "6-9min", "trades": 38, "winRate": 0.58, "pnl": 9.1 },
+          { "bucket": "9-12min", "trades": 25, "winRate": 0.60, "pnl": 4.2 },
+          { "bucket": "12-15min", "trades": 17, "winRate": 0.59, "pnl": 2.0 }
+        ],
+        "dayOfWeek": [
+          { "day": "Mon", "trades": 20, "sharpe": 1.60 },
+          { "day": "Tue", "trades": 19, "sharpe": 1.30 },
+          { "day": "Wed", "trades": 22, "sharpe": 1.50 },
+          { "day": "Thu", "trades": 21, "sharpe": 1.40 },
+          { "day": "Fri", "trades": 20, "sharpe": 1.45 },
+          { "day": "Sat", "trades": 19, "sharpe": 1.55 },
+          { "day": "Sun", "trades": 17, "sharpe": 1.20 }
+        ]
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 0.92, "upper": 1.98, "level": 0.95 },
+        "winRate": { "lower": 0.50, "upper": 0.66, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 11200, "created_at": "2026-03-10T08:14:00.000Z"
+  },
+  {
+    "id": 3, "run_id": 1, "strategy_name": "deficit-asymmetry-v2", "strategy_source": "yaml", "symbol": "btc",
+    "config": { "entryThreshold": 0.10, "exitThreshold": 0.05, "lookbackWindows": 7, "asymmetryWeight": 0.7 },
+    "sample_size": 200, "sample_seed": 42,
+    "metrics": {
+      "sharpe": 1.31, "sortino": 1.55, "profitFactor": 1.72, "maxDrawdown": 0.11,
+      "winRate": 0.56, "trades": 118, "expectancy": 0.18, "edgePerTrade": 0.028, "totalPnl": 21.24,
+      "regime": {
+        "firstHalf": { "sharpe": 1.40, "trades": 59, "winRate": 0.58 },
+        "secondHalf": { "sharpe": 1.22, "trades": 59, "winRate": 0.54 },
+        "timeOfDay": [
+          { "bucket": "0-3min", "trades": 22, "winRate": 0.55, "pnl": 4.8 },
+          { "bucket": "3-6min", "trades": 28, "winRate": 0.57, "pnl": 5.9 },
+          { "bucket": "6-9min", "trades": 32, "winRate": 0.56, "pnl": 6.2 },
+          { "bucket": "9-12min", "trades": 22, "winRate": 0.55, "pnl": 2.8 },
+          { "bucket": "12-15min", "trades": 14, "winRate": 0.57, "pnl": 1.5 }
+        ],
+        "dayOfWeek": [
+          { "day": "Mon", "trades": 18, "sharpe": 1.40 },
+          { "day": "Tue", "trades": 17, "sharpe": 1.20 },
+          { "day": "Wed", "trades": 18, "sharpe": 1.35 },
+          { "day": "Thu", "trades": 17, "sharpe": 1.30 },
+          { "day": "Fri", "trades": 18, "sharpe": 1.25 },
+          { "day": "Sat", "trades": 16, "sharpe": 1.40 },
+          { "day": "Sun", "trades": 14, "sharpe": 1.10 }
+        ]
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 0.78, "upper": 1.84, "level": 0.95 },
+        "winRate": { "lower": 0.47, "upper": 0.65, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 10800, "created_at": "2026-03-10T08:16:00.000Z"
+  },
+  {
+    "id": 4, "run_id": 1, "strategy_name": "deficit-asymmetry-v2", "strategy_source": "yaml", "symbol": "eth",
+    "config": { "entryThreshold": 0.10, "exitThreshold": 0.05, "lookbackWindows": 7, "asymmetryWeight": 0.7 },
+    "sample_size": 200, "sample_seed": 42,
+    "metrics": {
+      "sharpe": 1.12, "sortino": 1.33, "profitFactor": 1.52, "maxDrawdown": 0.14,
+      "winRate": 0.54, "trades": 105, "expectancy": 0.14, "edgePerTrade": 0.022, "totalPnl": 14.70,
+      "regime": {
+        "firstHalf": { "sharpe": 1.20, "trades": 52, "winRate": 0.56 },
+        "secondHalf": { "sharpe": 1.04, "trades": 53, "winRate": 0.52 },
+        "timeOfDay": [],
+        "dayOfWeek": []
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 0.55, "upper": 1.69, "level": 0.95 },
+        "winRate": { "lower": 0.44, "upper": 0.64, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 9800, "created_at": "2026-03-10T08:18:00.000Z"
+  },
+  {
+    "id": 5, "run_id": 1, "strategy_name": "deficit-asymmetry-v1", "strategy_source": "yaml", "symbol": "sol",
+    "config": { "entryThreshold": 0.08, "exitThreshold": 0.04, "lookbackWindows": 5, "asymmetryWeight": 0.6 },
+    "sample_size": 80, "sample_seed": 42,
+    "metrics": {
+      "sharpe": 0.95, "sortino": 1.10, "profitFactor": 1.35, "maxDrawdown": 0.18,
+      "winRate": 0.52, "trades": 38, "expectancy": 0.08, "edgePerTrade": 0.012, "totalPnl": 3.04,
+      "regime": { "firstHalf": { "sharpe": 1.10, "trades": 19, "winRate": 0.53 }, "secondHalf": { "sharpe": 0.80, "trades": 19, "winRate": 0.51 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": {
+        "sharpe": { "lower": -0.10, "upper": 2.00, "level": 0.95 },
+        "winRate": { "lower": 0.36, "upper": 0.68, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 5200, "created_at": "2026-03-10T08:20:00.000Z"
+  },
+  {
+    "id": 6, "run_id": 2, "strategy_name": "momentum-reversion-v1", "strategy_source": "yaml", "symbol": "eth",
+    "config": { "momentumWindow": 3, "reversionThreshold": 0.06, "holdPeriod": 5 },
+    "sample_size": 200, "sample_seed": 99,
+    "metrics": {
+      "sharpe": 1.55, "sortino": 1.88, "profitFactor": 2.05, "maxDrawdown": 0.078,
+      "winRate": 0.60, "trades": 156, "expectancy": 0.25, "edgePerTrade": 0.038, "totalPnl": 39.00,
+      "regime": {
+        "firstHalf": { "sharpe": 1.65, "trades": 78, "winRate": 0.62 },
+        "secondHalf": { "sharpe": 1.45, "trades": 78, "winRate": 0.58 },
+        "timeOfDay": [
+          { "bucket": "0-3min", "trades": 30, "winRate": 0.63, "pnl": 10.5 },
+          { "bucket": "3-6min", "trades": 38, "winRate": 0.58, "pnl": 8.2 },
+          { "bucket": "6-9min", "trades": 44, "winRate": 0.61, "pnl": 12.1 },
+          { "bucket": "9-12min", "trades": 28, "winRate": 0.57, "pnl": 5.0 },
+          { "bucket": "12-15min", "trades": 16, "winRate": 0.62, "pnl": 3.2 }
+        ],
+        "dayOfWeek": [
+          { "day": "Mon", "trades": 24, "sharpe": 1.80 },
+          { "day": "Tue", "trades": 22, "sharpe": 1.40 },
+          { "day": "Wed", "trades": 23, "sharpe": 1.60 },
+          { "day": "Thu", "trades": 25, "sharpe": 1.50 },
+          { "day": "Fri", "trades": 22, "sharpe": 1.55 },
+          { "day": "Sat", "trades": 20, "sharpe": 1.30 },
+          { "day": "Sun", "trades": 20, "sharpe": 1.70 }
+        ]
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 1.05, "upper": 2.05, "level": 0.95 },
+        "winRate": { "lower": 0.52, "upper": 0.68, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 13500, "created_at": "2026-03-11T14:10:00.000Z"
+  },
+  {
+    "id": 7, "run_id": 2, "strategy_name": "momentum-reversion-v1", "strategy_source": "yaml", "symbol": "btc",
+    "config": { "momentumWindow": 3, "reversionThreshold": 0.06, "holdPeriod": 5 },
+    "sample_size": 200, "sample_seed": 99,
+    "metrics": {
+      "sharpe": 1.22, "sortino": 1.48, "profitFactor": 1.65, "maxDrawdown": 0.10,
+      "winRate": 0.57, "trades": 130, "expectancy": 0.18, "edgePerTrade": 0.028, "totalPnl": 23.40,
+      "regime": {
+        "firstHalf": { "sharpe": 1.30, "trades": 65, "winRate": 0.58 },
+        "secondHalf": { "sharpe": 1.14, "trades": 65, "winRate": 0.56 },
+        "timeOfDay": [],
+        "dayOfWeek": []
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 0.72, "upper": 1.72, "level": 0.95 },
+        "winRate": { "lower": 0.48, "upper": 0.66, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 11800, "created_at": "2026-03-11T14:12:00.000Z"
+  },
+  {
+    "id": 8, "run_id": 2, "strategy_name": "momentum-reversion-v2", "strategy_source": "yaml", "symbol": "eth",
+    "config": { "momentumWindow": 5, "reversionThreshold": 0.08, "holdPeriod": 3 },
+    "sample_size": 200, "sample_seed": 99,
+    "metrics": {
+      "sharpe": 1.08, "sortino": 1.30, "profitFactor": 1.48, "maxDrawdown": 0.12,
+      "winRate": 0.55, "trades": 112, "expectancy": 0.12, "edgePerTrade": 0.020, "totalPnl": 13.44,
+      "regime": { "firstHalf": { "sharpe": 1.15, "trades": 56, "winRate": 0.57 }, "secondHalf": { "sharpe": 1.01, "trades": 56, "winRate": 0.53 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": 0.52, "upper": 1.64, "level": 0.95 }, "winRate": { "lower": 0.46, "upper": 0.64, "level": 0.95 } }
+    },
+    "elapsed_ms": 10200, "created_at": "2026-03-11T14:14:00.000Z"
+  },
+  {
+    "id": 9, "run_id": 5, "strategy_name": "oracle-edge-adaptive-v2", "strategy_source": "js", "symbol": "btc",
+    "config": { "oracleWeight": 0.7, "adaptiveWindow": 10, "minEdge": 0.03, "maxPosition": 5 },
+    "sample_size": 300, "sample_seed": 17,
+    "metrics": {
+      "sharpe": 2.10, "sortino": 2.55, "profitFactor": 2.82, "maxDrawdown": 0.045,
+      "winRate": 0.66, "trades": 224, "expectancy": 0.42, "edgePerTrade": 0.058, "totalPnl": 94.08,
+      "regime": {
+        "firstHalf": { "sharpe": 2.20, "trades": 112, "winRate": 0.67 },
+        "secondHalf": { "sharpe": 2.00, "trades": 112, "winRate": 0.65 },
+        "timeOfDay": [
+          { "bucket": "0-3min", "trades": 44, "winRate": 0.68, "pnl": 22.0 },
+          { "bucket": "3-6min", "trades": 52, "winRate": 0.65, "pnl": 20.5 },
+          { "bucket": "6-9min", "trades": 58, "winRate": 0.66, "pnl": 25.2 },
+          { "bucket": "9-12min", "trades": 42, "winRate": 0.64, "pnl": 16.8 },
+          { "bucket": "12-15min", "trades": 28, "winRate": 0.68, "pnl": 9.6 }
+        ],
+        "dayOfWeek": [
+          { "day": "Mon", "trades": 34, "sharpe": 2.30 },
+          { "day": "Tue", "trades": 32, "sharpe": 2.00 },
+          { "day": "Wed", "trades": 33, "sharpe": 2.15 },
+          { "day": "Thu", "trades": 35, "sharpe": 2.05 },
+          { "day": "Fri", "trades": 32, "sharpe": 2.10 },
+          { "day": "Sat", "trades": 30, "sharpe": 1.90 },
+          { "day": "Sun", "trades": 28, "sharpe": 2.40 }
+        ]
+      },
+      "confidenceIntervals": {
+        "sharpe": { "lower": 1.65, "upper": 2.55, "level": 0.95 },
+        "winRate": { "lower": 0.60, "upper": 0.72, "level": 0.95 }
+      }
+    },
+    "elapsed_ms": 18500, "created_at": "2026-03-08T09:15:00.000Z"
+  },
+  {
+    "id": 10, "run_id": 5, "strategy_name": "oracle-edge-adaptive-v1", "strategy_source": "js", "symbol": "btc",
+    "config": { "oracleWeight": 0.5, "adaptiveWindow": 8, "minEdge": 0.04, "maxPosition": 3 },
+    "sample_size": 300, "sample_seed": 17,
+    "metrics": {
+      "sharpe": 1.78, "sortino": 2.12, "profitFactor": 2.25, "maxDrawdown": 0.058,
+      "winRate": 0.63, "trades": 198, "expectancy": 0.35, "edgePerTrade": 0.048, "totalPnl": 69.30,
+      "regime": {
+        "firstHalf": { "sharpe": 1.85, "trades": 99, "winRate": 0.64 },
+        "secondHalf": { "sharpe": 1.71, "trades": 99, "winRate": 0.62 },
+        "timeOfDay": [], "dayOfWeek": []
+      },
+      "confidenceIntervals": { "sharpe": { "lower": 1.30, "upper": 2.26, "level": 0.95 }, "winRate": { "lower": 0.56, "upper": 0.70, "level": 0.95 } }
+    },
+    "elapsed_ms": 16200, "created_at": "2026-03-08T09:18:00.000Z"
+  },
+  {
+    "id": 11, "run_id": 5, "strategy_name": "oracle-edge-adaptive-v2", "strategy_source": "js", "symbol": "eth",
+    "config": { "oracleWeight": 0.7, "adaptiveWindow": 10, "minEdge": 0.03, "maxPosition": 5 },
+    "sample_size": 300, "sample_seed": 17,
+    "metrics": {
+      "sharpe": 1.65, "sortino": 1.98, "profitFactor": 2.12, "maxDrawdown": 0.072,
+      "winRate": 0.61, "trades": 210, "expectancy": 0.30, "edgePerTrade": 0.042, "totalPnl": 63.00,
+      "regime": {
+        "firstHalf": { "sharpe": 1.70, "trades": 105, "winRate": 0.62 },
+        "secondHalf": { "sharpe": 1.60, "trades": 105, "winRate": 0.60 },
+        "timeOfDay": [], "dayOfWeek": []
+      },
+      "confidenceIntervals": { "sharpe": { "lower": 1.18, "upper": 2.12, "level": 0.95 }, "winRate": { "lower": 0.54, "upper": 0.68, "level": 0.95 } }
+    },
+    "elapsed_ms": 17800, "created_at": "2026-03-08T09:20:00.000Z"
+  },
+  {
+    "id": 12, "run_id": 5, "strategy_name": "oracle-edge-adaptive-v2", "strategy_source": "js", "symbol": "sol",
+    "config": { "oracleWeight": 0.7, "adaptiveWindow": 10, "minEdge": 0.03, "maxPosition": 5 },
+    "sample_size": 80, "sample_seed": 17,
+    "metrics": {
+      "sharpe": 0.72, "sortino": 0.88, "profitFactor": 1.22, "maxDrawdown": 0.22,
+      "winRate": 0.51, "trades": 35, "expectancy": 0.05, "edgePerTrade": 0.008, "totalPnl": 1.75,
+      "regime": { "firstHalf": { "sharpe": 0.85, "trades": 18, "winRate": 0.53 }, "secondHalf": { "sharpe": 0.59, "trades": 17, "winRate": 0.49 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": -0.40, "upper": 1.84, "level": 0.95 }, "winRate": { "lower": 0.34, "upper": 0.68, "level": 0.95 } }
+    },
+    "elapsed_ms": 4800, "created_at": "2026-03-08T09:22:00.000Z"
+  },
+  {
+    "id": 13, "run_id": 5, "strategy_name": "oracle-edge-adaptive-v2", "strategy_source": "js", "symbol": "xrp",
+    "config": { "oracleWeight": 0.7, "adaptiveWindow": 10, "minEdge": 0.03, "maxPosition": 5 },
+    "sample_size": 60, "sample_seed": 17,
+    "metrics": {
+      "sharpe": 0.55, "sortino": 0.65, "profitFactor": 1.15, "maxDrawdown": 0.28,
+      "winRate": 0.50, "trades": 28, "expectancy": 0.03, "edgePerTrade": 0.005, "totalPnl": 0.84,
+      "regime": { "firstHalf": { "sharpe": 0.70, "trades": 14, "winRate": 0.52 }, "secondHalf": { "sharpe": 0.40, "trades": 14, "winRate": 0.48 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": -0.65, "upper": 1.75, "level": 0.95 }, "winRate": { "lower": 0.31, "upper": 0.69, "level": 0.95 } }
+    },
+    "elapsed_ms": 3900, "created_at": "2026-03-08T09:24:00.000Z"
+  },
+  {
+    "id": 14, "run_id": 6, "strategy_name": "deficit-momentum-crossover-v1", "strategy_source": "yaml", "symbol": "btc",
+    "config": { "deficitWeight": 0.4, "momentumWeight": 0.6, "entryThreshold": 0.07, "adaptiveAlpha": 0.3 },
+    "sample_size": 250, "sample_seed": 55,
+    "metrics": {
+      "sharpe": 1.95, "sortino": 2.35, "profitFactor": 2.55, "maxDrawdown": 0.052,
+      "winRate": 0.64, "trades": 186, "expectancy": 0.38, "edgePerTrade": 0.052, "totalPnl": 70.68,
+      "regime": {
+        "firstHalf": { "sharpe": 2.05, "trades": 93, "winRate": 0.65 },
+        "secondHalf": { "sharpe": 1.85, "trades": 93, "winRate": 0.63 },
+        "timeOfDay": [
+          { "bucket": "0-3min", "trades": 36, "winRate": 0.67, "pnl": 16.8 },
+          { "bucket": "3-6min", "trades": 44, "winRate": 0.64, "pnl": 15.2 },
+          { "bucket": "6-9min", "trades": 50, "winRate": 0.64, "pnl": 18.5 },
+          { "bucket": "9-12min", "trades": 34, "winRate": 0.62, "pnl": 12.0 },
+          { "bucket": "12-15min", "trades": 22, "winRate": 0.64, "pnl": 8.2 }
+        ],
+        "dayOfWeek": [
+          { "day": "Mon", "trades": 28, "sharpe": 2.10 },
+          { "day": "Tue", "trades": 26, "sharpe": 1.85 },
+          { "day": "Wed", "trades": 28, "sharpe": 2.00 },
+          { "day": "Thu", "trades": 29, "sharpe": 1.90 },
+          { "day": "Fri", "trades": 27, "sharpe": 1.95 },
+          { "day": "Sat", "trades": 25, "sharpe": 1.80 },
+          { "day": "Sun", "trades": 23, "sharpe": 2.20 }
+        ]
+      },
+      "confidenceIntervals": { "sharpe": { "lower": 1.48, "upper": 2.42, "level": 0.95 }, "winRate": { "lower": 0.57, "upper": 0.71, "level": 0.95 } }
+    },
+    "elapsed_ms": 15800, "created_at": "2026-03-12T20:15:00.000Z"
+  },
+  {
+    "id": 15, "run_id": 6, "strategy_name": "deficit-momentum-crossover-v1", "strategy_source": "yaml", "symbol": "eth",
+    "config": { "deficitWeight": 0.4, "momentumWeight": 0.6, "entryThreshold": 0.07, "adaptiveAlpha": 0.3 },
+    "sample_size": 250, "sample_seed": 55,
+    "metrics": {
+      "sharpe": 1.62, "sortino": 1.95, "profitFactor": 2.10, "maxDrawdown": 0.068,
+      "winRate": 0.61, "trades": 172, "expectancy": 0.28, "edgePerTrade": 0.040, "totalPnl": 48.16,
+      "regime": {
+        "firstHalf": { "sharpe": 1.70, "trades": 86, "winRate": 0.62 },
+        "secondHalf": { "sharpe": 1.54, "trades": 86, "winRate": 0.60 },
+        "timeOfDay": [], "dayOfWeek": []
+      },
+      "confidenceIntervals": { "sharpe": { "lower": 1.15, "upper": 2.09, "level": 0.95 }, "winRate": { "lower": 0.54, "upper": 0.68, "level": 0.95 } }
+    },
+    "elapsed_ms": 14500, "created_at": "2026-03-12T20:18:00.000Z"
+  },
+  {
+    "id": 16, "run_id": 1, "strategy_name": "deficit-asymmetry-v1", "strategy_source": "yaml", "symbol": "xrp",
+    "config": { "entryThreshold": 0.08, "exitThreshold": 0.04, "lookbackWindows": 5, "asymmetryWeight": 0.6 },
+    "sample_size": 60, "sample_seed": 42,
+    "metrics": {
+      "sharpe": 0.68, "sortino": 0.80, "profitFactor": 1.18, "maxDrawdown": 0.25,
+      "winRate": 0.50, "trades": 25, "expectancy": 0.04, "edgePerTrade": 0.006, "totalPnl": 1.00,
+      "regime": { "firstHalf": { "sharpe": 0.80, "trades": 13, "winRate": 0.52 }, "secondHalf": { "sharpe": 0.56, "trades": 12, "winRate": 0.48 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": -0.80, "upper": 2.16, "level": 0.95 }, "winRate": { "lower": 0.30, "upper": 0.70, "level": 0.95 } }
+    },
+    "elapsed_ms": 3200, "created_at": "2026-03-10T08:22:00.000Z"
+  },
+  {
+    "id": 17, "run_id": 2, "strategy_name": "momentum-reversion-v1", "strategy_source": "yaml", "symbol": "sol",
+    "config": { "momentumWindow": 3, "reversionThreshold": 0.06, "holdPeriod": 5 },
+    "sample_size": 80, "sample_seed": 99,
+    "metrics": {
+      "sharpe": 0.82, "sortino": 0.98, "profitFactor": 1.28, "maxDrawdown": 0.19,
+      "winRate": 0.53, "trades": 42, "expectancy": 0.07, "edgePerTrade": 0.011, "totalPnl": 2.94,
+      "regime": { "firstHalf": { "sharpe": 0.95, "trades": 21, "winRate": 0.55 }, "secondHalf": { "sharpe": 0.69, "trades": 21, "winRate": 0.51 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": -0.15, "upper": 1.79, "level": 0.95 }, "winRate": { "lower": 0.38, "upper": 0.68, "level": 0.95 } }
+    },
+    "elapsed_ms": 5600, "created_at": "2026-03-11T14:16:00.000Z"
+  },
+  {
+    "id": 18, "run_id": 6, "strategy_name": "deficit-momentum-crossover-v1", "strategy_source": "yaml", "symbol": "sol",
+    "config": { "deficitWeight": 0.4, "momentumWeight": 0.6, "entryThreshold": 0.07, "adaptiveAlpha": 0.3 },
+    "sample_size": 80, "sample_seed": 55,
+    "metrics": {
+      "sharpe": 1.05, "sortino": 1.25, "profitFactor": 1.42, "maxDrawdown": 0.15,
+      "winRate": 0.55, "trades": 48, "expectancy": 0.12, "edgePerTrade": 0.018, "totalPnl": 5.76,
+      "regime": { "firstHalf": { "sharpe": 1.15, "trades": 24, "winRate": 0.57 }, "secondHalf": { "sharpe": 0.95, "trades": 24, "winRate": 0.53 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": 0.15, "upper": 1.95, "level": 0.95 }, "winRate": { "lower": 0.41, "upper": 0.69, "level": 0.95 } }
+    },
+    "elapsed_ms": 5800, "created_at": "2026-03-12T20:20:00.000Z"
+  },
+  {
+    "id": 19, "run_id": 5, "strategy_name": "oracle-edge-adaptive-v1", "strategy_source": "js", "symbol": "eth",
+    "config": { "oracleWeight": 0.5, "adaptiveWindow": 8, "minEdge": 0.04, "maxPosition": 3 },
+    "sample_size": 300, "sample_seed": 17,
+    "metrics": {
+      "sharpe": 1.42, "sortino": 1.70, "profitFactor": 1.85, "maxDrawdown": 0.085,
+      "winRate": 0.59, "trades": 185, "expectancy": 0.22, "edgePerTrade": 0.032, "totalPnl": 40.70,
+      "regime": {
+        "firstHalf": { "sharpe": 1.50, "trades": 92, "winRate": 0.60 },
+        "secondHalf": { "sharpe": 1.34, "trades": 93, "winRate": 0.58 },
+        "timeOfDay": [], "dayOfWeek": []
+      },
+      "confidenceIntervals": { "sharpe": { "lower": 0.95, "upper": 1.89, "level": 0.95 }, "winRate": { "lower": 0.52, "upper": 0.66, "level": 0.95 } }
+    },
+    "elapsed_ms": 15200, "created_at": "2026-03-08T09:26:00.000Z"
+  },
+  {
+    "id": 20, "run_id": 6, "strategy_name": "deficit-momentum-crossover-v1", "strategy_source": "yaml", "symbol": "xrp",
+    "config": { "deficitWeight": 0.4, "momentumWeight": 0.6, "entryThreshold": 0.07, "adaptiveAlpha": 0.3 },
+    "sample_size": 60, "sample_seed": 55,
+    "metrics": {
+      "sharpe": 0.45, "sortino": 0.55, "profitFactor": 1.12, "maxDrawdown": 0.30,
+      "winRate": 0.48, "trades": 22, "expectancy": 0.02, "edgePerTrade": 0.003, "totalPnl": 0.44,
+      "regime": { "firstHalf": { "sharpe": 0.60, "trades": 11, "winRate": 0.50 }, "secondHalf": { "sharpe": 0.30, "trades": 11, "winRate": 0.46 }, "timeOfDay": [], "dayOfWeek": [] },
+      "confidenceIntervals": { "sharpe": { "lower": -1.00, "upper": 1.90, "level": 0.95 }, "winRate": { "lower": 0.27, "upper": 0.69, "level": 0.95 } }
+    },
+    "elapsed_ms": 3500, "created_at": "2026-03-12T20:22:00.000Z"
+  }
+]

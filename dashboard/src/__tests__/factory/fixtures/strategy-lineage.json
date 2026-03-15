@@ -1,0 +1,92 @@
+[
+  {
+    "id": 1,
+    "strategy_name": "deficit-asymmetry-v1",
+    "parent_name": null,
+    "mutation_type": "original",
+    "mutation_reasoning": "Hypothesis: assets with large oracle-CLOB deficit on one side but not the other indicate informed flow. Asymmetric deficits signal directional conviction that the CLOB hasn't fully priced in.",
+    "created_at": "2026-03-08T12:00:00.000Z",
+    "created_by": "matthew"
+  },
+  {
+    "id": 2,
+    "strategy_name": "deficit-asymmetry-v2",
+    "parent_name": "deficit-asymmetry-v1",
+    "mutation_type": "param_perturb",
+    "mutation_reasoning": "Increase entry threshold from 0.08 to 0.10 and lookback from 5 to 7 windows to filter out noise. Higher asymmetry weight (0.6 -> 0.7) to emphasize the core signal.",
+    "created_at": "2026-03-09T14:00:00.000Z",
+    "created_by": "claude"
+  },
+  {
+    "id": 3,
+    "strategy_name": "deficit-asymmetry-adaptive-v1",
+    "parent_name": "deficit-asymmetry-v1",
+    "mutation_type": "structural",
+    "mutation_reasoning": "Add adaptive threshold that scales entry requirement based on recent volatility. High-vol periods need larger deficit to trigger. Addresses regime sensitivity seen in v1 day-of-week analysis.",
+    "created_at": "2026-03-10T10:00:00.000Z",
+    "created_by": "claude"
+  },
+  {
+    "id": 4,
+    "strategy_name": "deficit-asymmetry-adaptive-v2",
+    "parent_name": "deficit-asymmetry-adaptive-v1",
+    "mutation_type": "param_perturb",
+    "mutation_reasoning": "Reduce adaptive alpha from 0.5 to 0.3 for smoother threshold adaptation. V1's threshold was too reactive, causing whipsaw entries in choppy conditions.",
+    "created_at": "2026-03-11T08:00:00.000Z",
+    "created_by": "claude"
+  },
+  {
+    "id": 5,
+    "strategy_name": "deficit-momentum-crossover-v1",
+    "parent_name": "deficit-asymmetry-v1",
+    "mutation_type": "crossover",
+    "mutation_reasoning": "Combine deficit-asymmetry's directional signal with momentum-reversion's entry timing. Use deficit for direction, momentum for optimal entry point. Hypothesis: the two signals are complementary — deficit identifies when to trade, momentum identifies where to enter.",
+    "created_at": "2026-03-12T16:00:00.000Z",
+    "created_by": "claude"
+  },
+  {
+    "id": 6,
+    "strategy_name": "deficit-momentum-crossover-v2",
+    "parent_name": "deficit-momentum-crossover-v1",
+    "mutation_type": "param_perturb",
+    "mutation_reasoning": "Shift weight from momentum (0.6) toward deficit (0.5/0.5 equal weight). V1 was over-indexing on momentum timing, occasionally entering against the deficit signal.",
+    "created_at": "2026-03-13T09:00:00.000Z",
+    "created_by": "matthew"
+  },
+  {
+    "id": 7,
+    "strategy_name": "momentum-reversion-v1",
+    "parent_name": null,
+    "mutation_type": "original",
+    "mutation_reasoning": "Hypothesis: short-term momentum reversals in crypto 15-min windows follow a predictable pattern. Price overreaction in first 3 minutes tends to revert by minute 6-9.",
+    "created_at": "2026-03-07T10:00:00.000Z",
+    "created_by": "matthew"
+  },
+  {
+    "id": 8,
+    "strategy_name": "momentum-reversion-v2",
+    "parent_name": "momentum-reversion-v1",
+    "mutation_type": "param_perturb",
+    "mutation_reasoning": "Widen momentum window from 3 to 5 and increase reversion threshold from 0.06 to 0.08. Reduce hold period from 5 to 3 to capture faster reversions.",
+    "created_at": "2026-03-09T11:00:00.000Z",
+    "created_by": "claude"
+  },
+  {
+    "id": 9,
+    "strategy_name": "oracle-edge-adaptive-v1",
+    "parent_name": null,
+    "mutation_type": "original",
+    "mutation_reasoning": "Hypothesis: oracle price feeds have latency relative to real exchange prices. The edge between oracle-reported price and actual market price represents a tradeable signal when it exceeds noise threshold.",
+    "created_at": "2026-03-06T08:00:00.000Z",
+    "created_by": "matthew"
+  },
+  {
+    "id": 10,
+    "strategy_name": "oracle-edge-adaptive-v2",
+    "parent_name": "oracle-edge-adaptive-v1",
+    "mutation_type": "structural",
+    "mutation_reasoning": "Add adaptive oracle weight that increases confidence in oracle edge during low-volatility periods (when noise is lower, oracle latency signal is more reliable). Increase max position to 5 to capture more of the edge.",
+    "created_at": "2026-03-07T14:00:00.000Z",
+    "created_by": "claude"
+  }
+]

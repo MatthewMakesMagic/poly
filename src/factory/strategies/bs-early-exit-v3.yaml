@@ -1,0 +1,28 @@
+name: bs-early-exit-v3
+description: "BS fair value with Kelly sizing. Tests whether signal strength-based position sizing (Kelly criterion) improves risk-adjusted returns vs fixed capital."
+version: 1
+hypothesis: "Kelly-fraction sizing scales capital proportional to BS signal confidence. Stronger signals (bigger edge) get bigger positions. Should improve Sharpe if signal strength correlates with actual win probability."
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: { sweep: [0.05, 0.08, 0.12] }
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.65
+  - type: min-data
+    params:
+      minTicks: 50
+  - type: once-per-window
+
+sizer:
+  type: kelly-fraction
+  params:
+    maxCapital: { sweep: [5, 10] }
+    minCapital: 1
+    kellyMultiplier: { sweep: [0.25, 0.50] }

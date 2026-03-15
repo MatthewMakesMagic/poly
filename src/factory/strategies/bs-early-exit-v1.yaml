@@ -1,0 +1,26 @@
+name: bs-early-exit-v1
+description: "BS fair value directional entry. Enter when BS model shows edge >= 5c. Once-per-window entry with aggressive edge threshold. NOTE: Early exit requires JS strategy (see mm-informed.js); this YAML tests the BS signal quality for entry decisions."
+version: 1
+hypothesis: "BS model identifies mispriced tokens with genuine statistical edge. Higher minEdge thresholds should yield higher win rates but fewer trades."
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: { sweep: [0.05, 0.08, 0.10] }
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.65
+  - type: min-data
+    params:
+      minTicks: 50
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: { sweep: [2, 5] }
