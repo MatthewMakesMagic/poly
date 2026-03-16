@@ -1,0 +1,25 @@
+name: cheap-reversal-v1
+description: >
+  Buy cheap tokens (<$0.20) when exchange median is close to strike,
+  indicating the CLOB is overconfident and a reversal is likely.
+  15-33% reversal rate at these prices = positive EV due to 5:1+ payout.
+
+signals:
+  - type: cheap-reversal
+    params:
+      maxPrice: {sweep: [0.15, 0.20, 0.25]}
+      proximityPct: {sweep: [0.05, 0.10, 0.15]}
+      minExchanges: 3
+
+filters:
+  - type: time-window
+    params:
+      entryWindowMs: {sweep: [30000, 60000]}
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 2
+
+combine: all-of
