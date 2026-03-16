@@ -900,7 +900,7 @@ export async function runFactoryBacktestPgCache({
   const sources = analyzeStrategySources(strategy);
 
   // Batch-load timelines in chunks of 50 (each chunk = 1 PG query with ANY())
-  const CHUNK_SIZE = 50;
+  const CHUNK_SIZE = 10; // Each timeline ~1MB BYTEA — keep small to fit in statement timeout
   const windowIds = sampledWindows.map(w => w.window_id);
   const cachedTimelines = new Map();
   for (let i = 0; i < windowIds.length; i += CHUNK_SIZE) {
