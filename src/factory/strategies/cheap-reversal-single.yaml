@@ -1,0 +1,24 @@
+name: cheap-reversal-single
+description: >
+  Buy cheap tokens (<$0.25) when exchange is near strike.
+  Single config, no sweep — for large sample testing.
+
+signals:
+  - type: cheap-reversal
+    params:
+      maxPrice: 0.25
+      proximityPct: 0.15
+      minExchanges: 3
+
+filters:
+  - type: time-window
+    params:
+      entryWindowMs: 60000
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 2
+
+combine: all-of
