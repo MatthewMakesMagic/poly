@@ -12,7 +12,7 @@ import persistence from '../persistence/index.js';
 
 // Current schema version — bump when timeline event format changes.
 // Cache reads filter by this version to avoid serving stale cached data.
-const CURRENT_SCHEMA_VERSION = 3; // v3: include extreme CLOB prices (v2 filtered mid < 0.05 || mid > 0.95)
+const CURRENT_SCHEMA_VERSION = 3; // v3: includes extreme CLOB prices (v2 filtered mid < 0.05 || mid > 0.95)
 
 /**
  * Ensure the pg_timelines table exists.
