@@ -109,14 +109,14 @@ describe('ParallelEvaluator', () => {
       await evaluator.destroy();
     });
 
-    it('caps pool size at 10 workers', async () => {
+    it('caps pool size at 4 workers', async () => {
       const evaluator = await createParallelEvaluator({
         strategyName: 'test-strategy',
         config: { initialCapital: 100 },
         poolSize: 20,
       });
 
-      expect(evaluator.poolSize).toBe(10);
+      expect(evaluator.poolSize).toBe(4);
 
       await evaluator.destroy();
     });

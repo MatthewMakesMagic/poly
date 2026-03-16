@@ -890,117 +890,26 @@ export async function runFactoryBacktestPgCache({
     paramSets = [{ ...defaults, ...configOverrides }];
   }
 
-  // ─── Parallel Path (worker threads) ───
-  // Workers load timelines from PG themselves — no timeline pre-loading on main thread.
-  // Each worker loads the strategy once, then evaluates multiple windows.
-  if (parallel && sampledWindows.length >= 4) {
-    const { createParallelEvaluator } = await import('../parallel-evaluator.js');
+  // ─── Batch-Load + Trim Path (fast on Railway) ───
+  // Batch-load all timelines in chunks using readPgTimelines (single query per chunk).
+  // Then trim and evaluate on the main thread — avoids worker thread PG overhead.
 
-    const workerConfig = {
-      initialCapital,
-      spreadBuffer,
-      tradingFee,
-      windowDurationMs,
-      feeMode: feeModeInput || 'taker',
-    };
-
-    const evaluator = await createParallelEvaluator({
-      strategyName: strategy.name,
-      config: workerConfig,
-      poolSize,
-    });
-
-    try {
-      const variants = [];
-
-      for (const params of paramSets) {
-        const rawResults = await evaluator.evaluateWindows(sampledWindows, {
-          strategyParams: params,
-        });
-
-        // Filter out skipped windows
-        const windowResults = rawResults.filter(r => !r.skipped);
-
-        windowResults.sort((a, b) =>
-          new Date(a.windowCloseTime).getTime() - new Date(b.windowCloseTime).getTime()
-        );
-
-        const metrics = computeMetrics(windowResults, initialCapital);
-        const regime = computeRegimeBreakdown(windowResults, initialCapital);
-        const returns = windowReturns(windowResults, initialCapital);
-        const ci = bootstrapSharpeCI(returns, 1000, sampleOptions.seed || 42);
-
-        const allFills = windowResults.flatMap(wr => wr.fillResults || []);
-        const fillQuality = aggregateFillMetrics(allFills);
-
-        variants.push({
-          params,
-          metrics,
-          regime,
-          sharpeCi: ci,
-          windowCount: windowResults.length,
-          windowResults,
-          fillQuality,
-        });
-      }
-
-      variants.sort((a, b) => b.metrics.sharpe - a.metrics.sharpe);
-
-      // Baseline uses sequential path — it's a single strategy, fast enough
-      let baseline = null;
-      if (includeBaseline) {
-        baseline = await _evaluateBaselineSequential(
-          sampledWindows, loadTimelinePg, sampleOptions,
-          { initialCapital, spreadBuffer, tradingFee, windowDurationMs, feeMode },
-        );
-      }
-
-      let paramImportance = null;
-      if (variants.length > 1 && Object.keys(grid).length > 0) {
-        paramImportance = computeParamImportance(variants, grid);
-      }
-
-      const wallClockMs = Date.now() - startTime;
-
-      return {
-        strategy: strategy.name,
-        symbol,
-        source: 'pg-cache-parallel',
-        sampleSize: sampledWindows.length,
-        totalWindows: allCachedWindows.length,
-        seed: sampleOptions.seed || 42,
-        feeMode,
-        poolSize: evaluator.poolSize,
-        variants: variants.map(v => ({
-          params: v.params,
-          metrics: v.metrics,
-          regime: v.regime,
-          sharpeCi: v.sharpeCi,
-          windowCount: v.windowCount,
-          fillQuality: v.fillQuality,
-        })),
-        baseline,
-        paramImportance,
-        wallClockMs,
-      };
-    } finally {
-      await evaluator.destroy();
-    }
-  }
-
-  // ─── Sequential Fallback Path ───
-  // Used when parallel=false or when window count is too small to benefit.
+  const { readPgTimelines } = await import('../pg-timeline-cache.js');
 
   // Analyze which data sources the strategy needs (for timeline trimming)
   const sources = analyzeStrategySources(strategy);
 
-  // Load all timelines from PG cache, applying trimming
+  // Batch-load timelines in chunks of 20 (each chunk = 1 PG query with ANY())
+  const CHUNK_SIZE = 20;
+  const windowIds = sampledWindows.map(w => w.window_id);
   const cachedTimelines = new Map();
-  for (const win of sampledWindows) {
-    const loaded = await loadTimelinePg(win.window_id);
-    if (loaded) {
-      const trimmed = trimTimeline(loaded.timeline, sources);
-      cachedTimelines.set(win.window_id, { timeline: trimmed, meta: loaded.window });
+  for (let i = 0; i < windowIds.length; i += CHUNK_SIZE) {
+    const chunk = windowIds.slice(i, i + CHUNK_SIZE);
+    const chunkMap = await readPgTimelines(chunk);
+    for (const [id, data] of chunkMap) {
+      // Trim timeline immediately to free memory from unused events
+      const trimmed = trimTimeline(data.timeline, sources);
+      cachedTimelines.set(id, { timeline: trimmed, meta: data.meta });
     }
   }
 
