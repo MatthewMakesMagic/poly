@@ -899,8 +899,8 @@ export async function runFactoryBacktestPgCache({
   // Analyze which data sources the strategy needs (for timeline trimming)
   const sources = analyzeStrategySources(strategy);
 
-  // Batch-load timelines in chunks of 20 (each chunk = 1 PG query with ANY())
-  const CHUNK_SIZE = 20;
+  // Batch-load timelines in chunks of 50 (each chunk = 1 PG query with ANY())
+  const CHUNK_SIZE = 50;
   const windowIds = sampledWindows.map(w => w.window_id);
   const cachedTimelines = new Map();
   for (let i = 0; i < windowIds.length; i += CHUNK_SIZE) {
