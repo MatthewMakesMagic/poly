@@ -753,9 +753,11 @@ export function mergeTimeline({ rtdsTicks, clobSnapshots, exchangeTicks, l2BookT
     const isDown = snap.symbol?.toLowerCase().includes('down');
     const source = isDown ? 'clobDown' : 'clobUp';
 
-    // Filter out stale CLOB data (mid outside tradeable range)
+    // Keep ALL CLOB data — extreme prices (near 0 or 1) are valid near window close
+    // Previously filtered mid < 0.05 || mid > 0.95 which dropped the exact
+    // cheap token events needed for contrarian strategies
     const mid = parseFloat(snap.mid_price || 0);
-    if (mid < 0.05 || mid > 0.95) continue;
+    if (mid <= 0 || mid >= 1) continue; // Only skip truly invalid data
 
     events.push({
       source,
