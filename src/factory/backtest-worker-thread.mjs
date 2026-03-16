@@ -25,9 +25,11 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { unpack } from 'msgpackr';
 import { evaluateWindow } from '../backtest/parallel-engine.js';
 import { FeeMode, parseFeeMode } from './fee-model.js';
+import { analyzeStrategySources, trimTimeline } from './timeline-trimmer.js';
 
 let strategy = null;
 let backtestConfig = null;
+let strategySources = null;  // Cached source analysis for timeline trimming
 
 /**
  * Load strategy by name using the factory's loadStrategy.
@@ -55,6 +57,9 @@ async function initStrategy(strategyName, config) {
   const { loadStrategy } = await import('./index.js');
   strategy = await loadStrategy(strategyName);
   backtestConfig = config;
+
+  // Pre-analyze which data sources this strategy needs (for timeline trimming)
+  strategySources = analyzeStrategySources(strategy);
 }
 
 /**
@@ -123,7 +128,10 @@ async function evaluateSingleWindow(windowId, windowMeta, strategyParamsOverride
     return { skipped: true, windowId, reason: 'timeline_not_found' };
   }
 
-  const { timeline, meta } = loaded;
+  const { timeline: rawTimeline, meta } = loaded;
+
+  // Trim timeline to only include events the strategy needs (typically ~70% reduction)
+  const timeline = strategySources ? trimTimeline(rawTimeline, strategySources) : rawTimeline;
 
   // Use windowMeta from the message if provided (has sampling context),
   // fall back to what we loaded from PG

@@ -22,8 +22,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WORKER_PATH = join(__dirname, 'backtest-worker-thread.mjs');
 
-// Cap at 10 workers — beyond this, PG connection pool contention hurts more than parallelism helps
-const MAX_WORKERS = 10;
+// Cap at 4 workers — Railway containers have limited memory (512MB-1GB).
+// 10 workers each loading 13K-event timelines can OOM. 4 workers × ~650KB/timeline is safe.
+const MAX_WORKERS = 4;
 
 /**
  * Create a parallel evaluator with a pool of worker threads.

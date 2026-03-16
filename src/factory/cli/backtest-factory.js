@@ -991,11 +991,17 @@ export async function runFactoryBacktestPgCache({
   // ─── Sequential Fallback Path ───
   // Used when parallel=false or when window count is too small to benefit.
 
-  // Load all timelines from PG cache
+  // Analyze which data sources the strategy needs (for timeline trimming)
+  const sources = analyzeStrategySources(strategy);
+
+  // Load all timelines from PG cache, applying trimming
   const cachedTimelines = new Map();
   for (const win of sampledWindows) {
     const loaded = await loadTimelinePg(win.window_id);
-    if (loaded) cachedTimelines.set(win.window_id, { timeline: loaded.timeline, meta: loaded.window });
+    if (loaded) {
+      const trimmed = trimTimeline(loaded.timeline, sources);
+      cachedTimelines.set(win.window_id, { timeline: trimmed, meta: loaded.window });
+    }
   }
 
   // Evaluate all param combinations — pure CPU, no DB queries

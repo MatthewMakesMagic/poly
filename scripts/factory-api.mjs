@@ -561,13 +561,21 @@ async function handleBacktestRun(req, res) {
 
     const backtestFn = source === 'pg-cache' ? runFactoryBacktestPgCache : runFactoryBacktestPg;
 
-    const result = await backtestFn({
+    // Timeout protection: 10 minutes max, returns error rather than letting Railway kill the request
+    const BACKTEST_TIMEOUT_MS = 10 * 60 * 1000;
+    const backtestPromise = backtestFn({
       strategy,
       symbol,
       sampleOptions: { count: sample, seed },
       config: { feeMode },
-      includeBaseline: params.includeBaseline !== false,
+      includeBaseline: params.includeBaseline === true,  // Default OFF — baseline doubles eval time
     });
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Backtest timed out after ${BACKTEST_TIMEOUT_MS / 1000}s`)), BACKTEST_TIMEOUT_MS)
+    );
+
+    const result = await Promise.race([backtestPromise, timeoutPromise]);
 
     json(res, 200, { ok: true, data: result });
     return true;
