@@ -301,7 +301,7 @@ const config = {
       connectionTimeoutMs: 5000, // Faster timeout for CB but still reasonable
     },
     // Query timeout
-    queryTimeoutMs: 10000, // Increased for Supabase latency
+    queryTimeoutMs: 30000, // 30s for large BYTEA timeline reads
     // Retry configuration
     retry: {
       maxAttempts: 3,
