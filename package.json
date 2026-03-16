@@ -24,7 +24,8 @@
     "dashboard:dev": "cd dashboard && npx vite",
     "dashboard:build": "cd dashboard && npm install && npx vite build",
     "build": "npm run dashboard:build",
-    "start": "npm run dashboard:build && node scripts/run_live_trading.mjs"
+    "start": "npm run dashboard:build && node scripts/run_live_trading.mjs",
+    "start:factory": "node scripts/factory-server.mjs"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
