@@ -73,8 +73,11 @@ export async function readPgTimeline(windowId) {
 export async function readPgTimelines(windowIds) {
   if (windowIds.length === 0) return new Map();
 
+  // Read best available schema version per window (prefer highest)
   const rows = await persistence.all(
-    `SELECT * FROM pg_timelines WHERE window_id = ANY($1) AND schema_version = 2`,
+    `SELECT DISTINCT ON (window_id) * FROM pg_timelines
+     WHERE window_id = ANY($1)
+     ORDER BY window_id, schema_version DESC`,
     [windowIds]
   );
 

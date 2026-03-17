@@ -117,6 +117,5 @@ export function create(params) {
     return { direction: null, strength: 0, reason: `no cheap token (DOWN@${downPrice.toFixed(2)}, UP@${upPrice.toFixed(2)})` };
   }
 
-  evaluate.reset = reset;
-  return evaluate;
+  return { evaluate, reset };
 }

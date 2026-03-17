@@ -509,9 +509,11 @@ function sliceClobForWindow(allClob, startMs, endMs, symbol, windowEpoch) {
     if (snap.window_epoch != null && windowEpoch != null) {
       if (Number(snap.window_epoch) !== windowEpoch) return false;
     }
-    // Filter to active trading range — tokens converging to 0 or 1 are from adjacent windows
+    // Only exclude truly invalid data (mid at 0 or 1).
+    // Extreme prices (mid < 0.05 or > 0.95) are legitimate near window close
+    // and needed by contrarian strategies like cheap-reversal.
     const mid = Number(snap.mid_price ?? snap.best_bid ?? snap.best_ask ?? 0);
-    return mid >= 0.05 && mid <= 0.95;
+    return mid > 0 && mid < 1;
   });
 }
 

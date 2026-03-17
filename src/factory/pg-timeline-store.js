@@ -127,10 +127,13 @@ export async function insertPgTimelines(rows) {
  * @returns {Promise<Object|null>}
  */
 export async function getPgTimeline(windowId) {
+  // Prefer current schema version, fall back to any available version
   const row = await persistence.get(`
     SELECT * FROM pg_timelines
-    WHERE window_id = $1 AND schema_version = $2
-  `, [windowId, CURRENT_SCHEMA_VERSION]);
+    WHERE window_id = $1
+    ORDER BY schema_version DESC
+    LIMIT 1
+  `, [windowId]);
   return row || null;
 }
 
@@ -145,14 +148,17 @@ export async function getPgTimeline(windowId) {
  * @returns {Promise<Object[]>}
  */
 export async function getPgWindowsForSymbol(symbol, options = {}) {
+  // Read the best available schema version per window (prefer highest).
+  // This allows v2 data to be used while v3 timelines are being rebuilt.
   let sql = `
-    SELECT window_id, symbol, window_close_time, window_open_time,
+    SELECT DISTINCT ON (window_id)
+           window_id, symbol, window_close_time, window_open_time,
            ground_truth, strike_price, oracle_price_at_open, chainlink_price_at_close,
            event_count, data_quality, schema_version, built_at
     FROM pg_timelines
-    WHERE symbol = $1 AND schema_version = $2
+    WHERE symbol = $1
   `;
-  const params = [symbol, CURRENT_SCHEMA_VERSION];
+  const params = [symbol];
 
   if (options.startDate) {
     sql += ` AND window_close_time >= $${params.length + 1}`;
@@ -163,9 +169,13 @@ export async function getPgWindowsForSymbol(symbol, options = {}) {
     params.push(options.endDate);
   }
 
-  sql += ' ORDER BY window_close_time ASC';
+  // DISTINCT ON requires ORDER BY to start with the same column
+  sql += ' ORDER BY window_id, schema_version DESC';
 
-  return persistence.all(sql, params);
+  // Wrap in subquery to get final sort by window_close_time
+  const wrappedSql = `SELECT * FROM (${sql}) sub ORDER BY window_close_time ASC`;
+
+  return persistence.all(wrappedSql, params);
 }
 
 /**
@@ -180,9 +190,9 @@ export async function getPgWindowsForSymbol(symbol, options = {}) {
  */
 export async function getExistingPgWindowIds(symbol) {
   const rows = await persistence.all(`
-    SELECT window_id FROM pg_timelines
-    WHERE symbol = $1 AND schema_version = $2
-  `, [symbol, CURRENT_SCHEMA_VERSION]);
+    SELECT DISTINCT window_id FROM pg_timelines
+    WHERE symbol = $1
+  `, [symbol]);
   return new Set(rows.map(r => r.window_id));
 }
 
@@ -190,8 +200,8 @@ export async function getLatestPgWindowTime(symbol) {
   const row = await persistence.get(`
     SELECT MAX(window_close_time) as latest
     FROM pg_timelines
-    WHERE symbol = $1 AND schema_version = $2
-  `, [symbol, CURRENT_SCHEMA_VERSION]);
+    WHERE symbol = $1
+  `, [symbol]);
   return row?.latest || null;
 }
 

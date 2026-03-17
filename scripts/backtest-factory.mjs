@@ -44,6 +44,7 @@ function parseArgs() {
     fee: 0,
     feeMode: null,
     source: process.env.RAILWAY_ENVIRONMENT ? 'pg' : 'cache',
+    sourceExplicit: false,
     json: false,
     baseline: true,
     holdout: false,
@@ -71,7 +72,7 @@ function parseArgs() {
         case 'fee': opts.fee = parseFloat(value); break;
         case 'output': opts.output = value; break;
         case 'fee-mode': opts.feeMode = value; break;
-        case 'source': opts.source = value.toLowerCase(); break;
+        case 'source': opts.source = value.toLowerCase(); opts.sourceExplicit = true; break;
         case 'holdout-ratio': opts.holdoutRatio = parseFloat(value); break;
       }
     }
@@ -179,8 +180,8 @@ Options:
       const persistence = (await import('../src/persistence/index.js')).default;
       await persistence.init(config);
 
-      // Auto-detect pg-cache on Railway: if RAILWAY_ENVIRONMENT is set AND pg_timelines has data
-      if (source === 'pg' && process.env.RAILWAY_ENVIRONMENT) {
+      // Auto-detect pg-cache on Railway: only when source was NOT explicitly set by the user
+      if (source === 'pg' && process.env.RAILWAY_ENVIRONMENT && !opts.sourceExplicit) {
         try {
           const { getPgCacheSummary, ensurePgTimelineTable } = await import('../src/factory/pg-timeline-store.js');
           await ensurePgTimelineTable();

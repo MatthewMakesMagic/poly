@@ -127,13 +127,15 @@ describe('Timeline Builder (Story 1.2)', () => {
       expect(result[0].source, 'btc-down symbol → clobDown source').toBe('clobDown');
     });
 
-    it('filters out stale CLOB data with mid outside tradeable range', () => {
+    it('filters out invalid CLOB data with mid at 0 or 1 but keeps extreme prices', () => {
       const result = mergeTimeline({
         rtdsTicks: [],
         clobSnapshots: [
           { timestamp: new Date(OPEN_MS + 1000), symbol: 'btc-up', best_bid: '0.01', best_ask: '0.03', mid_price: '0.02', spread: '0.02' },
           { timestamp: new Date(OPEN_MS + 2000), symbol: 'btc-up', best_bid: '0.48', best_ask: '0.50', mid_price: '0.49', spread: '0.02' },
           { timestamp: new Date(OPEN_MS + 3000), symbol: 'btc-up', best_bid: '0.97', best_ask: '0.99', mid_price: '0.98', spread: '0.02' },
+          { timestamp: new Date(OPEN_MS + 4000), symbol: 'btc-up', best_bid: '0.00', best_ask: '0.00', mid_price: '0', spread: '0' },
+          { timestamp: new Date(OPEN_MS + 5000), symbol: 'btc-up', best_bid: '1.00', best_ask: '1.00', mid_price: '1', spread: '0' },
         ],
         exchangeTicks: [],
         l2BookTicks: [],
@@ -142,8 +144,12 @@ describe('Timeline Builder (Story 1.2)', () => {
         closeMs: CLOSE_MS,
       });
 
-      expect(result.length, 'Stale CLOB with mid < 0.05 or > 0.95 should be filtered out').toBe(1);
-      expect(result[0].mid_price).toBe(0.49);
+      // Extreme prices (mid=0.02, mid=0.98) are kept for contrarian strategies.
+      // Only truly invalid data (mid=0 or mid=1) is filtered out.
+      expect(result.length, 'Only mid=0 and mid=1 should be filtered out').toBe(3);
+      expect(result[0].mid_price).toBe(0.02);
+      expect(result[1].mid_price).toBe(0.49);
+      expect(result[2].mid_price).toBe(0.98);
     });
   });
 
