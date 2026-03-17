@@ -561,13 +561,17 @@ async function handleBacktestRun(req, res) {
 
     const backtestFn = source === 'pg-cache' ? runFactoryBacktestPgCache : runFactoryBacktestPg;
 
+    // Merge API config overrides (maxPrice, proximityPct, etc.) with feeMode
+    const configOverrides = { ...(params.config || {}), feeMode };
+
     // Timeout protection: 10 minutes max, returns error rather than letting Railway kill the request
     const BACKTEST_TIMEOUT_MS = 10 * 60 * 1000;
     const backtestPromise = backtestFn({
       strategy,
       symbol,
       sampleOptions: { count: sample, seed },
-      config: { feeMode },
+      config: configOverrides,
+      configOverrides,
       includeBaseline: params.includeBaseline === true,  // Default OFF — baseline doubles eval time
     });
 
