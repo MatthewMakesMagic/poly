@@ -1,0 +1,27 @@
+name: informed-entry-single
+description: >
+  Single config for large sample testing.
+  Exchange > 0.05% from strike + CLOB token under $0.50.
+
+signals:
+  - type: informed-entry
+    params:
+      minExchangeDistPct: 0.05
+      maxClobPrice: 0.50
+      minExchanges: 3
+
+filters:
+  - type: time-window
+    params:
+      entryWindowMs: 600000
+  - type: cooldown
+    params:
+      cooldownMs: 10000
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 2
+
+combine: all-of
