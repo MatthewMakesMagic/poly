@@ -1,0 +1,29 @@
+name: regime-mm-v1
+description: >
+  Time-regime market making: passive two-sided early, informed one-sided mid,
+  aggressive late. Earns liquidity rewards + maker rebates + spread capture.
+
+signals:
+  - type: regime-mm
+    params:
+      phase1EndMs: 600000
+      phase2EndMs: 300000
+      phase3EndMs: 60000
+      spreadFromMid: 0.015
+      maxEntryPrice: 0.48
+      minExchanges: 3
+      phase1Capital: 2
+      phase2Capital: 4
+      phase3Capital: 6
+
+filters:
+  - type: cooldown
+    params:
+      cooldownMs: 5000
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 2
+
+combine: all-of
