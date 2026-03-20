@@ -6,7 +6,6 @@
     "deploy": {
         "startCommand": "npm run live",
         "restartPolicyType": "ALWAYS",
-        "numReplicas": 1,
-        "healthcheckPath": "/api/live/status"
+        "numReplicas": 1
     }
 }
