@@ -112,32 +112,64 @@ export class WrappedPolymarketClient {
     this.log('info', 'client_initializing');
 
     try {
-      // Create v6-compatible wallet
-      this.wallet = createCompatibleWallet(config.privateKey);
-      this.funder = config.funder || this.wallet.address;
+      // Use provided API credentials directly if all three are present,
+      // otherwise fall back to deriving from private key
+      const hasDirectCreds = config.apiKey && config.apiSecret && config.passphrase;
 
-      this.log('info', 'wallet_created', {
-        address: this.wallet.address,
-        funder: this.funder,
-      });
+      if (hasDirectCreds && config.privateKey) {
+        // Direct credentials mode — use API key/secret/passphrase as-is
+        this.wallet = createCompatibleWallet(config.privateKey);
+        this.funder = config.funder || this.wallet.address;
 
-      // Derive API credentials from wallet
-      const baseClient = new ClobClient(ENDPOINTS.REST, CHAIN_ID, this.wallet);
-      const creds = await baseClient.deriveApiKey();
+        this.log('info', 'wallet_created', {
+          address: this.wallet.address,
+          funder: this.funder,
+          mode: 'direct_credentials',
+        });
 
-      // Create authenticated client with signature type 2 (proxy wallets)
-      this.client = new ClobClient(
-        ENDPOINTS.REST,
-        CHAIN_ID,
-        this.wallet,
-        creds,
-        2, // Signature type 2 for proxy wallets
-        this.funder
-      );
+        const creds = {
+          key: config.apiKey,
+          secret: config.apiSecret,
+          passphrase: config.passphrase,
+        };
+
+        this.client = new ClobClient(
+          ENDPOINTS.REST,
+          CHAIN_ID,
+          this.wallet,
+          creds,
+          Number(config.sigType) || 2,
+          this.funder
+        );
+      } else if (config.privateKey) {
+        // Legacy mode — derive credentials from private key
+        this.wallet = createCompatibleWallet(config.privateKey);
+        this.funder = config.funder || this.wallet.address;
+
+        this.log('info', 'wallet_created', {
+          address: this.wallet.address,
+          funder: this.funder,
+          mode: 'derived_credentials',
+        });
+
+        const baseClient = new ClobClient(ENDPOINTS.REST, CHAIN_ID, this.wallet);
+        const creds = await baseClient.deriveApiKey();
+
+        this.client = new ClobClient(
+          ENDPOINTS.REST,
+          CHAIN_ID,
+          this.wallet,
+          creds,
+          2,
+          this.funder
+        );
+      } else {
+        throw new Error('Either privateKey or full API credentials (apiKey, apiSecret, passphrase) required');
+      }
 
       this.ready = true;
       this.log('info', 'client_initialized', {
-        address: this.wallet.address,
+        address: this.wallet?.address,
         funder: this.funder,
       });
     } catch (err) {

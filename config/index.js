@@ -259,6 +259,7 @@ const config = {
     passphrase: process.env.POLYMARKET_PASSPHRASE,
     privateKey: process.env.POLYMARKET_PRIVATE_KEY,
     funder: process.env.POLYMARKET_FUNDER_ADDRESS,
+    sigType: process.env.POLYMARKET_SIG_TYPE || '2',
   },
 
   // Spot price feed configuration
