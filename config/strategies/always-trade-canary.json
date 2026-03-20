@@ -7,8 +7,8 @@
   },
   "config": {
     "minTimeRemainingMs": 30000,
-    "minPositionSize": 2,
-    "maxPositionSize": 2,
+    "minPositionSize": 1,
+    "maxPositionSize": 1,
     "stopLoss": {
       "enabled": true,
       "absoluteFloor": 0.10,

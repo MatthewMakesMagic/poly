@@ -1,0 +1,33 @@
+name: gated-mm-livetest
+description: >
+  Gated MM constrained to once-per-window to match live execution path.
+  Tests realistic trade count and P&L under production constraints.
+  $1 position sizes for live mechanical testing.
+version: 1
+hypothesis: >
+  gated-mm-v1 backtested 9,086 trades (~7.5/window) via exit-reentry cycles
+  that the live path does not support. This variant enforces the same
+  once-per-window constraint the live execution path uses, revealing
+  true expected performance at ~1 trade per window.
+
+signals:
+  - type: bs-fair-value
+    params:
+      minEdge: { sweep: [0.03, 0.05, 0.08] }
+      minVolSamples: 10
+
+combine: any-of
+
+filters:
+  - type: max-price
+    params:
+      maxPrice: 0.60
+  - type: min-data
+    params:
+      minTicks: 30
+  - type: once-per-window
+
+sizer:
+  type: fixed-capital
+  params:
+    capitalPerTrade: 1

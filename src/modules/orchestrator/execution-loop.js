@@ -679,7 +679,7 @@ export class ExecutionLoop {
 
           // Story 8-7/8-9: Check safeguards before processing entry
           if (this.modules.safeguards) {
-            const openPositions = await this.modules['position-manager']?.getPositions?.() || [];
+            const openPositions = await this.modules['position-manager']?.getPositions?.(this.config.tradingMode || 'PAPER') || [];
             const safeguardCheck = await this.modules.safeguards.canEnterPosition(signal, openPositions);
 
             if (!safeguardCheck.allowed) {
@@ -1050,7 +1050,7 @@ export class ExecutionLoop {
       let verificationPassed = true;
       if (this.modules['position-manager']) {
         try {
-          const openPositions = await this.modules['position-manager'].getPositions();
+          const openPositions = await this.modules['position-manager'].getPositions(this.config.tradingMode || 'PAPER');
 
           if (openPositions.length > 0) {
             // Build set of active window IDs
@@ -1172,7 +1172,7 @@ export class ExecutionLoop {
         const positionManager = this.modules['position-manager'];
 
         // Get all open positions and filter to MONITORING only
-        const openPositions = await positionManager.getPositions();
+        const openPositions = await positionManager.getPositions(this.config.tradingMode || 'PAPER');
         const monitoringPositions = openPositions.filter(
           p => isMonitoring(p.lifecycle_state || 'MONITORING')
         );
@@ -1485,7 +1485,7 @@ export class ExecutionLoop {
 
         // Get all open positions and filter to MONITORING only
         // (positions already closed by stop-loss above will have lifecycle CLOSED)
-        const openPositions = await positionManager.getPositions();
+        const openPositions = await positionManager.getPositions(this.config.tradingMode || 'PAPER');
         const monitoringPositions = openPositions.filter(
           p => isMonitoring(p.lifecycle_state || 'MONITORING')
         );
@@ -1654,7 +1654,7 @@ export class ExecutionLoop {
         const positionManager = this.modules['position-manager'];
 
         // Get all open positions and filter to MONITORING only
-        const openPositions = await positionManager.getPositions();
+        const openPositions = await positionManager.getPositions(this.config.tradingMode || 'PAPER');
         const monitoringPositions = openPositions.filter(
           p => isMonitoring(p.lifecycle_state || 'MONITORING')
         );

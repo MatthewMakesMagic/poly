@@ -1,6 +1,6 @@
 {
-  "strategies": ["probability-model", "lag-based", "hybrid"],
-  "position_size_dollars": 2,
+  "strategies": ["always-trade-canary"],
+  "position_size_dollars": 1,
   "max_exposure_dollars": 1000,
   "symbols": ["BTC", "ETH", "SOL", "XRP"],
   "kill_switch_enabled": true,
