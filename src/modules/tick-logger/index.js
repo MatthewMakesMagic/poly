@@ -106,13 +106,15 @@ export async function init(cfg = {}) {
     }
   }
 
-  // Run initial cleanup if configured
+  // Defer cleanup to avoid blocking init (can take minutes on large tables)
   if (config.cleanupOnInit) {
-    try {
-      await cleanupOldTicks(config.retentionDays);
-    } catch (err) {
-      log.warn('cleanup_on_init_failed', { error: err.message });
-    }
+    setTimeout(async () => {
+      try {
+        await cleanupOldTicks(config.retentionDays);
+      } catch (err) {
+        log.warn('cleanup_on_init_failed', { error: err.message });
+      }
+    }, 60000);
   }
 
   // Setup periodic cleanup if configured
