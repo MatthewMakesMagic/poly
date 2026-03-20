@@ -73,6 +73,7 @@ export async function init(cfg) {
     passphrase: polyConfig.passphrase,
     privateKey: polyConfig.privateKey,
     funder: polyConfig.funder,
+    sigType: polyConfig.sigType,
   });
 
   log.info('module_initialized', {
