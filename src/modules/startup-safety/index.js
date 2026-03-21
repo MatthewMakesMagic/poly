@@ -220,8 +220,12 @@ async function reconcilePositions() {
     reconciliationResult = result;
 
     if (!result.success && result.divergences && result.divergences.length > 0) {
-      // Filter out API_ERROR divergences (network issues should not trip CB)
-      const realDivergences = result.divergences.filter(d => d.type !== 'API_ERROR');
+      // Filter out API_ERROR divergences and null-balance mismatches
+      // Smart wallets (Coinbase/Gnosis) return null balance from CLOB API
+      const realDivergences = result.divergences.filter(d =>
+        d.type !== 'API_ERROR' &&
+        !(d.type === 'SIZE_MISMATCH' && d.exchangeState?.balance == null)
+      );
 
       if (realDivergences.length > 0) {
         log.error('position_reconciliation_mismatch', {
