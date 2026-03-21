@@ -122,7 +122,7 @@ export class WrappedPolymarketClient {
 
       this.wallet = createCompatibleWallet(config.privateKey);
       this.funder = config.funder || this.wallet.address;
-      const sigType = Number(config.sigType) || 1;
+      const sigType = config.sigType !== undefined ? Number(config.sigType) : 0;
 
       this.log('info', 'wallet_created', {
         address: this.wallet.address,
