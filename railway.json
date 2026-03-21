@@ -6,6 +6,7 @@
     "deploy": {
         "startCommand": "npm run live",
         "restartPolicyType": "ALWAYS",
-        "numReplicas": 1
+        "numReplicas": 1,
+        "region": "eu-west"
     }
 }
