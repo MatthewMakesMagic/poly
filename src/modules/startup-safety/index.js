@@ -38,7 +38,7 @@ let heartbeatInterval = null;
 // Heartbeat interval for distributed lock (30s)
 const HEARTBEAT_INTERVAL_MS = 30000;
 // Lock is considered stale after 2 minutes without heartbeat
-const LOCK_STALE_THRESHOLD_MS = 120000;
+const LOCK_STALE_THRESHOLD_MS = 15000; // 15s — single instance, fast takeover on redeploy
 
 /**
  * Initialize startup safety checks
