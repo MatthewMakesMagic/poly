@@ -127,39 +127,10 @@ const CONFIRMATION_TIMEOUT_MS = 5000;
  * @throws {OrderManagerError} If insufficient balance
  */
 async function verifyBalance(requiredAmount, log) {
-  try {
-    const balance = await polymarketClient.getUSDCBalance();
-
-    if (balance < requiredAmount) {
-      log.error('insufficient_balance', {
-        level: 'CRITICAL',
-        required: requiredAmount,
-        available: balance,
-        shortfall: requiredAmount - balance,
-      });
-
-      throw new OrderManagerError(
-        OrderManagerErrorCodes.INSUFFICIENT_BALANCE,
-        `Insufficient USDC balance: need $${requiredAmount.toFixed(2)}, have $${balance.toFixed(2)}`,
-        { required: requiredAmount, available: balance, orderSubmittedToExchange: false }
-      );
-    }
-
-    log.info('balance_verified', {
-      required: requiredAmount,
-      available: balance,
-      remaining_after: balance - requiredAmount,
-    });
-  } catch (err) {
-    if (err instanceof OrderManagerError) throw err;
-
-    // API call failed — log but don't block (fail-open for balance check)
-    log.warn('balance_check_failed', {
-      error: err.message,
-      required: requiredAmount,
-      message: 'Balance check failed — proceeding with order (fail-open)',
-    });
-  }
+  // Skip client-side balance check — Polymarket rejects server-side if insufficient.
+  // The CLOB balance-allowance endpoint returns 401 for proxy/smart wallets,
+  // causing false $0 balances that block all orders.
+  log.info('balance_check_skipped', { required: requiredAmount, reason: 'server_side_validation' });
 }
 
 /**
