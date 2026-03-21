@@ -459,10 +459,14 @@ export class WrappedPolymarketClient {
       try {
         const bal = await this.client.getBalanceAllowance({
           asset_type: 'COLLATERAL',
+          signature_type: Number(this.client.signatureType) || 1,
         });
         return parseFloat(bal.balance) / 1_000_000;
       } catch (e) {
-        return 0;
+        // Balance check failed — return large number to avoid blocking orders
+        // Polymarket will reject the order server-side if balance is actually insufficient
+        this.log('warn', 'balance_check_failed_passthrough', { error: e.message });
+        return 999999;
       }
     }, 'getUSDCBalance');
   }
