@@ -50,16 +50,11 @@ export async function init(cfg) {
   const polyConfig = cfg.polymarket || {};
   config = polyConfig;
 
-  // Check if credentials are available
-  const hasCredentials = polyConfig.apiKey && polyConfig.apiSecret &&
-    polyConfig.passphrase && polyConfig.privateKey;
-
-  if (!hasCredentials) {
-    // Degraded mode: no credentials, module initializes but can't place orders.
-    // This is expected in PAPER mode where trading controls are managed from the dashboard.
+  // Check if private key is available — only requirement for deriveApiKey flow
+  if (!polyConfig.privateKey) {
     log.warn('module_init_degraded', {
-      reason: 'missing_credentials',
-      hint: 'Set POLYMARKET_* env vars or configure from dashboard for LIVE trading',
+      reason: 'missing_private_key',
+      hint: 'Set POLYMARKET_PRIVATE_KEY for LIVE trading',
     });
     return;
   }
@@ -68,9 +63,6 @@ export async function init(cfg) {
   client = new WrappedPolymarketClient({ logger: log });
 
   await client.initialize({
-    apiKey: polyConfig.apiKey,
-    apiSecret: polyConfig.apiSecret,
-    passphrase: polyConfig.passphrase,
     privateKey: polyConfig.privateKey,
     funder: polyConfig.funder,
     sigType: polyConfig.sigType,

@@ -63,7 +63,7 @@ export function buildL2Headers(credentials, address, method, path, body = '') {
  * @returns {Object} Validation result with { valid: boolean, missing: string[] }
  */
 export function validateCredentials(credentials) {
-  const required = ['apiKey', 'apiSecret', 'passphrase', 'privateKey'];
+  const required = ['privateKey'];
   const missing = [];
 
   for (const field of required) {

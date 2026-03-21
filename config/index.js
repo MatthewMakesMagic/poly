@@ -259,7 +259,7 @@ const config = {
     passphrase: process.env.POLYMARKET_PASSPHRASE,
     privateKey: process.env.POLYMARKET_PRIVATE_KEY,
     funder: process.env.POLYMARKET_FUNDER_ADDRESS,
-    sigType: process.env.POLYMARKET_SIG_TYPE || '2',
+    sigType: process.env.POLYMARKET_SIG_TYPE || '1',
   },
 
   // Spot price feed configuration
@@ -562,20 +562,11 @@ function validateConfig(cfg) {
   const errors = [];
 
   // In LIVE mode, require Polymarket credentials
+  // Only privateKey and funder are needed — CLOB creds are derived via deriveApiKey()
   if (cfg.tradingMode === 'LIVE') {
-    if (!cfg.polymarket.apiKey) {
-      errors.push('POLYMARKET_API_KEY is required for LIVE trading');
-    }
-    if (!cfg.polymarket.apiSecret) {
-      errors.push('POLYMARKET_API_SECRET is required for LIVE trading');
-    }
-    if (!cfg.polymarket.passphrase) {
-      errors.push('POLYMARKET_PASSPHRASE is required for LIVE trading');
-    }
     if (!cfg.polymarket.privateKey) {
       errors.push('POLYMARKET_PRIVATE_KEY is required for LIVE trading');
     }
-    // F9 FIX: Also require funder address for LIVE trading
     if (!cfg.polymarket.funder) {
       errors.push('POLYMARKET_FUNDER_ADDRESS is required for LIVE trading');
     }
