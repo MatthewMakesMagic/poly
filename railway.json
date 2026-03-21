@@ -6,7 +6,10 @@
     "deploy": {
         "startCommand": "npm run live",
         "restartPolicyType": "ALWAYS",
-        "numReplicas": 1,
-        "region": "eu-west"
+        "multiRegionConfig": {
+            "europe-west4-drams3a": {
+                "numReplicas": 1
+            }
+        }
     }
 }
