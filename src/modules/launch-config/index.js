@@ -40,7 +40,10 @@ import {
 let log = null;
 let initialized = false;
 let currentManifest = null;
-let manifestPath = './config/launch.json';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+let manifestPath = resolve(__dirname, '../../../config/launch.json');
 
 /**
  * Initialize the launch-config module
