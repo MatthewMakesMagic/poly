@@ -735,6 +735,7 @@ export class WrappedPolymarketClient {
 
     return {
       initialized: this.ready,
+      authenticated: this.ready && !!this.client,
       address: this.wallet?.address || null,
       funder: this.funder || null,
       ready: this.ready,

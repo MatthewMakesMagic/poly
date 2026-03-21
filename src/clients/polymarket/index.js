@@ -91,6 +91,7 @@ export function getState() {
   if (!client) {
     return {
       initialized: false,
+      authenticated: false,
       address: null,
       funder: null,
       ready: false,
